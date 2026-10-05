@@ -1,16 +1,68 @@
-# Target repositories are independent Git repositories.
-/Room0/*
-!/Room0/.gitkeep
-/RoomN/*
-!/RoomN/.gitkeep
+# ---------------------------------------------------------------------------
+# Project-local CAT artifacts and source repositories
+# ---------------------------------------------------------------------------
+# These directories are intentionally present in the template via tracked
+# .gitkeep files, but all project-specific contents created after clone belong
+# to the workspace user/project, not to the CAT-TDD template repository.
+/Lifecycle/**
+/Docs/**
+/TestModels/**
+/Room0/**
+/RoomN/**
 
-# CAT execution evidence / temporary results.
+# ---------------------------------------------------------------------------
+# Project-specific Copilot/runtime selections
+# ---------------------------------------------------------------------------
+# Common skills are tracked. Technology skills copied into .github/skills by
+# cat_install.py are a per-project selection; the canonical skill pool remains
+# tracked under .cat-system/skills/.
+/.github/skills/tech-*/
+/.github/skills/*-adapter/
+
+# Project adapters/extensions are local to the project using this template.
+/.cat-system/extensions/**
+
+# ---------------------------------------------------------------------------
+# CAT execution evidence and generated local state
+# ---------------------------------------------------------------------------
 **/.cat-flow/
 
-# Runtime caches.
+# ---------------------------------------------------------------------------
+# Local secrets / environment configuration
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.template
+
+# ---------------------------------------------------------------------------
+# Language/tool caches and generated output used by the CAT-TDD workspace
+# ---------------------------------------------------------------------------
 **/__pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.venv/
+venv/
+node_modules/
+dist/
+build/
+tmp/
+temp/
+*.tmp
+*.log
 
-# Editor / OS noise.
+# ---------------------------------------------------------------------------
+# Editor / OS-local state
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.fleet/
+.zed/
 .DS_Store
 Thumbs.db
