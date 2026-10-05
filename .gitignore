@@ -1,0 +1,16 @@
+# Target repositories are independent Git repositories.
+/Room0/*
+!/Room0/.gitkeep
+/RoomN/*
+!/RoomN/.gitkeep
+
+# CAT execution evidence / temporary results.
+**/.cat-flow/
+
+# Runtime caches.
+**/__pycache__/
+*.py[cod]
+
+# Editor / OS noise.
+.DS_Store
+Thumbs.db
