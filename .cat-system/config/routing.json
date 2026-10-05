@@ -1,0 +1,138 @@
+{
+  "schema": "cat-routing/v1",
+  "technology_skills": {
+    "TypeScript": "tech-typescript",
+    "Vue": "tech-vue",
+    "Vitest": "tech-vitest",
+    "Playwright": "tech-playwright",
+    "PostgreSQL": "tech-postgresql"
+  },
+  "stages": {
+    "intake": {
+      "agent": "cycle-scope-divider",
+      "skills": [
+        "cycle-management"
+      ],
+      "include_technology_skills": false
+    },
+    "reverse": {
+      "agent": "cat-reverser",
+      "skills": [
+        "cat-reverse"
+      ],
+      "include_technology_skills": false
+    },
+    "spec": {
+      "agent": "cat-designer",
+      "skills": [
+        "cat-artifacts"
+      ],
+      "include_technology_skills": false
+    },
+    "review": {
+      "agent": "cat-reviewer",
+      "skills": [
+        "cat-specification-gate"
+      ],
+      "include_technology_skills": false
+    },
+    "model": {
+      "agent": "cat-test-modeler",
+      "skills": [
+        "cat-test-model"
+      ],
+      "include_technology_skills": false
+    },
+    "tests": {
+      "agent": "tdd-test-generator",
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": true
+    },
+    "test-review": {
+      "agent": "tdd-reviewer",
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": true
+    },
+    "red": {
+      "agent": "tdd-checker",
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": true
+    },
+    "implementation": {
+      "agent": "tdd-implementer",
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": true
+    },
+    "green": {
+      "agent": "tdd-checker",
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": true
+    },
+    "refactor-scope": {
+      "agent": "ref-scoper",
+      "skills": [
+        "refactor-safety"
+      ],
+      "include_technology_skills": true
+    },
+    "refactor": {
+      "agent": "ref-refactor",
+      "skills": [
+        "refactor-safety"
+      ],
+      "include_technology_skills": true
+    },
+    "regression": {
+      "agent": "tdd-checker",
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": true
+    },
+    "ci": {
+      "agent": "cycle-git-manager",
+      "skills": [
+        "cycle-management"
+      ],
+      "include_technology_skills": false
+    },
+    "git": {
+      "agent": "cycle-git-manager",
+      "skills": [
+        "cycle-management"
+      ],
+      "include_technology_skills": false
+    },
+    "merge": {
+      "agent": "cycle-git-manager",
+      "skills": [
+        "cycle-management"
+      ],
+      "include_technology_skills": false
+    },
+    "deployment": {
+      "agent": "cycle-git-manager",
+      "skills": [
+        "cycle-management"
+      ],
+      "include_technology_skills": false
+    },
+    "real-use": {
+      "agent": "orchestrator",
+      "skills": [
+        "cycle-management"
+      ],
+      "include_technology_skills": false
+    }
+  }
+}
