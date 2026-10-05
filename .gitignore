@@ -43,10 +43,17 @@
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
+.tox/
+.nox/
+.hypothesis/
+.direnv/
 .coverage
 .coverage.*
 htmlcov/
+coverage/
 coverage.xml
+.nyc_output/
 .venv/
 venv/
 node_modules/
@@ -64,5 +71,9 @@ temp/
 .idea/
 .fleet/
 .zed/
+.history/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
