@@ -863,7 +863,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
     coverage_proved = all(x['result']=='proved' for x in per_trigger.values())
     if not coverage_proved:
         require(allow_draft,
-                'assembled Process closed-world coverage not proved: '+json.dumps(per_trigger,ensure_ascii=False)[:700])
+                'assembled Process closed-world coverage requirement not proved: '+json.dumps(per_trigger,ensure_ascii=False)[:700])
 
     source_records=[]
     hashes={}

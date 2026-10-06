@@ -190,9 +190,11 @@ def compile_work(wpath, w, kind, check):
     def loc(key):
         return compilation_path(wpath, w, conf, key, check)
     argv = [sys.executable, str(ROOT / 'scripts/cat_compile_v2.py'), kind]
-    tces = compilation_tce_paths(wpath, w, conf, check)
     if kind == 'model':
-        argv += [loc('process'), loc('pi'), *tces]
+        process = loc('process')
+        pi = loc('pi')
+        tces = compilation_tce_paths(wpath, w, conf, check)
+        argv += [process, pi, *tces]
     else:
         for key in ('model', 'vectors'):
             require(conf.get(key), f'compilation.{key} missing')
@@ -201,7 +203,10 @@ def compile_work(wpath, w, kind, check):
             for key in ('binding', 'queue', 'tests_output'):
                 require(conf.get(key), f'compilation.{key} missing')
             argv += [loc('binding'), '--queue', loc('queue')]
-        argv += ['--process', loc('process'), '--pi', loc('pi')]
+        process = loc('process')
+        pi = loc('pi')
+        tces = compilation_tce_paths(wpath, w, conf, check)
+        argv += ['--process', process, '--pi', pi]
         for tce in tces:
             argv += ['--tce', tce]
     if conf.get('domain_rule'):
