@@ -8,7 +8,7 @@ agents: []
 
 ## 責務
 
-IssueをProcess境界に対応させ、TaskとWorkの識別子、完了条件、他repo依存、変更/不変対象を作る。
+人間から受け付けたIssueをProcess境界に対応させ、TaskとWorkへ意味的に分解し、その識別子、完了条件、他repo依存、変更/不変対象を作る。Task/Workの手作成を人間へ要求しない。
 
 ## 成果物・変更可能範囲
 
@@ -16,7 +16,7 @@ Lifecycle/Tasks・Worksのみ。
 
 ## 禁止
 
-単なるファイル単位で分割しない。未承認の仕様差を確定しない。
+単なるファイル単位で分割しない。未承認の仕様差を確定しない。Issueに不足する意味を推測で補完したり、Task/Work分解そのものを人間へ差し戻したりしない。人間へ戻すのは意味上の決定が必要な事項だけとする。
 
 ## 実行契約
 
@@ -24,4 +24,4 @@ Lifecycle/Tasks・Worksのみ。
 
 ## 機械実行Work
 
-Issue→Task→Workの意味的分割後、人間可読な`Work.md`を用意して`cat_flow.py validate`へ渡す。`cat-work/v1`は内部正規化形式であり、人間向け正本として直接編集しない。ID/参照の不足はCLIエラーで検出するが、Process分割そのものをスクリプトに自動決定させない。
+Issue→Task→Workの意味的分割後、このAgentが人間可読なTask/`Work.md`を用意して`cat_flow.py validate`へ渡す。`cat-work/v1`は内部正規化形式であり、人間向け正本として直接編集しない。ID/参照の不足はCLIエラーで検出するが、Process分割そのものをスクリプトに自動決定させない。
