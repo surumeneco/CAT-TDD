@@ -17,8 +17,11 @@ class InstallTest(unittest.TestCase):
         self.project = Path(self.tmp.name)
         fixture = Path(__file__).resolve().parent/'fixtures/minimal/Work.md'
         _, self.work = flow.work_file(fixture)
+        self.work['flow'] = 'spec-implementation'
+        self.work['work_kind'] = 'implementation'
         self.workpath = self.project/'Work.md'
-        self.workpath.write_text(fixture.read_text(encoding='utf-8'), encoding='utf-8')
+        text = fixture.read_text(encoding='utf-8').replace('mode: shadow', "mode: shadow\nflow: spec-implementation\nwork_kind: implementation\nparent: ''\ndepends_on: []")
+        self.workpath.write_text(text, encoding='utf-8')
 
     def selected(self, adapter=None):
         return installer.sources(self.work, adapter)

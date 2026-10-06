@@ -37,6 +37,8 @@ def build(paths, completed):
         return d
     ready=[]
     for k,n in nodes.items():
+        if k in completed:
+            continue
         if all(d in completed for d in deps[k]):
             ready.append({**n,'depth':depth(k)})
     if ready:

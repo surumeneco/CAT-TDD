@@ -72,7 +72,7 @@ spec_status: confirmed
             for name in ('Process.md','PI.md','TCE.md','Work.md'):
                 shutil.copyfile(fixture/name,root/name)
             wp=root/'Work.md'; text=wp.read_text(encoding='utf-8')
-            text=text.replace("mode: shadow","mode: implementation")
+            text=text.replace("mode: shadow","mode: implementation\nflow: spec-implementation\nwork_kind: implementation\nparent: \'\'\ndepends_on: []")
             text=text.replace("spec_status: candidate","spec_status: confirmed")
             text=text.replace("decision_ref: ''","decision_ref: https://example.org/decision",1)
             cmd=shlex.quote(sys.executable)+' -c '+shlex.quote('pass')
