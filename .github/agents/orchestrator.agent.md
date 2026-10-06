@@ -7,7 +7,7 @@ description: "Route a user development request through CAT specification, Cycle 
 
 ## 責務
 
-工程の入口、使用する規範的入力と版、未決定の振る舞い、各成果物・担当・ゲートを管理する。各agentへ入力ID、期待出力、許可された書込み範囲を渡す。
+工程の入口、使用する規範的入力と版、未決定の振る舞い、各成果物・担当・ゲートを管理する。新規の人間要求がIssueとして与えられた場合は、Task/Workの手作成を人間へ要求せず、`cycle-scope-divider`へIssue→Task→Work分解を委譲する。各agentへ入力ID、期待出力、許可された書込み範囲を渡す。
 
 ## 成果物・変更可能範囲
 
@@ -23,4 +23,4 @@ Workflow台帳と統合報告。仕様・テスト・実装・デプロイは各
 
 ## 実行スクリプト契約
 
-Workを`cat-work/v1`へ整え、`cat_flow.py validate/route/status/handoff`を呼ぶ。Agentの委譲先・採用Skillはrouteを参考に決めるが、Workの意味判断と権限はスクリプトに渡さない。形式的機械チェックはCLIで行い、判定不能なら担当へエスカレーションする。実行結果の`passed`は当該チェックだけとし、CI/merge/deploy/実使用を創作しない。
+新規Issueでは`cycle-scope-divider`がWorkを生成した後に、そのWorkを`cat-work/v1`へ整え、`cat_flow.py validate/route/status/handoff`を呼ぶ。`cat_flow.py`へIssue→Task→Workの意味的分解を委譲しない。Agentの委譲先・採用Skillはrouteを参考に決めるが、Workの意味判断と権限はスクリプトに渡さない。形式的機械チェックはCLIで行い、判定不能なら担当へエスカレーションする。実行結果の`passed`は当該チェックだけとし、CI/merge/deploy/実使用を創作しない。
