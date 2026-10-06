@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
-sys.path.insert(0, str(ROOT / 'skills' / 'cat-specification-gate' / 'scripts'))
+sys.path.insert(0, str(ROOT / '.cat-system' / 'scripts'))
+sys.path.insert(0, str(ROOT / '.cat-system' / 'skills' / 'cat-specification-gate' / 'scripts'))
 from cat_artifact_lint import artifact_errors
 from catlib.markdown import parse_frontmatter
 from cat_package_lint import agent_errors, skill_errors

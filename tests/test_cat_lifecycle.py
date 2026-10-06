@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "skills" / "cycle-management" / "scripts"))
+sys.path.insert(0, str(ROOT / ".cat-system" / "skills" / "cycle-management" / "scripts"))
 from cat_lifecycle import Blocked, locate, move
 
 
