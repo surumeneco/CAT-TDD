@@ -14,6 +14,12 @@ git clone <target-repository-url> Room0/<repository-name>
 
 `Room0/**` と `RoomN/**` に加え、`Lifecycle/**`、トップレベル `Docs/**`、`TestModels/**` は親 CAT-TDD リポジトリの Git 管理対象外です。CAT-TDD はテンプレートと共通実行環境だけを管理し、個別プロジェクトのソースコード・仕様Artifact・Work・TestModel等を commit に混入させません。各ディレクトリ自体は追跡済み `.gitkeep` により clone 直後から存在します。
 
+## 新規開発の入口
+
+通常の新規要求では、人間が与える開発要求の単位は **Issue** です。Issueは `Lifecycle/Issues/New/<issue>/issue.md` に直接記述しても、会話上の要求をAIがIssueとして整理しても構いません。人間にCAT/TDDのProcess分割やTask/Workの手作成を要求しません。
+
+新規Issueを受け付けたAIは、orchestratorから `cycle-scope-divider` へ委譲し、**Issue → Task（Process責務）→ Work（独立して仕様化・検証できる仕様差分）**へ分解します。意味上の選択が不足する場合だけ人間へ判断を返し、分解作業そのものを人間へ差し戻しません。
+
 ## 主な配置
 
 ```text
