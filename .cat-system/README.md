@@ -1,7 +1,7 @@
 ---
 title: CAT実用エージェント体系
 status: trial
-version: '0.7'
+version: '0.9'
 ---
 
 # CAT実用エージェント体系
@@ -12,7 +12,7 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 | --- | --- | --- |
 | `agents/*.agent.md` | `.github/agents/` | 役割・責任・禁止・成果物境界 |
 | `skills/{cat-*,cycle-*,tdd-*,refactor-*}/SKILL.md` | `.github/skills/` | CAT/Cycle/TDD/Refactorの技術非依存の手順 |
-| `skills/tech-*/SKILL.md` | 採用・使用技術に合うものだけ配置 | 言語・フレームワーク・DB・テスト基盤固有の処理 |
+| `skills/<technology-skill>/SKILL.md` | `config/routing.json`で対象技術に登録されたものだけ配置 | 言語・フレームワーク・DB・テスト基盤固有の処理。自作は原則`tech-*`、外部Skillは上流名を保持できる |
 | `extensions/<project>-adapter/` | 明示選択時だけ`.github/skills/`と`.cat-system/extensions/`へ配置 | プロジェクト固有Skillと参照マップ。共通coreから分離 |
 | `optional-skills/*/SKILL.md` | 明示的に診断・補助機能を使う場合だけ個別導入 | 通常Workに必須でない補助Skill。`cat_install.py`の共通Skill自動配布対象外 |
 | `docs/*.md` | `.cat-system/docs/` | 人間が読む工程、記法、正本・技術Skillの選択契約 |
@@ -29,9 +29,9 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 
 ## 目標: CAT×TDDを組み込んだAI開発環境
 
-**対象は「開発を実行できる環境」であり、特定プロダクトのCAT変換プロジェクトではない。** Orchestratorが、Issue/確定仕様/既存コード/bug/refactorからWorkを作成し、CATの仕様根拠・テストモデル・TDD Red/Green/Refactor・Git・CI・実動作確認を段階別に扱う。機械で実行できる部分をPythonスクリプトへ移し、AIは判断を要する工程と実装を担当する。Work単位で再開でき、別のプロジェクト・Gitホストでも使えることを目指す。
+**対象は「開発を実行できる環境」であり、特定プロダクトのCAT変換プロジェクトではない。** 通常の新規要求では人間がIssueを入力し、Orchestratorが`cycle-scope-divider`へ委譲してIssue→Task(Process)→Work(独立検証可能な仕様差)へ分解する。Task/Workの手作成を人間の必須作業としない。その後、CATの仕様根拠・テストモデル・TDD Red/Green/Refactor・Git・CI・実動作確認を段階別に扱う。機械で実行できる部分をPythonスクリプトへ移し、AIは判断を要する工程と実装を担当する。Work単位で再開でき、別のプロジェクト・Gitホストでも使えることを目指す。
 
-入口: [AI実行契約](docs/AI実行契約.md)、[開発フロー](docs/開発フロー.md)、[Work/Artifact Markdown形式](docs/Artifact記法.md)。
+入口: [AI実行契約](docs/AI実行契約.md)、[開発フロー](docs/開発フロー.md)、[Issue / Task / Workを含むArtifact Markdown形式](docs/Artifact記法.md)。
 
 | スクリプト | AIが呼ぶ機能 | 非対象 |
 |---|---|---|
@@ -48,9 +48,17 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 
 ## 技術の採用とSkill選択
 
-採用技術、対象component、版、制約、テストコマンドは**プロジェクトの現行文書**に記載する。全プロジェクトへ同名の文書を強制せず、入口から既存の技術構成正本を辿る。`tech-*`はその技術での作業方法であり、技術を採用する権限を持たない。
+採用技術、対象component、版、制約、テストコマンドは**プロジェクトの現行文書**に記載する。全プロジェクトへ同名の文書を強制せず、入口から既存の技術構成正本を辿る。技術Skillはその技術での作業方法であり、技術を採用する権限を持たない。技術Skillかどうかの機械的な判定は名前のprefixではなく`config/routing.json`の`technology_skills`登録を正とする。
 
-対象Workの技術と実行境界に合致するSkillだけを選ぶ。初期の技術Skillは`tech-typescript`、`tech-vue`、`tech-vitest`、`tech-playwright`、`tech-postgresql`。採用しない技術のSkillは配布先へ入れなくてよい。未収録技術は技術構成文書に基づいて新たなSkillを追加し、CAT共通Skillへ技術固有の方法を混入させない。
+対象Workの技術と実行境界に合致するSkillだけを選ぶ。現行catalogueは次を保持する。
+
+- 言語: `tech-typescript`、`tech-csharp`、`tech-java`、`tech-python`。
+- UI / Web: `tech-vue`、`tech-react`、`tech-nextjs`、`tech-aspnet-core`、`tech-spring-boot`、`tech-fastapi`。
+- DB: `tech-postgresql`、`tech-mysql`、`tech-sqlserver`、`tech-oracle-db`。
+- Test: `tech-vitest`、`tech-playwright`、`tech-xunit`、`tech-junit`、`tech-pytest`。
+- Container: Docker公式`docker-project-foundations`、`docker-build-strategies`、`docker-compose-patterns`、`docker-destructive-guardrails`。Dockerは1つの採用技術から複数Skillへrouteする。
+
+採用しない技術のSkillは配布先へ入れない。未収録技術は技術構成文書に基づいて独立Skillを追加し、CAT共通Skillへ技術固有の方法を混入させない。Docker外部Skillの固定版・出典は[外部Skill](docs/外部Skill.md)に記録する。
 
 詳細な選択規則、GitとGitHubの分離、Adapterの設置判断は[プロジェクト適用](docs/プロジェクト適用.md)を参照。CAT適合性の診断指数が必要な場合は `optional-skills/cat-conformance-review/SKILL.md` を明示的に使用する。
 
@@ -63,8 +71,8 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 
 ## 配置時の最小手順
 
-1. 入口文書から現行の技術構成・仕様正本・Git運用の正本を確認し、実際のGit remote/branchを照合する。XPlayServerの場合は現行の`00_必読.md`を先に読む。
-2. 共通`agents/`と共通`skills/`、採用技術に関係する`tech-*`だけを配置し、プロジェクト手続きがある場合だけ`extensions/<project>-adapter`を明示選択して配置する。`optional-skills/`は通常導入に含めず、対象の診断・補助作業を明示した場合だけ個別に使用する。
+1. 新規要求では人間のIssueを入口とし、AIが`cycle-scope-divider`でTask/Workへ分解する。既存Workの再開ではそのWorkを入口とする。その後、入口文書から現行の技術構成・仕様正本・Git運用の正本を確認し、実際のGit remote/branchを照合する。XPlayServerの場合は現行の`00_必読.md`を先に読む。
+2. 共通`agents/`と共通Skill、`routing.json`で採用技術に対応する技術Skillだけを配置し、プロジェクト手続きがある場合だけ`extensions/<project>-adapter`を明示選択して配置する。`optional-skills/`は通常導入に含めず、対象の診断・補助作業を明示した場合だけ個別に使用する。
 3. 指示ファイルは入口と正本への参照に留め、同じルールを繰り返さない。GitHub以外のremoteでも、Copilotの`.github/agents`/`.github/skills`はワークスペースの設定パスとして使用できる。
 4. `cat_flow.py`を用いてWork Markdown→内部manifest正規化→静的検査→CATの意味確認→モデル→TDD→Git/CI/merge/deployを個別に管理する。Skill自動選択・外部agent委譲・権限制御は実際のCopilot環境で検証する。Markdownの禁止文だけをOS/ホストの強制権限制御とみなさない。
 
