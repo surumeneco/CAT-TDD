@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 S = 'cat-machine/v2'
 M = 'cat-test-model/v2'
 D = 'cat-test-driver/v2'
+Q = 'cat-tdd-queue/v1'
 ID = re.compile(r'^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$')
 CODE = re.compile(r'(?ms)^```cat-machine\s*\n(.*?)\n```\s*$')
 INT = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')
@@ -860,6 +861,26 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             'model_type':'symbolic-relation','limits':['finite-guard-closure-only','no-general-reachability-proof','no-process-composition']}
     # Compatibility alias for older downstream readers; it is a requirement, not verification evidence.
     result['coverage_claim']=tce['coverage']
+    result['source_semantic_map']={
+        'process':{
+            'artifact':pf['id'],
+            'triggers':[x['id'] for x in p['triggers']],
+            'interfaces':list(p.get('interfaces',[])),
+            'state':[x['id'] for x in p.get('state_fields',[])],
+            'observations':[x['id'] for x in p.get('observations',[])],
+            'actions':[x['id'] for x in p.get('actions',[])]},
+        'pi':{
+            'artifact':pif['id'],
+            'fields':[x['id'] for x in pi['fields']],
+            'operations':[x['id'] for x in pi.get('operations',[])],
+            'constraint_count':len(constraints)},
+        'tce':{
+            'artifact':tf['id'],
+            'rules':[x['id'] for x in rules],
+            'outcome_count':sum(len(x['allowed']) for x in rules)},
+        'domain_rule':{
+            'artifact':dfile['id'] if dfile else None,
+            'definitions':sorted(definitions)}}
     if contract=='markdown-v2':
         result['pi_boundary']=pi['boundary'];result['pi_operations']=pi['operations'];result['process_interfaces']=p.get('interfaces',[])
     if contract in ('markdown-v1','markdown-v2'):result['normalized_ir']='cat-machine/v2'
@@ -924,6 +945,57 @@ def emit_vitest(model,vectors,binding_path):
     cases=expand_cases(model,vectors)
     return _vitest_renderer()(model,cases,binding)
 
+
+
+
+def make_queue(model, vectors, model_bytes, vector_bytes):
+    require(model.get('status') == 'confirmed', 'normative Queue requires confirmed TestModel')
+    cases = expand_cases(model, vectors)
+    require(cases, 'Queue requires at least one concrete vector')
+    items = []
+    for order, case in enumerate(cases, 1):
+        items.append({'id': case['id'], 'model_ref': case['source_tce'], 'vector_ref': case['id'],
+                      'order': order, 'status': 'current' if order == 1 else 'pending',
+                      'evidence_ref': None})
+    return {'schema': Q, 'process': model['process'],
+            'model_sha256': hashlib.sha256(model_bytes).hexdigest(),
+            'vectors_sha256': hashlib.sha256(vector_bytes).hexdigest(),
+            'items': items}
+
+
+def validate_queue(queue, model, vectors, model_bytes, vector_bytes):
+    check_keys(queue, ['schema','process','model_sha256','vectors_sha256','items'], where='TDD Execution Queue')
+    require(queue['schema'] == Q and queue['process'] == model['process'], 'Queue version/Process mismatch')
+    require(queue['model_sha256'] == hashlib.sha256(model_bytes).hexdigest(), 'Queue is stale: TestModel changed')
+    require(queue['vectors_sha256'] == hashlib.sha256(vector_bytes).hexdigest(), 'Queue is stale: vectors changed')
+    require(isinstance(queue['items'], list), 'Queue items must be array')
+    vector_ids = {x['id'] for x in vectors.get('cases', [])}
+    model_rules = {x['id'] for x in model.get('rules', [])}
+    seen = set(); current = []
+    last_order = 0
+    for item in queue['items']:
+        check_keys(item, ['id','model_ref','vector_ref','order','status','evidence_ref'], where='Queue item')
+        ident(item['id'], 'Queue item ID')
+        require(item['id'] not in seen, 'duplicate Queue item ID'); seen.add(item['id'])
+        require(item['vector_ref'] in vector_ids, 'Queue item references unknown vector')
+        require(item['model_ref'] in model_rules, 'Queue item references unknown TestModel rule')
+        require(isinstance(item['order'], int) and item['order'] > last_order, 'Queue order must be strictly increasing')
+        last_order = item['order']
+        require(item['status'] in ('pending','current','done','blocked'), 'Queue status invalid')
+        require(item['evidence_ref'] is None or isinstance(item['evidence_ref'], str), 'Queue evidence_ref invalid')
+        if item['status'] == 'current': current.append(item)
+    require(len(current) <= 1, 'Queue may contain at most one current item')
+    return current[0] if current else None
+
+
+def current_vectors(model, vectors, queue, model_bytes, vector_bytes):
+    current = validate_queue(queue, model, vectors, model_bytes, vector_bytes)
+    require(current is not None, 'Queue has no current item')
+    chosen = [x for x in vectors['cases'] if x['id'] == current['vector_ref']]
+    require(len(chosen) == 1, 'current Queue vector must resolve exactly once')
+    probe = expand_cases(model, {'schema': vectors['schema'], 'process': vectors['process'], 'cases': chosen})[0]
+    require(probe['source_tce'] == current['model_ref'], 'Queue model_ref does not match vector-derived TestModel rule')
+    return {'schema': vectors['schema'], 'process': vectors['process'], 'cases': chosen}
 
 def format_domain(d, language='en'):
     t=d['type']
@@ -1037,7 +1109,8 @@ def main(argv=None):
     cli=argparse.ArgumentParser(description=__doc__)
     sub=cli.add_subparsers(dest='command',required=True)
     m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('tce');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
-    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--tce',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
+    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--tce',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
+    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--tce',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
     args=cli.parse_args(argv)
     try:
         if args.command=='model':
@@ -1045,18 +1118,29 @@ def main(argv=None):
             write(args.output,_model_content(result,args.output),args.check)
         else:
             fresh=load(args.process,args.pi,args.tce,args.domain_rule,args.allow_draft)
+            model_bytes=Path(args.model).read_bytes()
             if Path(args.model).suffix.lower()=='.md':
-                require(Path(args.model).read_text(encoding='utf-8')==render_model_markdown(fresh),
+                require(model_bytes.decode('utf-8')==render_model_markdown(fresh),
                         'test model does not match current CAT source: regenerate')
                 model=fresh
             else:
-                model=json.loads(Path(args.model).read_text(encoding='utf-8'))
+                model=json.loads(model_bytes.decode('utf-8'))
                 require(model.get('schema')==M,'wrong model schema')
                 require(model.get('status')=='confirmed' or args.allow_draft,'draft model requires --allow-draft')
                 require(model.get('semantic_authority') in (S,'cat-markdown/v1','cat-markdown/v2'),'missing CAT semantic authority')
                 require(model==fresh,'test model does not match current CAT source: regenerate')
-            vectors=json.loads(Path(args.vectors).read_text(encoding='utf-8'))
-            write(args.output,emit_vitest(model,vectors,args.binding),args.check)
+            vector_bytes=Path(args.vectors).read_bytes()
+            vectors=json.loads(vector_bytes.decode('utf-8'))
+            if args.command=='queue':
+                result=make_queue(model,vectors,model_bytes,vector_bytes)
+                write(args.output,json.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
+            else:
+                if args.queue:
+                    queue=json.loads(Path(args.queue).read_text(encoding='utf-8'))
+                    vectors=current_vectors(model,vectors,queue,model_bytes,vector_bytes)
+                else:
+                    require(args.allow_draft, 'normative test generation requires --queue with exactly one current item')
+                write(args.output,emit_vitest(model,vectors,args.binding),args.check)
         return 0
     except (Blocked,TypeError,KeyError,ValueError,FileNotFoundError) as e:
         print('BLOCKED: '+str(e),file=sys.stderr);return 2

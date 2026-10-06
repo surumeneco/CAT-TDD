@@ -12,10 +12,15 @@ from pathlib import Path
 from catlib.common import Blocked, read_json, require
 from catlib.markdown import parse_frontmatter
 
-STAGES = ("intake", "reverse", "spec", "review", "model", "tests", "test-review", "red",
-          "implementation", "green", "refactor-scope", "refactor", "regression", "ci", "git",
-          "merge", "deployment", "real-use")
+STAGES = ("intake", "reverse", "spec", "review", "process-closure", "model", "model-conformance",
+          "queue", "tests", "test-review", "red", "implementation", "green",
+          "implementation-conformance", "integration", "refactor-scope", "refactor", "regression",
+          "ci", "git", "merge", "deployment", "real-use")
+CONFORMANCE_GATES = ("process-closure", "model-conformance", "implementation-conformance")
 EXTERNAL_GATES = ("semantic-review", "test-oracle-review", "red-review", "pr-review", "ci", "merge", "deployment", "real-use")
+ALL_GATES = CONFORMANCE_GATES + EXTERNAL_GATES
+FLOWS = ("spec-implementation", "issue-work", "specification", "code-to-spec", "refactor")
+WORK_KINDS = ("implementation", "specification", "analysis", "documentation", "verification", "refactor")
 ENTRIES = ("confirmed-spec", "issue", "bug", "existing-code", "refactor")
 STATUSES = ("draft", "candidate", "confirmed", "unknown", "conflict")
 GATE_STATUSES = ("passed", "not-applicable", "not-run", "blocked", "inconclusive")
@@ -129,7 +134,9 @@ def read_work_markdown(path):
     repos = []
     for row in _table_any(body, ('Repositories','リポジトリ'), required=False):
         repo = {'name': _cell(row, 'Name', 'name', '名前'), 'path': _cell(row, 'Path', 'path', 'パス'),
-                'allowed_paths': _items(_cell(row, 'Allowed paths', 'Allowed Paths', 'allowed_paths', '許可パス'))}
+                'allowed_paths': _items(_cell(row, 'Allowed paths', 'Allowed Paths', 'allowed_paths', '許可パス')),
+                'production_paths': _items(_cell(row, 'Production paths', 'Production Paths', 'production_paths', 'Production許可パス', required=False)),
+                'test_paths': _items(_cell(row, 'Test paths', 'Test Paths', 'test_paths', 'Test許可パス', required=False))}
         base = _cell(row, 'Base ref', 'Base Ref', 'base_ref', '基準ref', required=False)
         branch = _cell(row, 'Branch pattern', 'Branch Pattern', 'branch_pattern', 'ブランチ規則', required=False)
         if not _none(base): repo['base_ref'] = base
@@ -165,7 +172,9 @@ def read_work_markdown(path):
         row = comp_rows[0]
         compilation = {'schema': 'cat-compile/v2'}
         mapping = {('Process','プロセス'):'process',('PI',):'pi',('TCE',):'tce',('Domain rule','DomainRule','ドメイン規則'):'domain_rule',
-                   ('Model','モデル'):'model',('Vectors','具体値'):'vectors',('Binding','接続'):'binding',('Tests','テスト'):'tests_output'}
+                   ('Model','モデル'):'model',('Vectors','具体値'):'vectors',('Queue','キュー'):'queue',
+                   ('Binding','接続'):'binding',('Tests','テスト'):'tests_output',
+                   ('Obligations','適合義務'):'obligations'}
         for humans, key in mapping.items():
             value = _cell(row, *humans, key, required=False)
             if not _none(value): compilation[key] = value
@@ -173,6 +182,8 @@ def read_work_markdown(path):
     decision = fm.get('decision_ref')
     if _none(str(decision or '')): decision = None
     return {'schema': 'cat-work/v1', 'id': fm.get('id'), 'entry': fm.get('entry'), 'mode': fm.get('mode'),
+            'flow': fm.get('flow'), 'work_kind': fm.get('work_kind'), 'parent': fm.get('parent'),
+            'depends_on': fm.get('depends_on', []),
             'issue_ref': fm.get('issue_ref'), 'project_entry_ref': fm.get('project_entry_ref'),
             'normative': [{'uri': x} for x in fm.get('source_refs', [])], 'evidence': evidence,
             'specification': {'status': fm.get('spec_status'), 'decision_ref': decision,
@@ -196,6 +207,10 @@ decision_ref: ''
 refs: []
 entry: issue
 mode: shadow
+flow: issue-work
+work_kind: analysis
+parent: ''
+depends_on: []
 issue_ref: TO_BE_IDENTIFIED
 project_entry_ref: TO_BE_IDENTIFIED
 spec_status: unknown
@@ -226,8 +241,8 @@ Multiple IDs in one cell are separated by `;`.
 
 `Allowed paths` uses `;` between path patterns.
 
-| Name | Path | Base ref | Branch pattern | Allowed paths |
-| --- | --- | --- | --- | --- |
+| Name | Path | Base ref | Branch pattern | Allowed paths | Production paths | Test paths |
+| --- | --- | --- | --- | --- | --- | --- |
 
 ## Checks
 
@@ -242,6 +257,9 @@ External/semantic gates are reported evidence. `passed` or `not-applicable` requ
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
+| process-closure | not-run | — |
+| model-conformance | not-run | — |
+| implementation-conformance | not-run | — |
 | semantic-review | not-run | — |
 | test-oracle-review | not-run | — |
 | red-review | not-run | — |
@@ -255,8 +273,8 @@ External/semantic gates are reported evidence. `passed` or `not-applicable` requ
 
 Remove this section when deterministic compilation is not used.
 
-| Process | PI | TCE | Domain rule | Model | Vectors | Binding | Tests | Allow draft |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Process | PI | TCE | Domain rule | Model | Vectors | Queue | Binding | Tests | Obligations | Allow draft |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 """
 
 
@@ -281,6 +299,15 @@ def validate(w):
         errs.append('entry must be one of ' + ', '.join(ENTRIES))
     if w.get('mode') not in ('shadow', 'implementation'):
         errs.append('mode must be shadow or implementation')
+    if w.get('flow') is not None and w.get('flow') not in FLOWS:
+        errs.append('flow invalid')
+    if w.get('work_kind') is not None and w.get('work_kind') not in WORK_KINDS:
+        errs.append('work_kind invalid')
+    if w.get('parent') is not None and not isinstance(w.get('parent'), str):
+        errs.append('parent must be a Work ID or empty')
+    deps = w.get('depends_on', [])
+    if not isinstance(deps, list) or not all(isinstance(x, str) and x for x in deps):
+        errs.append('depends_on must be a string array')
     for field in ('issue_ref', 'project_entry_ref'):
         if not isinstance(w.get(field), str) or not w[field].strip():
             errs.append(f'{field}: nonempty URI or issue reference required')
@@ -321,6 +348,10 @@ def validate(w):
             names.add(repo['name'])
             if not isinstance(repo.get('allowed_paths', []), list) or not all(isinstance(v, str) and v for v in repo.get('allowed_paths', [])):
                 errs.append(f'repositories[{i}].allowed_paths invalid')
+            for path_kind in ('production_paths', 'test_paths'):
+                vals = repo.get(path_kind, [])
+                if not isinstance(vals, list) or not all(isinstance(v, str) and v for v in vals):
+                    errs.append(f'repositories[{i}].{path_kind} invalid')
     checks = w.get('checks')
     if not isinstance(checks, list):
         errs.append('checks must be an array (empty permitted)')
@@ -371,7 +402,7 @@ def validate(w):
             gid = gate.get('id')
             status = gate.get('status')
             evidence = gate.get('evidence', '')
-            if gid not in EXTERNAL_GATES:
+            if gid not in ALL_GATES:
                 errs.append(f'gates[{i}].id invalid')
             elif gid in seen_gates:
                 errs.append(f'duplicate gate id: {gid}')

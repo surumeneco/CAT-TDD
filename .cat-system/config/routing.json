@@ -1,138 +1,934 @@
 {
-  "schema": "cat-routing/v1",
+  "schema": "cat-routing/v2",
   "technology_skills": {
     "TypeScript": "tech-typescript",
     "Vue": "tech-vue",
     "Vitest": "tech-vitest",
     "Playwright": "tech-playwright",
-    "PostgreSQL": "tech-postgresql"
+    "PostgreSQL": "tech-postgresql",
+    "React": "tech-react",
+    "Next.js": "tech-nextjs",
+    "C#": "tech-csharp",
+    "ASP.NET Core": "tech-aspnet-core",
+    "Java": "tech-java",
+    "Spring Boot": "tech-spring-boot",
+    "Python": "tech-python",
+    "FastAPI": "tech-fastapi",
+    "MySQL": "tech-mysql",
+    "SQL Server": "tech-sqlserver",
+    "Oracle DB": "tech-oracle-db",
+    "JUnit": "tech-junit",
+    "pytest": "tech-pytest",
+    "xUnit": "tech-xunit",
+    "Docker": [
+      "docker-project-foundations",
+      "docker-build-strategies",
+      "docker-compose-patterns",
+      "docker-destructive-guardrails"
+    ]
+  },
+  "flows": {
+    "spec-implementation": {
+      "entries": [
+        "confirmed-spec"
+      ],
+      "stages": [
+        "process-closure",
+        "model",
+        "model-conformance",
+        "queue",
+        "tests",
+        "red",
+        "implementation",
+        "green",
+        "implementation-conformance",
+        "integration"
+      ]
+    },
+    "issue-work": {
+      "entries": [
+        "issue",
+        "bug"
+      ],
+      "stages": [
+        "intake"
+      ],
+      "handoff_by_work_kind": {
+        "implementation": "spec-implementation",
+        "specification": "specification",
+        "analysis": "complete-in-flow",
+        "documentation": "complete-in-flow",
+        "verification": "complete-in-flow"
+      }
+    },
+    "specification": {
+      "entries": [
+        "issue",
+        "bug",
+        "existing-code"
+      ],
+      "stages": [
+        "spec",
+        "process-closure"
+      ]
+    },
+    "code-to-spec": {
+      "entries": [
+        "existing-code"
+      ],
+      "stages": [
+        "reverse",
+        "spec",
+        "process-closure"
+      ]
+    },
+    "refactor": {
+      "entries": [
+        "refactor"
+      ],
+      "stages": [
+        "refactor-scope",
+        "refactor",
+        "regression"
+      ]
+    }
   },
   "stages": {
     "intake": {
-      "agent": "cycle-scope-divider",
+      "executor": {
+        "type": "agent",
+        "id": "cycle-scope-divider"
+      },
       "skills": [
         "cycle-management"
       ],
-      "include_technology_skills": false
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "issue",
+          "normative-index",
+          "scope-graph"
+        ],
+        "write": [
+          "Lifecycle/Tasks",
+          "Lifecycle/Works"
+        ],
+        "commands": [
+          "scope-order",
+          "lifecycle"
+        ],
+        "authority": [
+          "draft-scope"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source",
+          "evidence",
+          "integration-state"
+        ]
+      },
+      "on_result": {
+        "passed": "flow-handoff",
+        "decision-required": "normative-authority",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     },
     "reverse": {
-      "agent": "cat-reverser",
+      "executor": {
+        "type": "agent",
+        "id": "cat-reverser"
+      },
       "skills": [
         "cat-reverse"
       ],
-      "include_technology_skills": false
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "production-source",
+          "tests",
+          "logs",
+          "git-history"
+        ],
+        "write": [
+          "CAT/Candidates",
+          "Review"
+        ],
+        "commands": [
+          "search",
+          "git-read"
+        ],
+        "authority": [
+          "candidate"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "spec",
+        "decision-required": "normative-authority",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     },
     "spec": {
-      "agent": "cat-designer",
+      "executor": {
+        "type": "agent",
+        "id": "cat-designer"
+      },
       "skills": [
         "cat-artifacts"
       ],
-      "include_technology_skills": false
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "approved-requirement",
+          "normative-source",
+          "CAT/Candidates"
+        ],
+        "write": [
+          "CAT/Draft"
+        ],
+        "commands": [
+          "artifact-scaffold",
+          "artifact-lint"
+        ],
+        "authority": [
+          "draft-spec"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "process-closure",
+        "decision-required": "normative-authority",
+        "failed": "producer",
+        "inconclusive": "stop"
+      }
     },
-    "review": {
-      "agent": "cat-reviewer",
+    "process-closure": {
+      "executor": {
+        "type": "validator",
+        "id": "cat_flow:conformance/process-closure"
+      },
       "skills": [
         "cat-specification-gate"
       ],
-      "include_technology_skills": false
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "assembled-confirmed-spec",
+          "decision-evidence"
+        ],
+        "write": [
+          "Review"
+        ],
+        "commands": [
+          "conformance"
+        ],
+        "authority": [
+          "review"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "model",
+        "failed": "producer",
+        "inconclusive": "conditional",
+        "decision-required": "normative-authority"
+      },
+      "conditional": {
+        "inconclusive": {
+          "type": "agent",
+          "id": "cat-reviewer"
+        }
+      }
     },
     "model": {
-      "agent": "cat-test-modeler",
+      "executor": {
+        "type": "compiler",
+        "id": "cat_compile_v2:model"
+      },
       "skills": [
         "cat-test-model"
       ],
-      "include_technology_skills": false
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "confirmed-spec"
+        ],
+        "write": [
+          "TestModels"
+        ],
+        "commands": [
+          "compile:model"
+        ],
+        "authority": [],
+        "prohibited": [
+          "confirmed-spec",
+          "queue",
+          "test-code",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "model-conformance",
+        "failed": "compiler-work",
+        "inconclusive": "compiler-work"
+      }
+    },
+    "model-conformance": {
+      "executor": {
+        "type": "validator",
+        "id": "cat_flow:conformance/model-conformance"
+      },
+      "skills": [
+        "cat-test-model"
+      ],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "confirmed-spec",
+          "TestModels"
+        ],
+        "write": [
+          "Review"
+        ],
+        "commands": [
+          "conformance"
+        ],
+        "authority": [
+          "review"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "queue",
+        "failed": "compiler-work",
+        "inconclusive": "conditional"
+      },
+      "conditional": {
+        "inconclusive": {
+          "type": "agent",
+          "id": "cat-model-reviewer"
+        }
+      }
+    },
+    "queue": {
+      "executor": {
+        "type": "compiler",
+        "id": "cat_compile_v2:queue"
+      },
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "TestModels",
+          "vectors"
+        ],
+        "write": [
+          "TDD/Queue"
+        ],
+        "commands": [
+          "compile:queue",
+          "queue-state"
+        ],
+        "authority": [],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "test-code",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "tests",
+        "failed": "compiler-work",
+        "inconclusive": "compiler-work"
+      }
     },
     "tests": {
-      "agent": "tdd-test-generator",
+      "executor": {
+        "type": "compiler",
+        "id": "cat_compile_v2:tests-current"
+      },
       "skills": [
         "tdd-execution"
       ],
-      "include_technology_skills": true
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "TestModels",
+          "TDD/Queue",
+          "vectors",
+          "binding"
+        ],
+        "write": [
+          "generated-test-current"
+        ],
+        "commands": [
+          "compile:tests"
+        ],
+        "authority": [],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue-state",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "red",
+        "failed": "generator-work",
+        "inconclusive": "generator-work"
+      }
     },
     "test-review": {
-      "agent": "tdd-reviewer",
+      "executor": {
+        "type": "validator",
+        "id": "cat_flow:test-conformance"
+      },
       "skills": [
         "tdd-execution"
       ],
-      "include_technology_skills": true
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "TestModels",
+          "TDD/Queue",
+          "tests"
+        ],
+        "write": [
+          "Review"
+        ],
+        "commands": [
+          "test-conformance"
+        ],
+        "authority": [
+          "review"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "red",
+        "failed": "producer",
+        "inconclusive": "conditional"
+      },
+      "conditional": {
+        "inconclusive": {
+          "type": "agent",
+          "id": "tdd-reviewer"
+        }
+      }
     },
     "red": {
-      "agent": "tdd-checker",
+      "executor": {
+        "type": "script",
+        "id": "cat_flow:run-red"
+      },
       "skills": [
         "tdd-execution"
       ],
-      "include_technology_skills": true
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "current-test",
+          "production-source"
+        ],
+        "write": [
+          ".cat-flow/evidence"
+        ],
+        "commands": [
+          "declared-red-check"
+        ],
+        "authority": [],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source"
+        ]
+      },
+      "on_result": {
+        "passed": "implementation",
+        "failed": "stop",
+        "inconclusive": "conditional"
+      },
+      "conditional": {
+        "inconclusive": {
+          "type": "agent",
+          "id": "tdd-checker"
+        }
+      }
     },
     "implementation": {
-      "agent": "tdd-implementer",
+      "executor": {
+        "type": "agent",
+        "id": "tdd-implementer"
+      },
       "skills": [
         "tdd-execution"
       ],
-      "include_technology_skills": true
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "current-queue-item",
+          "current-test",
+          "confirmed-spec-fragment",
+          "technology-skill"
+        ],
+        "write": [
+          "repo:production"
+        ],
+        "commands": [
+          "project-build",
+          "project-test"
+        ],
+        "authority": [
+          "implementation"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "evidence",
+          "integration-state"
+        ]
+      },
+      "on_result": {
+        "passed": "green",
+        "decision-required": "specification",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     },
     "green": {
-      "agent": "tdd-checker",
+      "executor": {
+        "type": "script",
+        "id": "cat_flow:run-green"
+      },
       "skills": [
         "tdd-execution"
       ],
-      "include_technology_skills": true
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "current-test",
+          "production-source"
+        ],
+        "write": [
+          ".cat-flow/evidence"
+        ],
+        "commands": [
+          "declared-green-check",
+          "declared-regression-check"
+        ],
+        "authority": [],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source"
+        ]
+      },
+      "on_result": {
+        "passed": "queue-state",
+        "failed": "implementation",
+        "inconclusive": "stop"
+      }
+    },
+    "implementation-conformance": {
+      "executor": {
+        "type": "validator",
+        "id": "cat_flow:conformance/implementation-conformance"
+      },
+      "skills": [
+        "cat-specification-gate"
+      ],
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "confirmed-spec",
+          "implementation-obligations",
+          "production-source",
+          "execution-evidence"
+        ],
+        "write": [
+          "Review"
+        ],
+        "commands": [
+          "conformance"
+        ],
+        "authority": [
+          "review"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "integration",
+        "failed": "implementation",
+        "inconclusive": "conditional"
+      },
+      "conditional": {
+        "inconclusive": {
+          "type": "agent",
+          "id": "cat-implementation-reviewer"
+        }
+      }
     },
     "refactor-scope": {
-      "agent": "ref-scoper",
+      "executor": {
+        "type": "agent",
+        "id": "ref-scoper"
+      },
       "skills": [
         "refactor-safety"
       ],
-      "include_technology_skills": true
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "commit-diff",
+          "confirmed-spec",
+          "regression-evidence",
+          "dependency-graph"
+        ],
+        "write": [
+          "REF/Scopes"
+        ],
+        "commands": [
+          "git-read",
+          "scope-order"
+        ],
+        "authority": [
+          "refactor-scope"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "refactor",
+        "decision-required": "specification",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     },
     "refactor": {
-      "agent": "ref-refactor",
+      "executor": {
+        "type": "agent",
+        "id": "ref-refactor"
+      },
       "skills": [
         "refactor-safety"
       ],
-      "include_technology_skills": true
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "REF/Scopes",
+          "production-source",
+          "unchanged-tests"
+        ],
+        "write": [
+          "repo:production"
+        ],
+        "commands": [
+          "project-build",
+          "project-test"
+        ],
+        "authority": [
+          "refactor"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "regression",
+        "decision-required": "specification",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     },
     "regression": {
-      "agent": "tdd-checker",
+      "executor": {
+        "type": "script",
+        "id": "cat_flow:run-regression"
+      },
       "skills": [
-        "tdd-execution"
+        "refactor-safety"
       ],
-      "include_technology_skills": true
-    },
-    "ci": {
-      "agent": "cycle-git-manager",
-      "skills": [
-        "cycle-management"
-      ],
-      "include_technology_skills": false
+      "include_technology_skills": true,
+      "permissions": {
+        "read": [
+          "production-source",
+          "unchanged-tests"
+        ],
+        "write": [
+          ".cat-flow/evidence"
+        ],
+        "commands": [
+          "declared-regression-check"
+        ],
+        "authority": [],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source"
+        ]
+      },
+      "on_result": {
+        "passed": "complete",
+        "failed": "refactor",
+        "inconclusive": "stop"
+      }
     },
     "git": {
-      "agent": "cycle-git-manager",
+      "executor": {
+        "type": "script",
+        "id": "cat_flow:git"
+      },
       "skills": [
         "cycle-management"
       ],
-      "include_technology_skills": false
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "git-state"
+        ],
+        "write": [],
+        "commands": [
+          "git-read"
+        ],
+        "authority": [],
+        "prohibited": [
+          "workspace-content"
+        ]
+      },
+      "on_result": {
+        "passed": "continue",
+        "failed": "stop",
+        "inconclusive": "conditional"
+      },
+      "conditional": {
+        "inconclusive": {
+          "type": "agent",
+          "id": "cycle-git-manager"
+        }
+      }
+    },
+    "integration": {
+      "executor": {
+        "type": "provider",
+        "id": "project-integration-policy"
+      },
+      "skills": [
+        "cycle-management"
+      ],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "git-state",
+          "provider-state",
+          "execution-evidence"
+        ],
+        "write": [
+          "provider-owned-state"
+        ],
+        "commands": [
+          "provider-api"
+        ],
+        "authority": [
+          "integration-policy"
+        ],
+        "prohibited": [
+          "confirmed-spec",
+          "test-model",
+          "queue",
+          "test-code",
+          "production-source",
+          "local-evidence"
+        ]
+      },
+      "on_result": {
+        "passed": "complete",
+        "failed": "stop",
+        "inconclusive": "stop",
+        "decision-required": "normative-authority"
+      }
+    },
+    "ci": {
+      "executor": {
+        "type": "provider",
+        "id": "ci-provider"
+      },
+      "skills": [],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "provider-state"
+        ],
+        "write": [],
+        "commands": [
+          "provider-api"
+        ],
+        "authority": [],
+        "prohibited": [
+          "local-artifacts"
+        ]
+      },
+      "on_result": {
+        "passed": "continue",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     },
     "merge": {
-      "agent": "cycle-git-manager",
-      "skills": [
-        "cycle-management"
-      ],
-      "include_technology_skills": false
+      "executor": {
+        "type": "authority",
+        "id": "integration-authority"
+      },
+      "skills": [],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "review-state",
+          "ci-state"
+        ],
+        "write": [
+          "provider-owned-state"
+        ],
+        "commands": [
+          "provider-api"
+        ],
+        "authority": [
+          "merge"
+        ],
+        "prohibited": [
+          "local-artifacts"
+        ]
+      },
+      "on_result": {
+        "passed": "continue",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     },
     "deployment": {
-      "agent": "cycle-git-manager",
-      "skills": [
-        "cycle-management"
-      ],
-      "include_technology_skills": false
+      "executor": {
+        "type": "provider",
+        "id": "deployment-provider"
+      },
+      "skills": [],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "provider-state"
+        ],
+        "write": [
+          "provider-owned-state"
+        ],
+        "commands": [
+          "provider-api"
+        ],
+        "authority": [
+          "deploy-policy"
+        ],
+        "prohibited": [
+          "local-artifacts"
+        ]
+      },
+      "on_result": {
+        "passed": "continue",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     },
     "real-use": {
-      "agent": "orchestrator",
-      "skills": [
-        "cycle-management"
-      ],
-      "include_technology_skills": false
+      "executor": {
+        "type": "provider",
+        "id": "real-environment"
+      },
+      "skills": [],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "runtime-state"
+        ],
+        "write": [],
+        "commands": [
+          "provider-api"
+        ],
+        "authority": [],
+        "prohibited": [
+          "local-artifacts"
+        ]
+      },
+      "on_result": {
+        "passed": "complete",
+        "failed": "stop",
+        "inconclusive": "stop"
+      }
     }
   }
 }

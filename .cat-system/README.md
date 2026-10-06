@@ -29,14 +29,16 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 
 ## 目標: CAT×TDDを組み込んだAI開発環境
 
-**対象は「開発を実行できる環境」であり、特定プロダクトのCAT変換プロジェクトではない。** 通常の新規要求では人間がIssueを入力し、Orchestratorが`cycle-scope-divider`へ委譲してIssue→Task(Process)→Work(独立検証可能な仕様差)へ分解する。Task/Workの手作成を人間の必須作業としない。その後、CATの仕様根拠・テストモデル・TDD Red/Green/Refactor・Git・CI・実動作確認を段階別に扱う。機械で実行できる部分をPythonスクリプトへ移し、AIは判断を要する工程と実装を担当する。Work単位で再開でき、別のプロジェクト・Gitホストでも使えることを目指す。
+**対象は「開発を実行できる環境」であり、特定プロダクトのCAT変換プロジェクトではない。** CAT-TDDは単一の一本道ではなく、`spec-implementation / issue-work / code-to-spec / refactor`を独立flowとして扱う。通常の新規要求では人間がIssueを入力し、`cycle-scope-divider`がIssue→Task(Process)→Workへ意味的に分解し、依存graphのcycle/depth/ready算出はScriptへ委譲する。決定論的なmodel/Queue/test生成、Gate validation、Git inspection、evidence集約はPythonが担当し、AIは意味判断とproduction implementation等に限定する。
 
 入口: [AI実行契約](docs/AI実行契約.md)、[開発フロー](docs/開発フロー.md)、[Issue / Task / Workを含むArtifact Markdown形式](docs/Artifact記法.md)。
 
 | スクリプト | AIが呼ぶ機能 | 非対象 |
 |---|---|---|
-| `scripts/cat_flow.py` | Agent/Skill route、Git差分と変更許可、コマンド実行/証拠、古い証拠の検出、handoff。Workの構文・validationは内部`catlib/work.py`へ分離 | 意味の承認・本番結果の創作 |
-| `scripts/cat_compile_v2.py` | 機械変換可能なCAT Artifactから記号的TestModel・具体テスト入力を生成し、技術rendererへ委譲 | CAT全体の意味保存・技術固有rendererの実装 |
+| `scripts/cat_flow.py` | flow-aware routing、permissions、Git read、write guard、command evidence、conformance、structured handoff | 規範意味の決定・外部provider結果の創作 |
+| `scripts/cat_compile_v2.py` | confirmed CAT source→TestModel、TestModel+vectors→TDD Queue、current item→技術renderer | unsupported意味のAI補完 |
+| `scripts/cat_queue.py` | Queueの`pending/current/done/blocked`遷移。currentは最大1件 | Scenario / Oracle等の意味記述 |
+| `scripts/cat_scope_order.py` | Work parent/depends-onのcycle、depth、ready最深scope算出 | 依存関係そのものの意味決定 |
 | `scripts/cat_install.py` | 採用済みSkillのディレクトリ一式と共通Agent/ツールを非破壊導入 | 技術採用の決定・無断上書き |
 | `scripts/cat_package_lint.py` | Agent/Skill定義のfront matterを静的検証 | CAT Semantic Artifactの意味・構文検証 |
 | `skills/cat-specification-gate/scripts/cat_artifact_lint.py` | CAT Artifactのfront matter、ID、明示参照を静的検証 | 自然言語Conditionの意味証明 |
@@ -48,7 +50,7 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 
 ### 機械変換器は開発環境の一機能
 
-[変換契約](docs/機械的変換.md)は、新規標準`semantic_contract: markdown-v2`の人間可読なSemantic Artifactを扱い、日本語/英語の表記差を同一の型付きIRへ正規化する。旧`markdown-v1`/`machine-only`は互換入力に限る。現行の変換器によって**CAT理論全体の決定論的変換ができるとは宣言しない**。機械対応範囲外のWorkは、承認済み仕様を根拠にAIがモデル・テストを起草し、独立ゲートを通す。変換器の対応数は環境全体の完成度ではない。
+[変換契約](docs/機械的変換.md)は、新規標準`semantic_contract: markdown-v2`の人間可読なSemantic Artifactを扱い、日本語/英語の表記差を同一の型付きIRへ正規化する。旧`markdown-v1`/`machine-only`は互換入力に限る。現行の変換器によって**CAT理論全体の決定論的変換ができるとは宣言しない**。production pathで機械対応範囲外の意味は`BLOCKED / unsupported`とし、AIがTestModelやtest oracleを補完しない。Compiler / schema / renderer改善Work、または仕様上定義された領域別検証へ分離する。
 
 ## 技術の採用とSkill選択
 
@@ -75,10 +77,10 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 
 ## 配置時の最小手順
 
-1. 新規要求では人間のIssueを入口とし、AIが`cycle-scope-divider`でTask/Workへ分解する。既存Workの再開ではそのWorkを入口とする。その後、入口文書から現行の技術構成・仕様正本・Git運用の正本を確認し、実際のGit remote/branchを照合する。XPlayServerの場合は現行の`00_必読.md`を先に読む。
+1. 起点と目的から4 flowのいずれかを選ぶ。Issueなら`cycle-scope-divider`がTask/Workへ分解し、`cat_scope_order.py`がreadyな最深scopeを選ぶ。既存Workの再開では`flow / work_kind / parent / depends_on`を使用する。
 2. 共通`agents/`と共通Skill、`routing.json`で採用技術に対応する技術Skillだけを配置し、プロジェクト手続きがある場合だけ`extensions/<project>-adapter`を明示選択して配置する。`optional-skills/`は通常導入に含めず、対象の診断・補助作業を明示した場合だけ個別に使用する。
 3. 指示ファイルは入口と正本への参照に留め、同じルールを繰り返さない。GitHub以外のremoteでも、Copilotの`.github/agents`/`.github/skills`はワークスペースの設定パスとして使用できる。
-4. `cat_flow.py`を用いてWork Markdown→内部manifest正規化→静的検査→CATの意味確認→モデル→TDD→Git/CI/merge/deployを個別に管理する。Skill自動選択・外部agent委譲・権限制御は実際のCopilot環境で検証する。Markdownの禁止文だけをOS/ホストの強制権限制御とみなさない。
+4. `routing.json`のexecutorを直接使い、Script / Compiler / Validatorで確定できるstageではAgentを起動しない。Validatorが`inconclusive`の時だけconditional reviewerを使う。Agent書込みstageでは可能な限りpre/post guardを行い、Markdownの禁止文だけを強制権限制御とみなさない。
 
 ## 参照資料
 

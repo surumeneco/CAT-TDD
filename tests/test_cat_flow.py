@@ -47,15 +47,20 @@ class CatFlowTest(unittest.TestCase):
         self.assertEqual(flow.status_work(self.workpath, self.work)['overall'], 'not-complete')
 
     def test_routing_uses_declared_technologies(self):
+        self.work['flow'] = 'spec-implementation'
         r = flow.route(self.work, 'tests')
-        self.assertEqual(r['agent'], 'tdd-test-generator')
+        self.assertEqual(r['executor'], {'type': 'compiler', 'id': 'cat_compile_v2:tests-current'})
         self.assertIn('tech-vitest', r['skills'])
         self.assertNotIn('tech-postgresql', r['skills'])
         self.assertNotIn('tech-playwright', r['skills'])
-        self.assertEqual(flow.route(self.work, 'test-review')['agent'], 'tdd-reviewer')
-        self.assertEqual(flow.route(self.work, 'refactor-scope')['agent'], 'ref-scoper')
+        review = flow.route(self.work, 'test-review')
+        self.assertEqual(review['executor']['type'], 'validator')
+        self.assertEqual(review['conditional']['inconclusive']['id'], 'tdd-reviewer')
+        self.work['flow'] = 'refactor'
+        self.assertEqual(flow.route(self.work, 'refactor-scope')['executor']['id'], 'ref-scoper')
 
     def test_routing_flattens_multi_skill_technology(self):
+        self.work['flow']='spec-implementation'
         self.work['technologies']=['Docker']
         r=flow.route(self.work,'tests')
         self.assertEqual(r['status'],'ready')
@@ -65,11 +70,14 @@ class CatFlowTest(unittest.TestCase):
 
     def test_routing_schema_uses_boolean_technology_selection(self):
         catalogue=flow.read_json(flow.CATALOG)
+        self.assertEqual(catalogue['schema'],'cat-routing/v2')
         self.assertTrue(catalogue['stages']['tests']['include_technology_skills'])
-        self.assertFalse(catalogue['stages']['review']['include_technology_skills'])
-        self.assertTrue(all('technology_stages' not in x for x in catalogue['stages'].values()))
+        self.assertFalse(catalogue['stages']['model']['include_technology_skills'])
+        self.assertEqual(catalogue['stages']['model']['executor']['type'],'compiler')
+        self.assertEqual(catalogue['stages']['green']['executor']['type'],'script')
 
     def test_unknown_technology_blocks_instead_of_guessing(self):
+        self.work['flow']='spec-implementation'
         self.work['technologies'] = ['Rust']
         r = flow.route(self.work, 'tests')
         self.assertEqual(r['status'], 'blocked')

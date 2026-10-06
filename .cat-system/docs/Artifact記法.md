@@ -181,7 +181,7 @@ PIはProcess間の境界状態空間であり、実装上の型定義そのも�
 | absent | 不在 |
 | undefined | 未定義 |
 
-PresenceはCATとして有効な意味である。現行決定論コンパイラが扱えないPresenceを、別Domainへ縮約して通してはならない。非対応なら `BLOCKED / unsupported` としてAI＋レビュー経路へ戻す。
+PresenceはCATとして有効な意味である。現行決定論コンパイラが扱えないPresenceを、別Domainへ縮約して通してはならない。production TestModel生成では `BLOCKED / unsupported` とし、Compiler / schema改善Workへ分離する。AIがproduction oracleへ補完しない。
 
 ### 操作方向
 
@@ -315,13 +315,24 @@ Issue / Task / Workは開発Lifecycleを段階的に具体化するArtifactで�
 
 ### Work
 
-WorkはSemantic ArtifactではなくLifecycle Artifactである。`Work.md`のfront matterと表を `cat_flow.py` が内部 `cat-work/v1`へ正規化する。Git、repository、runner、command、JUnit等はここに存在してよい。`cat_flow.py`は作成済みWorkを機械処理するもので、Issue→Task→Workの意味的分解は行わない。
+WorkはSemantic ArtifactではなくLifecycle Artifactである。`Work.md`のfront matterと表を `cat_flow.py` が内部 `cat-work/v1`へ正規化する。front matterは `flow / work_kind / parent / depends_on` を持ち、独立flowとscope graphを明示する。Git、repository、runner、command、JUnit等はここに存在してよい。`cat_flow.py`は作成済みWorkを機械処理するもので、Issue→Task→Workの意味的分解は行わない。
 
 WorkのLifecycle進捗は`Lifecycle/Works/{New,InProgress,Blocked,Completed,Cancelled}/<work>/`という**配置**で表す。同じ情報を`lifecycle_status`としてfront matterへ重複させない。front matterの`status`や`spec_status`はLifecycleフォルダの代替ではない。Work状態を変えるときはWorkディレクトリ全体を移動し、`@work/`相対参照を維持する。
 
 本文の日本語/英語見出し・列名は同義として読める。front matter keyと内部schemaは機械互換のため英語固定とする。
 
 ~~~md
+---
+kind: work
+id: notice.publish
+entry: confirmed-spec
+mode: implementation
+flow: spec-implementation
+work_kind: implementation
+parent: ''
+depends_on: []
+---
+
 # Work: notice.publish
 
 ## 証拠
@@ -343,6 +354,9 @@ WorkのLifecycle進捗は`Lifecycle/Works/{New,InProgress,Blocked,Completed,Canc
 ## ゲート
 | ゲート | 状態 | 証拠 |
 | --- | --- | --- |
+| process-closure | 成功 | validator:process-closure |
+| model-conformance | 成功 | validator:model-conformance |
+| implementation-conformance | 未実行 | — |
 | semantic-review | 成功 | decision:https://example.invalid/decision/123 |
 | test-oracle-review | 成功 | review:oracle-42 |
 | red-review | 成功 | review:red-17 |
@@ -358,9 +372,9 @@ Gate statusの日本語aliasは `成功 / 対象外 / 未実行 / 停止 / 不�
 
 ~~~md
 ## 変換
-| プロセス | PI | TCE | DomainRule | モデル | 具体値 | 接続 | テスト | Draft許可 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| @work/CAT/Process.md | @work/CAT/PI.md | @work/CAT/TCE.md | — | @work/TestModel.md | — | — | — | 偽 |
+| プロセス | PI | TCE | DomainRule | モデル | 具体値 | キュー | 接続 | テスト | 適合義務 | Draft許可 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| @work/CAT/Process.md | @work/CAT/PI.md | @work/CAT/TCE.md | — | @work/TestModel.md | @work/vectors.json | @work/TDD/Queue.json | @work/binding.json | @work/generated/current.test.ts | @work/implementation-obligations.json | 偽 |
 ~~~
 
 無印相対パスと `@work/` はWorkディレクトリ、`@workspace/` はworkspace、`@repo:<name>/` は宣言repo、`@package/` はCAT packageを境界とする。絶対パスと `..` 脱出は禁止する。
@@ -376,6 +390,35 @@ TestModelでは次を明確に分ける。
 
 内部IR、TestModel JSON、vectors、binding、execution evidenceは機械用派生物としてJSON等を使用できる。これらを人間向け意味正本へ昇格させない。
 
+### TDD Execution Queue
+
+QueueはTestModelから導出されたテスト実行順と進捗だけを保持するLifecycle Artifactであり、第二の仕様書ではない。
+
+~~~json
+{
+  "schema": "cat-tdd-queue/v1",
+  "process": "notice",
+  "model_sha256": "...",
+  "vectors_sha256": "...",
+  "items": [
+    {
+      "id": "notice.valid",
+      "model_ref": "notice.publish.valid",
+      "vector_ref": "notice.valid",
+      "order": 1,
+      "status": "current",
+      "evidence_ref": null
+    }
+  ]
+}
+~~~
+
+Queue itemにScenario、Expected Result、Oracle、Condition、Effect、input/output値を記述してはならない。`pending / current / done / blocked`の遷移はQueue State Managerが機械的に行い、`current`は最大1件とする。実行可能testはcurrent itemだけから生成する。
+
+### Implementation obligations
+
+`cat-implementation-obligations/v1`は実装適合性GateのLifecycle/Evidence Artifactである。categoryは `interface / capability / behavior / invariant / cross-process / domain / implementation-constraint` を使用し、各obligationはstatusとevidence参照を持つ。Green/CIの結果だけを全categoryへ複製しない。
+
 ## 14. Candidate・Gate
 
 Candidateは `Observation / Source / Proposed semantics / Unknown / Status` を基本項目とする。Gateは `stage / input revision / checks / executed command / exit code / evidence / verdict / not-run` を基本項目とする。
@@ -390,4 +433,4 @@ Candidateは `Observation / Source / Proposed semantics / Unknown / Status` を�
 
 一回の決定論的compileではsemantic contractを混在させない。新規Artifact・fixture・例はv2を使用する。
 
-コンパイラ非対応の意味要素は、別の意味へ縮約して通さない。Artifactとして保持したまま `unsupported / BLOCKED` とし、AIによるTestModel作成と独立レビュー、または領域別検証へ戻す。
+コンパイラ非対応の意味要素は、別の意味へ縮約して通さない。Artifactとして保持したまま `unsupported / BLOCKED` とし、production TestModelをAIで作成・補正しない。Compiler / schema改善Work、または仕様上定義された領域別検証へ分離する。

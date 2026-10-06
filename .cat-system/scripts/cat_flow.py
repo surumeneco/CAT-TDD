@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from catlib.common import Blocked, json_bytes, read_json, require, sha
-from catlib.work import EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
+from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / 'config' / 'routing.json'
@@ -87,11 +87,23 @@ def git_snapshot(wpath, w):
     return results
 
 
+def infer_flow(w):
+    explicit = w.get('flow')
+    if explicit:
+        return explicit
+    return {'confirmed-spec':'spec-implementation','issue':'issue-work','bug':'issue-work',
+            'existing-code':'code-to-spec','refactor':'refactor'}.get(w.get('entry'),'issue-work')
+
+
 def route(w, stage):
     require(stage in STAGES, f'unknown stage: {stage}')
     c = read_json(CATALOG)
+    require(c.get('schema') == 'cat-routing/v2', 'routing schema must be cat-routing/v2')
     s = c.get('stages', {}).get(stage)
     require(isinstance(s, dict), f'no routing for stage: {stage}')
+    executor = s.get('executor')
+    require(isinstance(executor, dict) and executor.get('type') and executor.get('id'),
+            f'invalid executor for stage: {stage}')
     adopted = c.get('technology_skills', {})
     tech = []
     unknown = []
@@ -106,16 +118,26 @@ def route(w, stage):
                     (isinstance(mapped, list) and mapped and all(isinstance(x, str) and x for x in mapped)),
                     f'invalid technology skill mapping: {t}')
             tech.extend([mapped] if isinstance(mapped, str) else mapped)
-    items = s['skills'] + tech
+    items = list(s.get('skills', [])) + tech
     absent = [k for k in items if not (ROOT / 'skills' / k / 'SKILL.md').exists()]
-    agent = s['agent']
-    require((ROOT / 'agents' / f'{agent}.agent.md').exists(), f'agent missing: {agent}')
-    return {'stage': stage, 'agent': agent, 'skills': sorted(set(items)),
+    agents = []
+    if executor['type'] == 'agent':
+        agents.append(executor['id'])
+    for cond in s.get('conditional', {}).values():
+        if isinstance(cond, dict) and cond.get('type') == 'agent':
+            agents.append(cond.get('id'))
+    missing_agents = [a for a in agents if not (ROOT / 'agents' / f'{a}.agent.md').exists()]
+    flow = infer_flow(w)
+    flows = c.get('flows', {})
+    require(flow in flows, f'unknown Work flow: {flow}')
+    permitted = stage in flows[flow].get('stages', []) or stage in ('git','ci','merge','deployment','real-use','test-review')
+    return {'stage': stage, 'flow': flow, 'executor': executor,
+            'conditional': s.get('conditional', {}), 'permissions': s.get('permissions', {}),
+            'on_result': s.get('on_result', {}), 'skills': sorted(set(items)),
             'unknown_technologies': unknown, 'missing_skills': absent,
-            'status': 'blocked' if unknown or absent else 'ready',
+            'missing_agents': missing_agents, 'stage_in_flow': permitted,
+            'status': 'blocked' if unknown or absent or missing_agents or not permitted else 'ready',
             'adoption_authority': 'project technical documents, not this catalogue'}
-
-
 def workspace_root(wpath):
     # Installed runtime lives at <workspace>/.cat-system; source/test mode has no
     # authoritative workspace, so @workspace aliases the Work directory.
@@ -141,30 +163,32 @@ def compilation_path(wpath, w, conf, key, check):
     require(not Path(rel).is_absolute() and '..' not in Path(rel).parts, f'{key} escapes allowed compilation boundary')
     p = (base / rel).resolve()
     require(under(p, boundary), f'{key} escapes allowed compilation boundary')
-    require(p.is_file() or (not check and key in ('model', 'tests_output')), f'{key} not found: {p}')
+    require(p.is_file() or (not check and key in ('model', 'queue', 'tests_output')), f'{key} not found: {p}')
     return str(p)
 
 
 def compile_work(wpath, w, kind, check):
     conf = w.get('compilation')
-    require(conf is not None, 'no machine-readable compilation declared: use CAT review/AI authoring')
-    require(kind in ('model', 'tests'), 'kind must be model or tests')
+    require(conf is not None, 'no machine-readable compilation declared')
+    require(kind in ('model', 'queue', 'tests'), 'kind must be model, queue or tests')
     def loc(key):
         return compilation_path(wpath, w, conf, key, check)
     argv = [sys.executable, str(ROOT / 'scripts/cat_compile_v2.py'), kind]
     if kind == 'model':
         argv += [loc('process'), loc('pi'), loc('tce')]
-        if conf.get('domain_rule'):
-            argv += ['--domain-rule', loc('domain_rule')]
-        argv += ['-o', loc('model')]
     else:
-        for key in ('vectors', 'binding', 'tests_output'):
+        for key in ('model', 'vectors'):
             require(conf.get(key), f'compilation.{key} missing')
-        argv += [loc('model'), loc('vectors'), loc('binding'), '--process', loc('process'),
-                 '--pi', loc('pi'), '--tce', loc('tce')]
-        if conf.get('domain_rule'):
-            argv += ['--domain-rule', loc('domain_rule')]
-        argv += ['-o', loc('tests_output')]
+        argv += [loc('model'), loc('vectors')]
+        if kind == 'tests':
+            for key in ('binding', 'queue', 'tests_output'):
+                require(conf.get(key), f'compilation.{key} missing')
+            argv += [loc('binding'), '--queue', loc('queue')]
+        argv += ['--process', loc('process'), '--pi', loc('pi'), '--tce', loc('tce')]
+    if conf.get('domain_rule'):
+        argv += ['--domain-rule', loc('domain_rule')]
+    output_key = {'model':'model','queue':'queue','tests':'tests_output'}[kind]
+    argv += ['-o', loc(output_key)]
     if conf['allow_draft']:
         argv.append('--allow-draft')
     if check:
@@ -176,6 +200,129 @@ def compile_work(wpath, w, kind, check):
             'normative': not conf['allow_draft'], 'check_only': check}
 
 
+def conformance_work(wpath, w, kind):
+    require(kind in CONFORMANCE_GATES, 'unknown conformance gate')
+    conf = w.get('compilation')
+    require(conf is not None, 'conformance requires Compilation inputs')
+    if kind == 'process-closure':
+        if len(w['scope']['process_ids']) != 1:
+            return {'gate':kind,'status':'inconclusive',
+                    'reason':'current deterministic compiler proves one Process at a time; assembled multi-Process closure requires explicit composition evidence'}
+        runtime = wpath.parent / '.cat-flow' / 'cache'
+        runtime.mkdir(parents=True, exist_ok=True)
+        def loc(key): return compilation_path(wpath, w, conf, key, False)
+        argv=[sys.executable,str(ROOT/'scripts/cat_compile_v2.py'),'model',loc('process'),loc('pi'),loc('tce')]
+        if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
+        argv += ['-o',str(runtime/'process-closure.model.json')]
+        p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
+        if p.returncode == 0:
+            return {'gate':kind,'status':'passed','evidence':str(runtime/'process-closure.model.json'),
+                    'reason':'supported finite closure compiled from confirmed sources'}
+        msg=(p.stderr or p.stdout).strip()
+        inconclusive_markers=('currently supports','unproven','non-finite','requires a technology','unsupported')
+        status='inconclusive' if any(x in msg for x in inconclusive_markers) else 'blocked'
+        return {'gate':kind,'status':status,'reason':msg[-1800:]}
+    if kind == 'model-conformance':
+        result=compile_work(wpath,w,'model',True)
+        if result['status']=='passed':
+            return {'gate':kind,'status':'passed','reason':'TestModel exactly regenerates from current CAT sources'}
+        msg=result.get('stderr','')
+        status='inconclusive' if any(x in msg for x in ('unsupported','currently supports','unproven')) else 'blocked'
+        return {'gate':kind,'status':status,'reason':msg or 'TestModel differs from deterministic regeneration'}
+    require(conf.get('obligations'), 'implementation-conformance requires Compilation Obligations')
+    path=compilation_path(wpath,w,conf,'obligations',True)
+    data=read_json(Path(path))
+    require(data.get('schema')=='cat-implementation-obligations/v1','wrong implementation obligation schema')
+    items=data.get('items')
+    require(isinstance(items,list) and items,'implementation obligations required')
+    required={'interface','capability','behavior','invariant','cross-process','domain','implementation-constraint'}
+    categories=set()
+    for item in items:
+        require(isinstance(item,dict),'obligation must be object')
+        require(item.get('category') in required,'unknown obligation category')
+        require(item.get('status') in ('passed','failed','inconclusive','not-run'),'invalid obligation status')
+        if item['status']=='passed': require(isinstance(item.get('evidence'),str) and item['evidence'],'passed obligation needs evidence')
+        categories.add(item['category'])
+    missing=sorted(required-categories)
+    if any(x['status']=='failed' for x in items):
+        return {'gate':kind,'status':'blocked','reason':'one or more implementation obligations failed','missing_categories':missing}
+    if missing or any(x['status'] in ('inconclusive','not-run') for x in items):
+        return {'gate':kind,'status':'inconclusive','reason':'obligations are incomplete or not machine-decidable','missing_categories':missing}
+    return {'gate':kind,'status':'passed','reason':'all CAT implementation obligation categories have passed evidence'}
+
+
+def _repo_state(wpath,w):
+    result={}
+    for repo in w['repositories']:
+        root=resolve_dir(wpath,w,'@repo:'+repo['name'])
+        if not (root/'.git').exists():
+            continue
+        p=subprocess.run(['git','-C',str(root),'ls-files','-co','--exclude-standard','-z'],
+                         stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=False)
+        require(p.returncode==0,'cannot snapshot repository files')
+        state={}
+        for raw in p.stdout.split(b'\0'):
+            if not raw: continue
+            rel=raw.decode(errors='surrogateescape');path=root/rel
+            if path.is_file(): state[rel]=sha(path.read_bytes())
+        result[repo['name']]=state
+    return result
+
+
+def guard_work(wpath,w,stage,phase):
+    r=route(w,stage)
+    require(r['status']=='ready', 'cannot guard blocked route')
+    path=wpath.parent/'.cat-flow'/'guards'/(stage+'.json')
+    if phase=='start':
+        path.parent.mkdir(parents=True,exist_ok=True)
+        payload={'schema':'cat-write-guard/v1','work_id':w['id'],'stage':stage,
+                 'manifest_sha256':sha(wpath.read_bytes()),'state':_repo_state(wpath,w),
+                 'permissions':r['permissions']}
+        path.write_bytes(json_bytes(payload))
+        return {'status':'passed','guard':str(path),'stage':stage}
+    require(path.is_file(),'guard baseline missing')
+    base=read_json(path);require(base.get('manifest_sha256')==sha(wpath.read_bytes()),'Work changed after guard start')
+    after=_repo_state(wpath,w);violations=[]
+    repo_write='repo:production' in r['permissions'].get('write',[])
+    for repo in w['repositories']:
+        before=base['state'].get(repo['name'],{});now=after.get(repo['name'],{})
+        changed=sorted(k for k in set(before)|set(now) if before.get(k)!=now.get(k))
+        if repo_write:
+            allowed=repo.get('production_paths') or repo.get('allowed_paths',[])
+        else:
+            allowed=[]
+        bad=[p for p in changed if not any(fnmatch.fnmatchcase(p,pat) for pat in allowed)]
+        if bad: violations.append({'repository':repo['name'],'paths':bad})
+    return {'status':'blocked' if violations else 'passed','stage':stage,'violations':violations}
+
+
+def handoff_work(wpath,w,stage):
+    r=route(w,stage)
+    st=status_work(wpath,w)
+    conf=w.get('compilation') or {}
+    source=[]
+    for key in ('process','pi','tce','domain_rule','model','queue','obligations'):
+        if not conf.get(key): continue
+        try:
+            p=Path(compilation_path(wpath,w,conf,key,True))
+            source.append({'kind':key,'path':str(p),'sha256':sha(p.read_bytes())})
+        except (Blocked,OSError):
+            source.append({'kind':key,'status':'missing-or-unresolved'})
+    current=None
+    if conf.get('queue'):
+        try:
+            q=read_json(Path(compilation_path(wpath,w,conf,'queue',True)))
+            hit=[x for x in q.get('items',[]) if x.get('status')=='current']
+            if len(hit)==1: current=hit[0]
+        except (Blocked,OSError): pass
+    stale=[{'check':k,**v} for k,v in st['checks'].items() if v['status']=='stale']
+    return {'schema':'cat-handoff/v1','work_id':w['id'],'flow':r['flow'],'stage':stage,
+            'executor':r['executor'],'permissions':r['permissions'],'source_state':source,
+            'current_queue_item':current,'specification':st['specification'],
+            'unresolved_decision':w['specification']['status']!='confirmed',
+            'evidence_refs':[x['uri'] for x in w['evidence']],
+            'stale_inputs':stale,'next_permitted_action':r['executor'],
+            'route_status':r['status']}
 def junit_report(path, expected_ids):
     root = ET.parse(path).getroot()
     cases = root.findall('.//testcase')
@@ -376,7 +523,7 @@ def status_work(wpath, w):
                                      'reason': e['reason']}
     spec = w['specification']
     gate_map = {g['id']: {'status': g['status'], 'evidence': g.get('evidence', '')} for g in w.get('gates', [])}
-    for gid in EXTERNAL_GATES:
+    for gid in ALL_GATES:
         gate_map.setdefault(gid, {'status': 'not-run', 'evidence': ''})
     spec_gate = 'reported-confirmed/unverified' if spec['status'] == 'confirmed' else spec['status']
     next_actions = []
@@ -398,7 +545,10 @@ def status_work(wpath, w):
     checks_ok = all(evidence[c['id']]['status'] == 'passed' or
                     (c['stage'] == 'red' and evidence[c['id']]['status'] == 'inconclusive' and
                      gate_map['red-review']['status'] == 'passed') for c in w['checks'])
-    gates_ok = all(gate_map[g]['status'] in ('passed', 'not-applicable') for g in EXTERNAL_GATES)
+    required_gates = list(EXTERNAL_GATES)
+    if infer_flow(w) == 'spec-implementation':
+        required_gates += list(CONFORMANCE_GATES)
+    gates_ok = all(gate_map[g]['status'] in ('passed', 'not-applicable') for g in required_gates)
     git_ok = all(x['status'] == 'passed' for x in git)
     reported_complete = (w['mode'] == 'implementation' and spec['status'] == 'confirmed' and
                          checks_ok and gates_ok and git_ok and bool(w['checks']))
@@ -407,7 +557,7 @@ def status_work(wpath, w):
             'specification': spec_gate, 'checks': evidence, 'gates': gate_map,
             'git': git, 'next_actions': next_actions,
             'external_evidence_verification': 'required',
-            'independent_unverified_gates': [g for g in EXTERNAL_GATES if gate_map[g]['status'] not in ('passed', 'not-applicable')],
+            'independent_unverified_gates': [g for g in required_gates if gate_map[g]['status'] not in ('passed', 'not-applicable')],
             'overall': overall}
 
 
@@ -417,14 +567,21 @@ def main(argv=None):
     init = sub.add_parser('init', help='create an unapproved Work scaffold')
     init.add_argument('--id', required=True)
     init.add_argument('-o', '--output', required=True)
-    for key in ('validate', 'route', 'git', 'compile', 'run', 'status', 'handoff'):
+    for key in ('validate', 'route', 'git', 'compile', 'conformance', 'guard', 'run', 'status', 'handoff'):
         p = sub.add_parser(key)
         p.add_argument('--work', required=True)
         if key == 'route':
             p.add_argument('--stage', choices=STAGES, required=True)
         if key == 'compile':
-            p.add_argument('--kind', choices=('model', 'tests'), required=True)
+            p.add_argument('--kind', choices=('model', 'queue', 'tests'), required=True)
             p.add_argument('--check', action='store_true')
+        if key == 'conformance':
+            p.add_argument('--kind', choices=CONFORMANCE_GATES, required=True)
+        if key == 'guard':
+            p.add_argument('--stage', choices=STAGES, required=True)
+            p.add_argument('--phase', choices=('start','finish'), required=True)
+        if key == 'handoff':
+            p.add_argument('--stage', choices=STAGES, required=True)
         if key == 'run':
             p.add_argument('--id', required=True)
             p.add_argument('--execute', action='store_true', help='explicitly execute the declared command')
@@ -466,14 +623,20 @@ def main(argv=None):
                 result = {'repos': git_snapshot(p, w)}
             elif args.cmd == 'compile':
                 result = compile_work(p, w, args.kind, args.check)
+            elif args.cmd == 'conformance':
+                result = conformance_work(p, w, args.kind)
+            elif args.cmd == 'guard':
+                result = guard_work(p, w, args.stage, args.phase)
             elif args.cmd == 'run':
                 result = command_work(p, w, args.id, args.execute)
+            elif args.cmd == 'handoff':
+                result = handoff_work(p, w, args.stage)
             else:
                 result = status_work(p, w)
         print(json_bytes(result).decode(), end='')
         if args.cmd == 'validate' and result['status'] != 'passed':
             return 2
-        if args.cmd in ('route', 'compile', 'run') and result['status' if args.cmd != 'run' else 'verdict'] not in ('passed', 'ready'):
+        if args.cmd in ('route', 'compile', 'conformance', 'guard', 'run') and result['status' if args.cmd != 'run' else 'verdict'] not in ('passed', 'ready', 'inconclusive'):
             return 2
         return 0
     except (Blocked, OSError, subprocess.TimeoutExpired) as exc:
