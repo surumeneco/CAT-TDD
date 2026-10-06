@@ -169,6 +169,18 @@ def compilation_path(wpath, w, conf, key, check):
     return str(p)
 
 
+def compilation_tce_paths(wpath, w, conf, check):
+    refs = conf.get('tces') or [conf.get('tce')]
+    require(isinstance(refs, list) and refs and all(isinstance(x, str) and x for x in refs),
+            'compilation.tces must contain one or more paths')
+    result = []
+    for expr in refs:
+        local = dict(conf)
+        local['tce'] = expr
+        result.append(compilation_path(wpath, w, local, 'tce', check))
+    return result
+
+
 def compile_work(wpath, w, kind, check):
     conf = w.get('compilation')
     require(conf is not None, 'no machine-readable compilation declared')
@@ -178,8 +190,9 @@ def compile_work(wpath, w, kind, check):
     def loc(key):
         return compilation_path(wpath, w, conf, key, check)
     argv = [sys.executable, str(ROOT / 'scripts/cat_compile_v2.py'), kind]
+    tces = compilation_tce_paths(wpath, w, conf, check)
     if kind == 'model':
-        argv += [loc('process'), loc('pi'), loc('tce')]
+        argv += [loc('process'), loc('pi'), *tces]
     else:
         for key in ('model', 'vectors'):
             require(conf.get(key), f'compilation.{key} missing')
@@ -188,7 +201,9 @@ def compile_work(wpath, w, kind, check):
             for key in ('binding', 'queue', 'tests_output'):
                 require(conf.get(key), f'compilation.{key} missing')
             argv += [loc('binding'), '--queue', loc('queue')]
-        argv += ['--process', loc('process'), '--pi', loc('pi'), '--tce', loc('tce')]
+        argv += ['--process', loc('process'), '--pi', loc('pi')]
+        for tce in tces:
+            argv += ['--tce', tce]
     if conf.get('domain_rule'):
         argv += ['--domain-rule', loc('domain_rule')]
     output_key = {'model':'model','queue':'queue','tests':'tests_output'}[kind]
@@ -218,7 +233,7 @@ def conformance_context_sha(w):
 
 def conformance_input_hashes(wpath, w, kind):
     conf = w.get('compilation') or {}
-    keys = ['process', 'pi', 'tce', 'domain_rule']
+    keys = ['process', 'pi', 'domain_rule']
     if kind == 'model-conformance':
         keys.append('model')
     elif kind == 'implementation-conformance':
@@ -229,6 +244,9 @@ def conformance_input_hashes(wpath, w, kind):
             continue
         path = Path(compilation_path(wpath, w, conf, key, True))
         result[key] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    for index, raw in enumerate(compilation_tce_paths(wpath, w, conf, True), 1):
+        path = Path(raw)
+        result['tce:' + str(index)] = {'path': str(path), 'sha256': sha(path.read_bytes())}
     return result
 
 
@@ -293,7 +311,8 @@ def conformance_work(wpath, w, kind):
         runtime = wpath.parent / '.cat-flow' / 'cache'
         runtime.mkdir(parents=True, exist_ok=True)
         def loc(key): return compilation_path(wpath, w, conf, key, False)
-        argv=[sys.executable,str(ROOT/'scripts/cat_compile_v2.py'),'model',loc('process'),loc('pi'),loc('tce')]
+        tces = compilation_tce_paths(wpath, w, conf, True)
+        argv=[sys.executable,str(ROOT/'scripts/cat_compile_v2.py'),'model',loc('process'),loc('pi'),*tces]
         if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
         argv += ['-o',str(runtime/'process-closure.model.json')]
         p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
@@ -314,7 +333,9 @@ def conformance_work(wpath, w, kind):
     if kind == 'model-conformance':
         require(conf.get('model'), 'model-conformance requires Compilation Model')
         def loc(key): return compilation_path(wpath, w, conf, key, True)
-        argv=[sys.executable,str(ROOT/'scripts/cat_model_conformance.py'),loc('process'),loc('pi'),loc('tce'),loc('model')]
+        argv=[sys.executable,str(ROOT/'scripts/cat_model_conformance.py'),loc('process'),loc('pi'),loc('model')]
+        for tce in compilation_tce_paths(wpath, w, conf, True):
+            argv += ['--tce', tce]
         if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
         p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
         if p.returncode == 0:

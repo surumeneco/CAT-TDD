@@ -93,10 +93,16 @@ def split_list(value):
 def source_semantics(process_path, pi_path, tce_path, domain_path=None):
     pf, p = read_artifact(process_path, 'process', False)
     pif, pi = read_artifact(pi_path, 'pi', False)
-    tf, tce = read_artifact(tce_path, 'tce', False)
+    tce_paths = list(tce_path) if isinstance(tce_path, (list, tuple)) else [tce_path]
+    require(tce_paths, 'at least one TCE artifact required')
+    tces = []
+    for path in tce_paths:
+        tf, tce = read_artifact(path, 'tce', False)
+        tces.append((path, tf, tce))
+    tf = tces[0][1]
     dfile, domain = read_artifact(domain_path, 'domain-rule', False) if domain_path else (None, None)
 
-    files = [(process_path, pf), (pi_path, pif), (tce_path, tf)]
+    files = [(process_path, pf), (pi_path, pif), *[(path, fm) for path, fm, _ in tces]]
     if dfile:
         files.append((domain_path, dfile))
 
@@ -116,20 +122,23 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None):
     rules = {}
     effects = set()
     frames = set()
-    for rule in tce['rules']:
-        rid = rule['id']
-        rules[rid] = (rule['trigger'], format_expr(rule['when'], language=tf.get('language', 'en')))
-        for number, outcome in enumerate(rule['allowed'], 1):
-            targets = set()
-            if outcome['write']:
-                for write in outcome['write']:
-                    targets.add(write['target'])
-                    effects.add((rid, number, write['target'],
-                                 format_expr(write['expr'], language=tf.get('language', 'en'))))
-            else:
-                effects.add((rid, number, None, None))
-            frames.add((rid, number, tuple(sorted(state_ids - targets)),
-                        tuple(sorted(emitted_ids - targets))))
+    for _, tce_fm, tce in tces:
+        for rule in tce['rules']:
+            rid = rule['id']
+            require(rid not in rules, 'duplicate TCE behavior ID across assembled specification: ' + rid)
+            rules[rid] = (tce_fm['id'], rule['trigger'],
+                          format_expr(rule['when'], language=tce_fm.get('language', 'en')))
+            for number, outcome in enumerate(rule['allowed'], 1):
+                targets = set()
+                if outcome['write']:
+                    for write in outcome['write']:
+                        targets.add(write['target'])
+                        effects.add((rid, number, write['target'],
+                                     format_expr(write['expr'], language=tce_fm.get('language', 'en'))))
+                else:
+                    effects.add((rid, number, None, None))
+                frames.add((rid, number, tuple(sorted(state_ids - targets)),
+                            tuple(sorted(emitted_ids - targets))))
 
     definitions = {}
     if domain:
@@ -207,7 +216,8 @@ def markdown_model(path):
 
     rules = {}
     for row in table(text, 'Rules', '規則'):
-        rules[cell(row, 'ID')] = (cell(row, 'Trigger', '起点'),
+        rules[cell(row, 'ID')] = (cell(row, 'Source TCE', '出典TCE'),
+                                  cell(row, 'Trigger', '起点'),
                                   clean_expr(cell(row, 'Condition', '条件')))
 
     effects = set()
@@ -232,17 +242,22 @@ def markdown_model(path):
 
 def json_model(path):
     model = json.loads(Path(path).read_text(encoding='utf-8'))
-    source_ids = model.get('source_artifacts', [])
-    source_sha = model.get('source_sha256', {})
-    source_pairs = list(source_sha.items())
     sources = {}
-    for index, ident in enumerate(source_ids):
-        if index < len(source_pairs):
-            kind, digest = source_pairs[index]
-            sources[ident] = (kind, digest)
+    if model.get('source_records'):
+        for item in model['source_records']:
+            sources[item['id']] = (item['kind'], item['sha256'])
+    else:
+        source_ids = model.get('source_artifacts', [])
+        source_sha = model.get('source_sha256', {})
+        source_pairs = list(source_sha.items())
+        for index, ident in enumerate(source_ids):
+            if index < len(source_pairs):
+                kind, digest = source_pairs[index]
+                sources[ident] = (kind, digest)
 
     fields = {item['id']: item['role'] for item in model.get('fields', [])}
-    rules = {item['id']: (item['trigger'], format_expr(item['when'], language=model.get('language', 'en')))
+    rules = {item['id']: (item.get('source_artifact'), item['trigger'],
+                          format_expr(item['when'], language=model.get('language', 'en')))
              for item in model.get('rules', [])}
     effects = set()
     frames = set()
@@ -298,8 +313,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('process')
     ap.add_argument('pi')
-    ap.add_argument('tce')
     ap.add_argument('model')
+    ap.add_argument('--tce', action='append', required=True)
     ap.add_argument('--domain-rule')
     args = ap.parse_args(argv)
     try:

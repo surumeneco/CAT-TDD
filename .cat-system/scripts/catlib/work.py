@@ -178,6 +178,11 @@ def read_work_markdown(path):
         for humans, key in mapping.items():
             value = _cell(row, *humans, key, required=False)
             if not _none(value): compilation[key] = value
+        if compilation.get('tce'):
+            tces = _items(compilation['tce'])
+            require(tces, 'Compilation TCE requires at least one path')
+            compilation['tce'] = tces[0]
+            compilation['tces'] = tces
         common_rules = _items(_cell(row, 'Common rules', 'CommonRules', '共通規則', 'common_rules', required=False))
         domain_specs = _items(_cell(row, 'Domain specs', 'DomainSpecs', '領域仕様', 'domain_specs', required=False))
         if common_rules: compilation['common_rules'] = common_rules
@@ -275,7 +280,7 @@ External/semantic gates are reported evidence. `passed` or `not-applicable` requ
 
 ## Compilation
 
-Remove this section when deterministic compilation is not used.
+Remove this section when deterministic compilation is not used. Multiple TCE paths in the `TCE` cell are separated by `;` and are assembled before closure/model validation.
 
 | Process | PI | TCE | Domain rule | Common rules | Domain specs | Model | Vectors | Queue | Binding | Tests | Obligations | Allow draft |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -424,6 +429,15 @@ def validate(w):
             for key in ('process', 'pi', 'tce', 'model'):
                 if not isinstance(compilation.get(key), str) or not compilation[key]:
                     errs.append(f'compilation.{key} required')
+            tces = compilation.get('tces', [compilation.get('tce')] if compilation.get('tce') else [])
+            if not isinstance(tces, list) or not tces or not all(isinstance(v, str) and v for v in tces):
+                errs.append('compilation.tces must be a nonempty string array')
+            elif compilation.get('tce') != tces[0]:
+                errs.append('compilation.tce must equal first compilation.tces item')
+            for list_key in ('common_rules', 'domain_specs'):
+                vals = compilation.get(list_key, [])
+                if not isinstance(vals, list) or not all(isinstance(v, str) and v for v in vals):
+                    errs.append('compilation.' + list_key + ' invalid')
             if not isinstance(compilation.get('allow_draft'), bool):
                 errs.append('compilation.allow_draft must be boolean')
     return errs

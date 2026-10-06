@@ -687,16 +687,27 @@ def used_refs(expr, definitions, result=None, stack=()):
 def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
     pf,p=read_artifact(process_path,'process',allow_draft)
     pif,pi=read_artifact(pi_path,'pi',allow_draft)
-    tf,tce=read_artifact(tce_path,'tce',allow_draft)
+    tce_paths=list(tce_path) if isinstance(tce_path,(list,tuple)) else [tce_path]
+    require(tce_paths,'at least one TCE artifact required')
+    tce_docs=[]
+    for path in tce_paths:
+        tf,tce=read_artifact(path,'tce',allow_draft)
+        tce_docs.append((path,tf,tce))
+    tf=tce_docs[0][1]
     dfile,domain=(read_artifact(domain_path,'domain-rule',allow_draft) if domain_path else (None,None))
-    files=[(process_path,pf),(pi_path,pif),(tce_path,tf)]
+    files=[(process_path,pf),(pi_path,pif),*[(path,fm) for path,fm,_ in tce_docs]]
     if dfile:files.append((domain_path,dfile))
     contracts={fm.get('semantic_contract') for _,fm in files}
     require(len(contracts)==1,'all compiled CAT artifacts must use the same semantic_contract')
     contract=next(iter(contracts))
-    require(len({a['process'] for a in (p,pi,tce,*([domain] if domain else []))})==1,'different Process IDs in artifacts')
-    require(pf['id'] in pif['refs'] and pif['id'] in tf['refs'],'missing Process→PI→TCE references')
-    if domain:require(dfile['id'] in tf['refs'],'DomainRule artifact not referenced by TCE')
+    semantics=[p,pi,*[tce for _,_,tce in tce_docs],*([domain] if domain else [])]
+    require(len({a['process'] for a in semantics})==1,'different Process IDs in artifacts')
+    require(pf['id'] in pif['refs'],'missing Process→PI reference')
+    for _,tce_fm,_ in tce_docs:
+        require(pif['id'] in tce_fm['refs'],'missing PI→TCE reference')
+    if domain:
+        require(any(dfile['id'] in tce_fm['refs'] for _,tce_fm,_ in tce_docs),
+                'DomainRule artifact not referenced by any TCE')
 
     process_optional=['interfaces','state_fields','observations','actions'] if contract=='markdown-v2' else []
     check_keys(p,['schema','kind','process','triggers','closed_world'],process_optional,where='Process')
@@ -783,42 +794,46 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
     for predicate in constraints:
         require(inspect_expr(predicate,pi_fields,definitions)=='boolean','PI constraint must be boolean')
 
-    check_keys(tce,['schema','kind','process','coverage','rules'],where='TCE')
-    require(tce['coverage'] in ('closed','partial'),'coverage requirement must be closed or partial')
-    require(isinstance(tce['rules'],list) and tce['rules'],'TCE behaviors required')
     rules=[]
-    for r in tce['rules']:
-        check_keys(r,['id','trigger','when','allowed'],where='TCE behavior')
-        (semantic_ident(r['id'],'TCE behavior id') if contract=='markdown-v2' else ident(r['id'],'TCE rule id'))
-        require(r['trigger'] in {t['id'] for t in p['triggers']},'undeclared trigger '+str(r['trigger']))
-        require(inspect_expr(r['when'],fields,definitions)=='boolean','TCE condition must be boolean')
-        require(not any(fields[x]['role'] in ('output','action') for x in used_refs(r['when'],definitions)),'Condition reads non-observable output/action')
-        require(isinstance(r['allowed'],list) and r['allowed'],'allowed results must be nonempty')
-        outcomes=[]
-        for outcome in r['allowed']:
-            check_keys(outcome,['write'],where='TCE outcome');require(isinstance(outcome['write'],list),'write list required')
-            targets=[]
-            for e in outcome['write']:
-                check_keys(e,['target','expr'],where='Effect')
-                require(e['target'] in fields and fields[e['target']]['role'] in ('state','output','action'),'Effect target not declared/actuable '+str(e['target']))
-                produced=inspect_expr(e['expr'],fields,definitions)
-                expected=fields[e['target']]['domain']['type']
-                require(produced==expected or (expected=='enum' and produced in ('string','boolean','integer')),
-                        f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
-                if expected=='enum':
-                    expr=e['expr']
-                    if 'literal' in expr:
-                        require(in_domain(fields[e['target']]['domain'],expr['literal']),'enum literal not in Effect target domain')
-                    elif 'ref' in expr and expr['ref'] in fields and fields[expr['ref']]['domain']['type']=='enum':
-                        require(all(in_domain(fields[e['target']]['domain'],x) for x in fields[expr['ref']]['domain']['values']),'source enum not subset of effect enum')
-                    else:
-                        raise Blocked('effect enum range not proven; explicit enum mapping required')
-                targets.append(e['target'])
-            unique(targets,'Effect targets')
-            frame=sorted(f for f in fields if fields[f]['role']=='state' and f not in targets)
-            absent=sorted(f for f in fields if fields[f]['role'] in ('output','action') and f not in targets)
-            outcomes.append({'write':outcome['write'],'unchanged':frame,'absent_outputs':absent})
-        rules.append({'id':r['id'],'trigger':r['trigger'],'when':r['when'],'allowed':outcomes})
+    local_coverage_requirements={}
+    for _,tce_fm,tce in tce_docs:
+        check_keys(tce,['schema','kind','process','coverage','rules'],where='TCE')
+        require(tce['coverage'] in ('closed','partial'),'coverage requirement must be closed or partial')
+        require(isinstance(tce['rules'],list) and tce['rules'],'TCE behaviors required')
+        local_coverage_requirements[tce_fm['id']]=tce['coverage']
+        for r in tce['rules']:
+            check_keys(r,['id','trigger','when','allowed'],where='TCE behavior')
+            (semantic_ident(r['id'],'TCE behavior id') if contract=='markdown-v2' else ident(r['id'],'TCE rule id'))
+            require(r['trigger'] in {t['id'] for t in p['triggers']},'undeclared trigger '+str(r['trigger']))
+            require(inspect_expr(r['when'],fields,definitions)=='boolean','TCE condition must be boolean')
+            require(not any(fields[x]['role'] in ('output','action') for x in used_refs(r['when'],definitions)),'Condition reads non-observable output/action')
+            require(isinstance(r['allowed'],list) and r['allowed'],'allowed results must be nonempty')
+            outcomes=[]
+            for outcome in r['allowed']:
+                check_keys(outcome,['write'],where='TCE outcome');require(isinstance(outcome['write'],list),'write list required')
+                targets=[]
+                for e in outcome['write']:
+                    check_keys(e,['target','expr'],where='Effect')
+                    require(e['target'] in fields and fields[e['target']]['role'] in ('state','output','action'),'Effect target not declared/actuable '+str(e['target']))
+                    produced=inspect_expr(e['expr'],fields,definitions)
+                    expected=fields[e['target']]['domain']['type']
+                    require(produced==expected or (expected=='enum' and produced in ('string','boolean','integer')),
+                            f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    if expected=='enum':
+                        expr=e['expr']
+                        if 'literal' in expr:
+                            require(in_domain(fields[e['target']]['domain'],expr['literal']),'enum literal not in Effect target domain')
+                        elif 'ref' in expr and expr['ref'] in fields and fields[expr['ref']]['domain']['type']=='enum':
+                            require(all(in_domain(fields[e['target']]['domain'],x) for x in fields[expr['ref']]['domain']['values']),'source enum not subset of effect enum')
+                        else:
+                            raise Blocked('effect enum range not proven; explicit enum mapping required')
+                    targets.append(e['target'])
+                unique(targets,'Effect targets')
+                frame=sorted(f for f in fields if fields[f]['role']=='state' and f not in targets)
+                absent=sorted(f for f in fields if fields[f]['role'] in ('output','action') and f not in targets)
+                outcomes.append({'write':outcome['write'],'unchanged':frame,'absent_outputs':absent})
+            rules.append({'id':r['id'],'trigger':r['trigger'],'when':r['when'],'allowed':outcomes,
+                          'source_artifact':tce_fm['id']})
     unique([r['id'] for r in rules],'TCE behaviors')
 
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
@@ -846,21 +861,35 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
                               'excluded_by_pi_constraints':True if constraints else False}
         require(not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
     coverage_proved = all(x['result']=='proved' for x in per_trigger.values())
-    if tce['coverage']=='closed' and not coverage_proved:
+    if not coverage_proved:
         require(allow_draft,
-                'closed-world coverage requirement not proved: '+json.dumps(per_trigger,ensure_ascii=False)[:700])
+                'assembled Process closed-world coverage not proved: '+json.dumps(per_trigger,ensure_ascii=False)[:700])
 
-    hashes={fm['kind']:hashlib.sha256(Path(path).read_bytes()).hexdigest() for path,fm in files}
+    source_records=[]
+    hashes={}
+    for path,fm in files:
+        digest=hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        source_records.append({'id':fm['id'],'kind':fm['kind'],'sha256':digest})
+        key=fm['kind'] if fm['kind'] not in hashes else fm['kind']+':'+fm['id']
+        hashes[key]=digest
     authority={'markdown-v2':'cat-markdown/v2','markdown-v1':'cat-markdown/v1','machine-only':'cat-machine/v2'}[contract]
-    normative_model = all(fm['status']=='confirmed' for _,fm in files) and (tce['coverage']!='closed' or coverage_proved)
+    normative_model = all(fm['status']=='confirmed' for _,fm in files) and coverage_proved
     result={'schema':M,'process':p['process'],'status':('confirmed' if normative_model else 'draft'),
             'semantic_authority':authority,'language':tf.get('language','en') if contract=='markdown-v2' else 'en',
             'source_artifacts':[fm['id'] for _,fm in files],
+            'source_records':source_records,
             'source_sha256':hashes,'triggers':p['triggers'],'fields':list(fields.values()),'pi_constraints':constraints,
-            'definitions':list(definitions.values()),'coverage_requirement':tce['coverage'],'coverage_checks':per_trigger,'rules':rules,
+            'definitions':list(definitions.values()),'coverage_requirement':'closed',
+            'local_coverage_requirements':local_coverage_requirements,
+            'coverage_checks':per_trigger,'rules':rules,
             'model_type':'symbolic-relation','limits':['finite-guard-closure-only','no-general-reachability-proof','no-process-composition']}
-    # Compatibility alias for older downstream readers; it is a requirement, not verification evidence.
-    result['coverage_claim']=tce['coverage']
+    result['coverage_claim']='closed'
+    tce_map=[]
+    for _,tce_fm,_ in tce_docs:
+        owned=[x for x in rules if x.get('source_artifact')==tce_fm['id']]
+        tce_map.append({'artifact':tce_fm['id'],'rules':[x['id'] for x in owned],
+                        'outcome_count':sum(len(x['allowed']) for x in owned),
+                        'local_coverage':local_coverage_requirements[tce_fm['id']]})
     result['source_semantic_map']={
         'process':{
             'artifact':pf['id'],
@@ -874,10 +903,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             'fields':[x['id'] for x in pi['fields']],
             'operations':[x['id'] for x in pi.get('operations',[])],
             'constraint_count':len(constraints)},
-        'tce':{
-            'artifact':tf['id'],
-            'rules':[x['id'] for x in rules],
-            'outcome_count':sum(len(x['allowed']) for x in rules)},
+        'tce':tce_map,
         'domain_rule':{
             'artifact':dfile['id'] if dfile else None,
             'definitions':sorted(definitions)}}
@@ -1057,7 +1083,10 @@ def render_model_markdown(model):
            f"semantic_authority: {model['semantic_authority']}",f"language: {lang}",*( [f"normalized_ir: {model['normalized_ir']}"] if model.get('normalized_ir') else []),'---','',f"# {title}: {model['process']}",'']
     h_source=('出典Artifact','Artifact ID','種別','SHA-256') if ja else ('Source artifacts','Artifact ID','Kind','SHA-256')
     lines += [f'## {h_source[0]}','',f'| {h_source[1]} | {h_source[2]} | {h_source[3]} |','| --- | --- | --- |']
-    for aid,(kind,digest) in zip(model['source_artifacts'], model['source_sha256'].items()):lines.append(f'| {_md(aid)} | {_md(kind)} | `{digest}` |')
+    records=model.get('source_records')
+    if records is None:
+        records=[{'id':aid,'kind':kind,'sha256':digest} for aid,(kind,digest) in zip(model['source_artifacts'],model['source_sha256'].items())]
+    for rec in records:lines.append(f"| {_md(rec['id'])} | {_md(rec['kind'])} | `{rec['sha256']}` |")
     if model.get('process_interfaces') is not None:
         lines += ['',('## Process境界' if ja else '## Process interfaces'),'', '| PI |','| --- |']
         for ref in model.get('process_interfaces',[]): lines.append(f"| {_md(ref)} |")
@@ -1082,8 +1111,8 @@ def render_model_markdown(model):
         lines += ['',('## DomainRule定義' if ja else '## DomainRule definitions'),'',('| ID | 引数 | 式 |' if ja else '| ID | Parameters | Expression |'),'| --- | --- | --- |']
         for d in model['definitions']:lines.append(f"| {_md(d['id'])} | {_md(', '.join(d['params']) or '—')} | `{_md(format_expr(d['body'],d['params'],lang))}` |")
     lines += ['',('## 網羅要求' if ja else '## Coverage requirement'),'','`'+model.get('coverage_requirement',model.get('coverage_claim','partial'))+'`']
-    lines += ['',('## 規則' if ja else '## Rules'),'',('| ID | 起点 | 条件 |' if ja else '| ID | Trigger | Condition |'),'| --- | --- | --- |']
-    for r in model['rules']:lines.append(f"| {_md(r['id'])} | {_md(r['trigger'])} | `{_md(format_expr(r['when'],language=lang))}` |")
+    lines += ['',('## 規則' if ja else '## Rules'),'',('| ID | 出典TCE | 起点 | 条件 |' if ja else '| ID | Source TCE | Trigger | Condition |'),'| --- | --- | --- | --- |']
+    for r in model['rules']:lines.append(f"| {_md(r['id'])} | {_md(r.get('source_artifact','—'))} | {_md(r['trigger'])} | `{_md(format_expr(r['when'],language=lang))}` |")
     lines += ['',('## 効果' if ja else '## Effects'),'',('| 規則 | 結果 | 対象 | 式 |' if ja else '| Rule | Outcome | Target | Expression |'),'| --- | ---: | --- | --- |']
     for r in model['rules']:
         for n,out in enumerate(r['allowed'],1):
@@ -1117,9 +1146,9 @@ def write(path,content,check):
 def main(argv=None):
     cli=argparse.ArgumentParser(description=__doc__)
     sub=cli.add_subparsers(dest='command',required=True)
-    m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('tce');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
-    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--tce',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
-    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--tce',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
+    m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
+    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
+    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
     args=cli.parse_args(argv)
     try:
         if args.command=='model':
