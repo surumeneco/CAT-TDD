@@ -12,7 +12,7 @@ description: "Generate, run and review Vitest unit or integration tests from app
 
 ## CAT v2でのコード生成
 
-`cat-test-model/v2`からのVitestコード生成は`scripts/cat_compile_v2.py tests`を利用する。driverは`prepare(pre,input)`で実状態を成立させ、`trigger(name,input)`で操作して宣言出力を返し、`observeState()`で宣言したstateを前後とも観測する。生成コードの`allowed`は仕様由来。実装内部の期待値を写さず、既存テストと独立したfixture由来を検証する。`driver.stub.ts`は`BINDING_NOT_IMPLEMENTED`を投げる未接続例である。`--allow-draft`で生成した証拠用コードを本番テストのoracleとして採用しない。
+`cat-test-model/v2`からのVitestコード生成は`scripts/cat_compile_v2.py tests`を利用する。共通compilerはモデル・具体ケースを扱い、Vitest固有のTypeScript描画は本Skillの`scripts/cat_vitest_renderer.py`へ委譲する。rendererをCAT意味の決定や具体値選択に使わない。driverは`prepare(pre,input)`で実状態を成立させ、`trigger(name,input)`で操作して宣言出力を返し、`observeState()`で宣言したstateを前後とも観測する。生成コードの`allowed`は仕様由来。実装内部の期待値を写さず、既存テストと独立したfixture由来を検証する。`driver.stub.ts`は`BINDING_NOT_IMPLEMENTED`を投げる未接続例である。`--allow-draft`で生成した証拠用コードを本番テストのoracleとして採用しない。
 
 
 ## JUnit evidence adapter

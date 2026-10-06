@@ -2,18 +2,19 @@
 """Lightweight, deterministic CAT Markdown contract linter (not a semantic solver).
 
 Example:
-    python scripts/cat_artifact_lint.py --artifacts Lifecycle/CAT/Draft
-    python scripts/cat_artifact_lint.py --skills .github/skills --agents .github/agents
+    python .cat-system/skills/cat-specification-gate/scripts/cat_artifact_lint.py --artifacts Lifecycle/CAT/Draft
 Only flat YAML scalar fields plus simple block/inline scalar lists are parsed.
 """
 import argparse
-import json
 import re
 import sys
 from pathlib import Path
 
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(PACKAGE_ROOT / "scripts"))
+from catlib.markdown import parse_frontmatter
+
 ID = re.compile(r"^[a-z][a-z0-9]*(?:\.[a-z0-9-]+)*$")
-SKILL = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 KINDS = {"process", "pi", "tce", "common-rule", "domain-rule", "domain-spec", "test-model", "candidate", "work", "gate"}
 STATUSES = {"candidate", "draft", "confirmed", "unknown", "conflict", "superseded"}
 SEMANTIC_KINDS = {"process", "pi", "tce", "common-rule", "domain-rule", "domain-spec"}
@@ -71,61 +72,6 @@ def _require_table_columns(errors, path, body, section_names, column_groups, req
         errors.append(f"{path}: markdown-v2 {'/'.join(section_names)} requires at least one data row")
     return rows
 
-
-def _scalar(value):
-    value = value.strip()
-    if value.startswith("["):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"inline lists must use JSON-compatible scalar syntax: {exc}") from exc
-    if len(value) >= 2 and value.startswith(("\"", "'")) and value.endswith(value[0]):
-        return value[1:-1]
-    return value
-
-
-def parse_frontmatter(path):
-    raw = path.read_text(encoding="utf-8-sig")
-    if not raw.startswith("---\n"):
-        raise ValueError("missing YAML front matter at first line")
-    end = raw.find("\n---\n", 4)
-    if end < 0:
-        raise ValueError("front matter closing delimiter missing")
-    lines = raw[4:end].splitlines()
-    fields = {}
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if not line.strip() or line.lstrip().startswith("#"):
-            i += 1
-            continue
-        match = re.match(r"^([A-Za-z_][\w-]*):\s*(.*?)\s*$", line)
-        if not match:
-            raise ValueError(f"unsupported front matter line: {line[:80]}")
-        key, value = match.groups()
-        if key in fields:
-            raise ValueError(f"duplicate field: {key}")
-        if value:
-            fields[key] = _scalar(value)
-            i += 1
-            continue
-        items = []
-        i += 1
-        while i < len(lines):
-            child = lines[i]
-            if not child.strip() or child.lstrip().startswith("#"):
-                i += 1
-                continue
-            item = re.match(r"^\s{2,}-\s+(.+?)\s*$", child)
-            if not item:
-                break
-            parsed = _scalar(item.group(1))
-            if isinstance(parsed, list):
-                raise ValueError(f"{key}: nested lists are unsupported")
-            items.append(parsed)
-            i += 1
-        fields[key] = items
-    return fields
 
 
 def artifact_errors(root=None, files=None):
@@ -240,59 +186,16 @@ def artifact_errors(root=None, files=None):
     return errors
 
 
-def skill_errors(root):
-    errors = []
-    if not root.exists():
-        return [f"{root}: path missing"]
-    for path in sorted(root.glob("*/SKILL.md")):
-        try:
-            f = parse_frontmatter(path)
-            name = f.get("name", "")
-            if name != path.parent.name or not SKILL.fullmatch(name) or len(name) > 64:
-                errors.append(f"{path}: skill name mismatch or invalid: '{name}'")
-            if not f.get("description") or len(f["description"]) > 1024:
-                errors.append(f"{path}: missing/overlong description")
-        except (OSError, UnicodeError, ValueError) as exc:
-            errors.append(f"{path}: {exc}")
-    return errors
-
-
-def agent_errors(root):
-    errors = []
-    if not root.exists():
-        return [f"{root}: path missing"]
-    for path in sorted(root.glob("*.agent.md")):
-        try:
-            f = parse_frontmatter(path)
-            if f.get("name") != path.name.removesuffix(".agent.md"):
-                errors.append(f"{path}: agent name mismatch")
-            if not f.get("description"):
-                errors.append(f"{path}: description missing")
-        except (OSError, UnicodeError, ValueError) as exc:
-            errors.append(f"{path}: {exc}")
-    return errors
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--files", nargs="+", type=Path, help="explicit CAT artifact files; excludes surrounding notes")
-    parser.add_argument("--skills", type=Path)
-    parser.add_argument("--agents", type=Path)
     args = parser.parse_args(argv)
-    if not any([args.artifacts, args.files, args.skills, args.agents]):
-        parser.error("specify at least one of --artifacts/--skills/--agents")
-    errors = []
+    if not any([args.artifacts, args.files]):
+        parser.error("specify at least one of --artifacts/--files")
     if args.artifacts and args.files:
         parser.error("--artifacts and --files are mutually exclusive")
-    if args.artifacts:
-        errors.extend(artifact_errors(args.artifacts))
-    if args.files:
-        errors.extend(artifact_errors(files=args.files))
-    if args.skills:
-        errors.extend(skill_errors(args.skills))
-    if args.agents:
-        errors.extend(agent_errors(args.agents))
+    errors = artifact_errors(args.artifacts) if args.artifacts else artifact_errors(files=args.files)
     if errors:
         print("FAIL: contract lint", file=sys.stderr)
         print("\n".join(errors), file=sys.stderr)

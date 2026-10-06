@@ -16,6 +16,6 @@ description: "Turn development Issues into Process-scoped Tasks and human-readab
 
 ## 定型処理のCLI委譲
 
-AIがIssue→Task→Workを分解して`Work.md`を作成したら、`python scripts/cat_flow.py validate --work <Work.md>`、`route --stage <stage>`、`git --work <Work.md>`を使用する。`cat_flow.py`はMarkdownを内部`cat-work/v1`へ正規化して処理し、旧`work.json`は互換入力としてのみ扱う。`status/handoff`で証拠の有効性・未完了ゲートを再取得する。`reported-complete/unverified-external-evidence`は外部証拠の再取得前の最終完了を意味しない。
+AIがIssue→Task→Workを分解して`Work.md`を作成したら、`python scripts/cat_flow.py validate --work <Work.md>`、`route --stage <stage>`、`git --work <Work.md>`を使用する。Lifecycle状態の配置変更は、移動先をAI/人間が明示した上で`python .cat-system/skills/cycle-management/scripts/cat_lifecycle.py move --kind work --id <id> --to <state>`を使い、AIが都度`mv`コマンドを組み立てない。`cat_flow.py`はMarkdownを内部`cat-work/v1`へ正規化して処理し、旧`work.json`は互換入力としてのみ扱う。`status/handoff`で証拠の有効性・未完了ゲートを再取得する。`reported-complete/unverified-external-evidence`は外部証拠の再取得前の最終完了を意味しない。
 
 詳細は`.cat-system/docs/Artifact記法.md`と`.cat-system/docs/AI実行契約.md`。

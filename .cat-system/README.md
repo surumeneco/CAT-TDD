@@ -1,7 +1,7 @@
 ---
 title: CAT実用エージェント体系
 status: trial
-version: '0.9'
+version: '1.0'
 ---
 
 # CAT実用エージェント体系
@@ -11,19 +11,19 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 | 原本 | 開発ワークスペースへの配置 | 管轄 |
 | --- | --- | --- |
 | `agents/*.agent.md` | `.github/agents/` | 役割・責任・禁止・成果物境界 |
-| `skills/{cat-*,cycle-*,tdd-*,refactor-*}/SKILL.md` | `.github/skills/` | CAT/Cycle/TDD/Refactorの技術非依存の手順 |
-| `skills/<technology-skill>/SKILL.md` | `config/routing.json`で対象技術に登録されたものだけ配置 | 言語・フレームワーク・DB・テスト基盤固有の処理。自作は原則`tech-*`、外部Skillは上流名を保持できる |
+| `skills/{cat-*,cycle-*,tdd-*,refactor-*}/` | `.github/skills/<skill>/`と`.cat-system/skills/<skill>/` | CAT/Cycle/TDD/Refactorの技術非依存手順と、そのSkillだけが使う`references/`・`scripts/`等 |
+| `skills/<technology-skill>/` | `config/routing.json`で対象技術に登録されたものだけ`.github/skills/<skill>/`と`.cat-system/skills/<skill>/`へ配置 | 言語・フレームワーク・DB・テスト基盤固有の手順と補助コード。自作は原則`tech-*`、外部Skillは上流名を保持できる |
 | `extensions/<project>-adapter/` | 明示選択時だけ`.github/skills/`と`.cat-system/extensions/`へ配置 | プロジェクト固有Skillと参照マップ。共通coreから分離 |
-| `optional-skills/*/SKILL.md` | 明示的に診断・補助機能を使う場合だけ個別導入 | 通常Workに必須でない補助Skill。`cat_install.py`の共通Skill自動配布対象外 |
+| `optional-skills/*/` | 明示的に診断・補助機能を使う場合だけ個別導入 | 通常Workに必須でない補助Skill。`cat_install.py`の共通Skill自動配布対象外 |
 | `docs/*.md` | `.cat-system/docs/` | 人間が読む工程、記法、正本・技術Skillの選択契約 |
 | `config/*` | `.cat-system/config/` | routing等の機械設定。人間向け正本を置かない |
-| `scripts/*.py` | `.cat-system/scripts/` | Work実行/証拠管理、静的lint、条件付きコンパイル、非破壊導入 |
+| `scripts/` | `.cat-system/scripts/` | 複数Skillから共有するランタイム、Lifecycle実行、コンパイル、非破壊導入。Skill固有コードは置かない |
 | `tests/` | 導入先へは配布しない | 実運用パッケージ自身の回帰テストと汎用fixture |
 
 
 ## パッケージ内部の責務境界
 
-`docs/`は人間が読み書きする契約、`config/`は機械が読む設定、`scripts/`は実行コード、`tests/`はパッケージ保守用の自己テストとする。JSONを使用すること自体ではなく、**人間向け正本と機械内部表現を同じ配置・同じ編集責務に置くこと**を避ける。
+`docs/`は人間が読み書きする契約、`config/`は機械が読む設定、トップレベル`scripts/`は複数Skillから共有する実行コード、各`skills/<name>/scripts/`はそのSkillだけが使う実行コード、`tests/`はパッケージ保守用の自己テストとする。JSONを使用すること自体ではなく、**人間向け正本と機械内部表現を同じ配置・同じ編集責務に置くこと**を避ける。
 
 `tests/`と未選択`extensions/`は`.cat-system`へ配布しない。実運用環境へ必要なのは`README.md / docs / config / scripts / agents / 選択済みskills / optional-skills`であり、自己テストのfixtureを実プロジェクトの仕様・検証生成物へ依存させない。
 
@@ -35,10 +35,14 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 
 | スクリプト | AIが呼ぶ機能 | 非対象 |
 |---|---|---|
-| `scripts/cat_flow.py` | Work validation、Agent/Skill route、Git差分と変更許可、コマンド実行/証拠、古い証拠の検出、handoff | 意味の承認・本番結果の創作 |
-| `scripts/cat_artifact_lint.py` | 指定ファイルのfront matter、IDと参照検証 | 自然言語の意味証明 |
-| `scripts/cat_compile_v2.py` | 機械変換可能なCAT Artifactから記号的TestModel・Vitest生成 | CAT全体の意味保存・実環境接続 |
-| `scripts/cat_install.py` | 採用済み技術のみのSkillと共通Agent/ツールを非破壊導入 | 技術採用の決定・無断上書き |
+| `scripts/cat_flow.py` | Agent/Skill route、Git差分と変更許可、コマンド実行/証拠、古い証拠の検出、handoff。Workの構文・validationは内部`catlib/work.py`へ分離 | 意味の承認・本番結果の創作 |
+| `scripts/cat_compile_v2.py` | 機械変換可能なCAT Artifactから記号的TestModel・具体テスト入力を生成し、技術rendererへ委譲 | CAT全体の意味保存・技術固有rendererの実装 |
+| `scripts/cat_install.py` | 採用済みSkillのディレクトリ一式と共通Agent/ツールを非破壊導入 | 技術採用の決定・無断上書き |
+| `scripts/cat_package_lint.py` | Agent/Skill定義のfront matterを静的検証 | CAT Semantic Artifactの意味・構文検証 |
+| `skills/cat-specification-gate/scripts/cat_artifact_lint.py` | CAT Artifactのfront matter、ID、明示参照を静的検証 | 自然言語Conditionの意味証明 |
+| `skills/cat-artifacts/scripts/cat_artifact_scaffold.py` | Semantic Artifactの空構造と必須メタデータを決定論的に生成 | Process/PI/TCE等の意味内容の推測 |
+| `skills/cycle-management/scripts/cat_lifecycle.py` | Issue/Task/Workの現在配置を一意確認し、明示されたLifecycle状態へディレクトリごと安全に移動 | 遷移の意味的妥当性・完了判定 |
+| `skills/tech-vitest/scripts/cat_vitest_renderer.py` | 汎用ケースをVitestソースへ描画する内部renderer | CATモデル・具体値の決定 |
 
 具体的手順・エラー/ゲートの扱いは[AI実行契約](docs/AI実行契約.md)。モデルの`Draft`は規範oracleではなく、生成コードの成功は実Red/Greenではない。
 

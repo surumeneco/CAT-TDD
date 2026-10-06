@@ -56,7 +56,7 @@ git -C RoomN/<worktree-name> status
 
 ## Skill の扱い
 
-共通 Skill は最初から `.github/skills` に配置されています。技術固有の `tech-*` Skill は `.cat-system/skills` の pool に保持し、Work で採用技術が確定した後に `.cat-system/scripts/cat_install.py` が選択導入します。未採用技術の Skill を最初から Copilot の探索対象へ混在させません。
+共通 Skill は最初から `.github/skills` に配置されています。技術Skill（自作 `tech-*` および `routing.json` に登録した外部Skill）は `.cat-system/skills` の pool に保持し、Work で採用技術が確定した後に `.cat-system/scripts/cat_install.py` が選択導入します。未採用技術の Skill を最初から Copilot の探索対象へ混在させません。
 
 詳細な契約は `.cat-system/docs/` を参照してください。
 
@@ -69,9 +69,9 @@ git -C RoomN/<worktree-name> status
 - `Docs/**`: 個別プロジェクトのConstraintsとconfirmed Process仕様
 - `TestModels/**`: 個別プロジェクトから導出されたTestModel
 - `Room0/**` / `RoomN/**`: 対象repoとworktree
-- `.github/skills/tech-*` / `*-adapter`: 個別Workで選択されたCopilot Skill
+- `.github/skills/<selected-technology-skill>` / `*-adapter`: 個別Workで選択されたCopilot Skill
 - `.cat-system/extensions/**`: プロジェクト固有adapter
 - `.cat-flow/**`: 実行証拠・一時状態
 - `.env*`、仮想環境、cache、coverage、build/temp/log、IDE/OSローカル状態
 
-一方、`.cat-system/skills/tech-*` は利用可能な技術Skillの**テンプレート側pool**なので追跡対象です。個別プロジェクトが実際に採用したものだけが `.github/skills/` へ展開され、その展開結果はignoreされます。
+一方、`.cat-system/skills/` 内の `routing.json` 登録済み技術Skillは利用可能な技術Skillの**テンプレート側pool**なので追跡対象です。個別プロジェクトが実際に採用したものだけが `.github/skills/` へ展開され、その展開結果はignoreされます。

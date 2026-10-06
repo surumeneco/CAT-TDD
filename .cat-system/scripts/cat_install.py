@@ -15,7 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'scripts'))
-from cat_flow import Blocked, read_json, work_file, json_bytes, require
+from catlib.common import Blocked, json_bytes, read_json, require
+from catlib.work import work_file
 
 
 def digest(path):
@@ -23,13 +24,21 @@ def digest(path):
 
 
 def sources(work, adapter):
-    common = sorted(p for p in (ROOT / 'skills').glob('*/SKILL.md')
-                    if not p.parent.name.startswith('tech-'))
     cat = read_json(ROOT / 'config/routing.json')['technology_skills']
+    configured = set()
+    for tech, mapped in cat.items():
+        require(isinstance(mapped, str) or
+                (isinstance(mapped, list) and mapped and all(isinstance(x, str) and x for x in mapped)),
+                f'invalid technology skill mapping: {tech}')
+        configured.update([mapped] if isinstance(mapped, str) else mapped)
+    common = sorted(p for p in (ROOT / 'skills').glob('*/SKILL.md')
+                    if p.parent.name not in configured)
     selected = []
     for tech in sorted(set(work.get('technologies', []))):
-        require(tech in cat, f'no configured tech-* for documented Work tech: {tech}')
-        selected.append(ROOT / 'skills' / cat[tech] / 'SKILL.md')
+        require(tech in cat, f'no configured technology Skill for documented Work tech: {tech}')
+        mapped = cat[tech]
+        selected.extend(ROOT / 'skills' / name / 'SKILL.md'
+                        for name in ([mapped] if isinstance(mapped, str) else mapped))
     extension = None
     if adapter:
         require(adapter.endswith('-adapter'), 'adapter name must end in -adapter')
@@ -58,11 +67,12 @@ def plan(target, agents, skills, overwrite, extension=None):
         base = ROOT / top
         dest = target / '.cat-system' / top if base.is_dir() else target / '.cat-system'
         _add_tree(files, base, dest)
-    # Only selected skills are present in the runtime package; unadopted tech/project skills stay absent.
+    # Only selected skills are present in the runtime package; copy the complete Skill
+    # directory so its scripts/references/assets remain available to the Skill.
     for skill in skills:
-        runtime = target / '.cat-system' / 'skills' / skill.parent.name / skill.name
-        files.append((skill, runtime))
-        files.append((skill, target / '.github' / 'skills' / skill.parent.name / skill.name))
+        skill_dir = skill.parent
+        _add_tree(files, skill_dir, target / '.cat-system' / 'skills' / skill_dir.name)
+        _add_tree(files, skill_dir, target / '.github' / 'skills' / skill_dir.name)
     for agent in agents:
         files.append((agent, target / '.cat-system' / 'agents' / agent.name))
         files.append((agent, target / '.github' / 'agents' / agent.name))
@@ -70,8 +80,7 @@ def plan(target, agents, skills, overwrite, extension=None):
         for source in sorted(p for p in extension.rglob('*') if p.is_file()):
             rel = source.relative_to(extension)
             files.append((source, target / '.cat-system' / 'extensions' / extension.name / rel))
-        skill = extension / 'SKILL.md'
-        files.append((skill, target / '.github' / 'skills' / extension.name / 'SKILL.md'))
+        _add_tree(files, extension, target / '.github' / 'skills' / extension.name)
     # Deduplicate exact destinations while preserving deterministic order.
     unique = {}
     for source, dest in files:

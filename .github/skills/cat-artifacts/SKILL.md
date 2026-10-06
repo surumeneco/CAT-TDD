@@ -16,6 +16,10 @@ description: "Define and draft CAT Semantic Artifacts in human-readable markdown
 7. 別ProcessへのEffect接続、変更されない宣言済み作用先、親Processの外部結果への経路を追跡する。
 8. 未解消の意味分岐は`unknown`/`conflict`として分離し、confirmedを捏造しない。
 
+## 定型構造はスクリプトで生成
+
+新規Semantic Artifactの空構造は、インストール後の`python .cat-system/skills/cat-artifacts/scripts/cat_artifact_scaffold.py <kind> --id <id> --process <process-id> --source-ref <url> -o <file>`を使う。`process / pi / tce / common-rule / domain-rule / domain-spec`に対応し、必須front matter・見出し・表だけを決定論的に作る。生成時は`status: candidate`と`TO_BE_DEFINED`を明示し、要求の意味、Condition、Outcome、field、rule等を推測しない。既存ファイルは上書きしない。
+
 機械変換が必要な場合も、`cat_compile_v2.py`にMarkdown正本を渡し、内部`cat-machine/v2` IRは生成物として扱う。旧`machine-only` JSONは移行用互換形式であり、新規作成しない。
 
 出力: CAT/Draft下のMarkdown、使用した決定URLとProcess/PI/TCE/Rule ID、未決定事項。コード実装や実装依存テストの生成は本Skillの対象外。

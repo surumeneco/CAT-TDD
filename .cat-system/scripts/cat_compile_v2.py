@@ -18,7 +18,9 @@ import re
 import sys
 import tokenize
 
-from cat_artifact_lint import parse_frontmatter
+from catlib.markdown import parse_frontmatter
+
+ROOT = Path(__file__).resolve().parent.parent
 
 S = 'cat-machine/v2'
 M = 'cat-test-model/v2'
@@ -900,7 +902,16 @@ def expand_cases(model, vectors):
     unique([t['id'] for t in cases],'vector IDs')
     return cases
 
-def ts_string(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+def _vitest_renderer():
+    import importlib.util
+    path = ROOT / 'skills' / 'tech-vitest' / 'scripts' / 'cat_vitest_renderer.py'
+    require(path.is_file(), 'Vitest generation requires installed tech-vitest Skill renderer')
+    spec = importlib.util.spec_from_file_location('_cat_vitest_renderer', path)
+    require(spec is not None and spec.loader is not None, 'cannot load tech-vitest renderer')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.render_vitest
+
 
 def emit_vitest(model,vectors,binding_path):
     require(not any(f['role'] in ('observation','action') for f in model['fields']),
@@ -911,31 +922,7 @@ def emit_vitest(model,vectors,binding_path):
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     cases=expand_cases(model,vectors)
-    lines=["// Deterministically generated from a symbolic CAT v2 model and explicit test vectors.",
-           "// Draft/evidence oracles are NOT user-confirmed specifications." if model['status']!='confirmed' else "// Based on confirmed CAT specification; implementation still requires testing.",
-           "import {describe,it,expect} from 'vitest'", "import {createDriver} from "+ts_string(binding['driver']),
-           "import {isDeepStrictEqual} from 'node:util'", "",'function accept(after: Record<string,unknown>, output: Record<string,unknown>, alternatives: Array<{state:Record<string,unknown>,output:Record<string,unknown>}>, declared: string[], setFields: string[]): boolean {',
-           '  const canonical = (id: string, value: unknown) => setFields.includes(id) && Array.isArray(value) ? [...value].sort() : value;',
-           '  return alternatives.some(expected => declared.every(id => Object.prototype.hasOwnProperty.call(after,id) && isDeepStrictEqual(canonical(id,after[id]),canonical(id,expected.state[id]))) && isDeepStrictEqual(output,expected.output));',
-           '}','',"describe("+ts_string(model['process']+' CAT symbolic contract')+", () => {"]
-    declared=[f['id'] for f in model['fields'] if f['role']=='state']
-    set_fields=[f['id'] for f in model['fields'] if f['role']=='state' and f['domain']['type']=='set']
-    for c in cases:
-        alt=[{'state':a['state'],'output':a['output']} for a in c['allowed']]
-        lines.extend(["  it("+ts_string(c['id'])+", async () => {",
-                      "    // TCE: "+c['source_tce'],
-                      "    const driver = createDriver()",
-                      "    const pre = "+ts_string(c['initial_state'])+" as Record<string,unknown>",
-                      "    const input = "+ts_string(c['input'])+" as Record<string,unknown>",
-                      "    await driver.prepare(pre, input)",
-                      "    const before = await driver.observeState()",
-                      "    for (const id of "+ts_string(declared)+") { const normalized = (v: unknown) => ("+ts_string(set_fields)+" as string[]).includes(id) && Array.isArray(v) ? [...v].sort() : v; expect(normalized(before[id])).toEqual(normalized(pre[id])); }",
-                      "    const output = await driver.trigger("+ts_string(c['trigger'])+", input)",
-                      "    const after = await driver.observeState()",
-                      "    const allowed = "+ts_string(alt)+" as Array<{state:Record<string,unknown>,output:Record<string,unknown>}> ",
-                      "    expect(accept(after, output, allowed, "+ts_string(declared)+", "+ts_string(set_fields)+")).toBe(true)",
-                      "  })"])
-    lines.append('})');return '\n'.join(lines)+'\n'
+    return _vitest_renderer()(model,cases,binding)
 
 
 def format_domain(d, language='en'):
