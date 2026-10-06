@@ -1,7 +1,7 @@
 ---
 title: CAT×TDD AI実行契約
 status: trial
-version: '0.5'
+version: '0.6'
 ---
 
 # CAT×TDD AI実行契約
@@ -14,18 +14,18 @@ version: '0.5'
 
 | 役割 | 行うこと | 行わないこと |
 |---|---|---|
-| 人間/規範正本 | 要求と意味上の選択を確定・承認する | コードから意味を自動昇格させない |
-| AI（orchestrator/役割Agent） | 正本取得、候補の整理、未決定事項、設計/コード作業、失敗原因の解釈、エスカレーション | 試験未実行や根拠不明を成功として報告しない |
+| 人間/規範正本 | Issueとして要求・問題・目的・完了条件を提示し、意味上の選択を確定・承認する | Task/Workへの分解を通常運用の必須作業にしない。コードから意味を自動昇格させない |
+| AI（orchestrator/役割Agent） | Issueの整理、`cycle-scope-divider`によるIssue→Task→Work分解、正本取得、候補整理、設計/コード作業、失敗原因の解釈、未決定事項のエスカレーション | 未決定の意味を補完しない。試験未実行や根拠不明を成功として報告しない |
 | `cat_flow.py` | Work Markdownを内部manifestへ正規化し、Skillルート、ローカルGit差分・変更可能パス、宣言済みコマンド実行、JUnit成績、証拠の失効、引継ぎ情報を扱う | 意味判断、仕様承認、CI/merge/deployの実行成功判定 |
 | `cat_artifact_lint.py` | front matter、ID、明示参照の静的検証 | 自然言語Conditionの完全性判定 |
 | `cat_compile_v2.py` | 形式化済みCATサブセットから記号モデル/具体テスト生成 | 全CAT、一般Process合成、自由記述の自動解釈 |
 | `cat_install.py` | 対象Workの採用技術を使い、設定/ツールを非破壊で導入 | 技術採用の決定、ユーザAgentの無断上書き |
 
-**重要**: スクリプトの`passed`は**実行したそのチェックの結果**のみ。`spec-confirmed`、`red-reviewed`、`CI-provider-passed`、`merged`、`deployed`、`real-use-verified`を転用しない。Work manifestに書かれた`confirmed`と`decision_ref`も、リンクの内容・人間の承認権限をスクリプトが検証したことにはならない。
+**重要**: Issue→Task→Workの意味的分解はAI Agentの責務であり、`cat_flow.py`の責務ではない。人間可読な`Work.md`はAIと人間がレビューできる実行契約であって、人間による手作成を前提としない。スクリプトの`passed`は**実行したそのチェックの結果**のみ。`spec-confirmed`、`red-reviewed`、`CI-provider-passed`、`merged`、`deployed`、`real-use-verified`を転用しない。Work manifestに書かれた`confirmed`と`decision_ref`も、リンクの内容・人間の承認権限をスクリプトが検証したことにはならない。
 
 ## 最小運用
 
-1. `Lifecycle`の状態フォルダを探索indexとして使う。新規受付は`Issues/New/`、継続は`Works/InProgress/`、判断・依存待ちは`Blocked/`を優先し、必要がない限り`Completed/`全件を走査しない。プロジェクト入口と現行正本・Git実状態を取得し、人間可読な[Work Markdown契約](Artifact記法.md)へ情報を整理する。既存コードからの復元はcandidateを原則とする。
+1. `Lifecycle`の状態フォルダを探索indexとして使う。新規受付は`Issues/New/`を入口とし、AIがIssueの要求・現象・完了条件・対象外・未知事項を整理した後、`cycle-scope-divider`でProcess単位のTaskと独立検証可能な仕様差分のWorkを生成する。人間は通常Task/Workを作成しない。既存の継続作業は`Works/InProgress/`、判断・依存待ちは`Blocked/`を優先し、必要がない限り`Completed/`全件を走査しない。Work生成時にプロジェクト入口と現行正本・Git実状態を取得し、人間可読な[Work Markdown契約](Artifact記法.md)へ整理する。既存コードからの復元はcandidateを原則とする。
 2. `python scripts/cat_flow.py validate --work <Work.md>`を実行する。`route --stage <stage>`の結果にある共通Agent/Skillと、宣言技術に合う`tech-*`だけを選ぶ。GitHubホストは前提にしない。
 3. 未決定の意味は人間へ差し戻す。`cat_artifact_lint.py --files <Process.md> <PI.md> <TCE.md>`で形式を確認し、レビュー後にのみconfirmedへ移す。独立するWorkは続行可。 Processは境界・仕様状態・観測/作用能力、PIは相手Process・方向・Presence、TCEは振る舞い単位を正本に持つ。CommonRule / DomainSpecが必要な意味を自由記述へ逃がさない。
 4. 機械可読な範囲では`cat_flow.py compile --kind model|tests --check`を使う。CATの新規意味正本は`semantic_contract: markdown-v2`の人間向け構造・表・限定式とし、JSON ASTはコンパイラ内部IRとしてのみ用いる。TestModelもMarkdownを標準出力とする。未対応の領域・形式はAIが規範からモデルを記述し、同じレビューゲートを受ける。**コンパイラ未対応=作業全体を終了**とはしない。逆に部分モデルの通過で未対応部分の仕様成立を主張しない。
@@ -63,4 +63,4 @@ GitによるWork隔離と正本文書の参照が前提。`cat_install.py`はデ
 
 ## Artifact表現と内部IR
 
-人間が作成・レビューするSemantic Artifact (Process / PI / TCE / CommonRule / DomainRule / DomainSpec / TestModel)とLifecycle Artifact (Work等)はMarkdownを標準とする。Semantic ArtifactとWorkの実行情報を同じ意味層へ混在させない。`cat_flow.py`と`cat_compile_v2.py`は実行時に必要な内部object/JSON IRへ正規化してよいが、それを規範正本として保存・手編集しない。旧`markdown-v1`、旧`work.json`、旧`cat-machine` JSONブロックは移行用の互換入力であり、新規Semantic Artifactの標準は`markdown-v2`とする。本文の日本語/英語表記は同じ内部IRへ正規化し、front matterの機械keyだけを安定化する。
+人間が直接確認・レビューできるSemantic Artifact (Process / PI / TCE / CommonRule / DomainRule / DomainSpec / TestModel)とLifecycle Artifact (Issue / Task / Work等)はMarkdownを標準とする。通常の新規要求では人間がIssueを入力し、Task/WorkはAIが生成する。Semantic ArtifactとWorkの実行情報を同じ意味層へ混在させない。`cat_flow.py`と`cat_compile_v2.py`は実行時に必要な内部object/JSON IRへ正規化してよいが、それを規範正本として保存・手編集しない。旧`markdown-v1`、旧`work.json`、旧`cat-machine` JSONブロックは移行用の互換入力であり、新規Semantic Artifactの標準は`markdown-v2`とする。本文の日本語/英語表記は同じ内部IRへ正規化し、front matterの機械keyだけを安定化する。
