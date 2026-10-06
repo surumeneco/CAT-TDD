@@ -594,13 +594,16 @@
           "confirmed-spec",
           "implementation-obligations",
           "production-source",
-          "execution-evidence"
+          "execution-evidence",
+          "conformance-binding"
         ],
         "write": [
           "Review"
         ],
         "commands": [
-          "conformance"
+          "compile:obligations",
+          "conformance",
+          "technology-inspector"
         ],
         "authority": [
           "review"

@@ -62,7 +62,7 @@ class AssembledSpecificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             process, pi, a, _ = self.sources(root)
-            with self.assertRaisesRegex(compiler.Blocked, 'assembled Process closed-world coverage not proved'):
+            with self.assertRaisesRegex(compiler.Blocked, 'assembled Process closed-world coverage .*not proved'):
                 compiler.load(process, pi, [a], allow_draft=False)
 
 

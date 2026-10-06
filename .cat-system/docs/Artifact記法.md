@@ -1,7 +1,7 @@
 ---
 title: CAT Artifact形式契約
 status: trial
-version: '0.9'
+version: '1.0'
 ---
 
 # CAT Artifact記法
@@ -368,7 +368,7 @@ Gate statusの日本語aliasは `成功 / 対象外 / 未実行 / 停止 / 不�
 
 ### Compilation
 
-決定論的コンパイルを使用するWorkだけ `Compilation / 変換` を追加する。
+決定論的コンパイルを使用するWorkだけ `Compilation / 変換` を追加する。TCEセルは`;`区切りで同一Processの複数confirmed TCEを列挙でき、closure/model生成ではassembled specificationとして扱う。`Conformance binding / 適合接続`は技術固有Inspectorが実装境界を仕様IDへ結び付ける機械設定であり、仕様そのものではない。
 
 ~~~md
 ## 変換

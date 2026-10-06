@@ -165,7 +165,7 @@ def compilation_path(wpath, w, conf, key, check):
     require(not Path(rel).is_absolute() and '..' not in Path(rel).parts, f'{key} escapes allowed compilation boundary')
     p = (base / rel).resolve()
     require(under(p, boundary), f'{key} escapes allowed compilation boundary')
-    require(p.is_file() or (not check and key in ('model', 'queue', 'tests_output')), f'{key} not found: {p}')
+    require(p.is_file() or (not check and key in ('model', 'queue', 'tests_output', 'obligations')), f'{key} not found: {p}')
     return str(p)
 
 
@@ -224,6 +224,70 @@ def compile_work(wpath, w, kind, check):
             'normative': not conf['allow_draft'], 'check_only': check}
 
 
+def obligations_work(wpath, w, check=False):
+    conf = w.get('compilation')
+    require(conf is not None, 'implementation obligations require Compilation inputs')
+    require(conf.get('obligations'), 'compilation.obligations missing')
+    unsupported = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
+    require(not unsupported, 'implementation obligations cannot omit declared CommonRule/DomainSpec semantics: ' + ', '.join(unsupported))
+    def loc(key, exists=True):
+        return compilation_path(wpath, w, conf, key, exists)
+    tces = compilation_tce_paths(wpath, w, conf, True)
+    output = loc('obligations', check)
+    argv = [sys.executable, str(ROOT / 'scripts/cat_implementation_obligations.py'),
+            loc('process'), loc('pi'), *tces]
+    if conf.get('domain_rule'):
+        argv += ['--domain-rule', loc('domain_rule')]
+    for technology in sorted(set(w.get('technologies', []))):
+        argv += ['--technology', technology]
+    argv += ['-o', output]
+    if check:
+        argv.append('--check')
+    p = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, timeout=60, check=False)
+    return {'command': ['python', 'scripts/cat_implementation_obligations.py', '...'],
+            'exit_code': p.returncode, 'status': 'passed' if p.returncode == 0 else 'blocked',
+            'stdout': p.stdout.strip()[-1200:], 'stderr': p.stderr.strip()[-1800:],
+            'check_only': check, 'output': output}
+
+
+def technology_conformance(wpath, w, conf):
+    results = []
+    technologies = set(w.get('technologies', []))
+    if 'TypeScript' in technologies:
+        if not conf.get('conformance_binding'):
+            return {'status': 'inconclusive', 'results': [],
+                    'reason': 'TypeScript implementation-conformance requires Compilation Conformance binding'}
+        binding_path = Path(compilation_path(wpath, w, conf, 'conformance_binding', True))
+        binding = read_json(binding_path)
+        require(binding.get('schema') == 'cat-typescript-conformance-binding/v1',
+                'wrong TypeScript conformance binding schema')
+        repo_name = binding.get('repository')
+        require(isinstance(repo_name, str) and repo_name, 'TypeScript conformance binding repository required')
+        repo_root = resolve_dir(wpath, w, '@repo:' + repo_name)
+        argv = [sys.executable,
+                str(ROOT / 'skills/tech-typescript/scripts/cat_typescript_conformance.py'),
+                '--repo', str(repo_root), '--binding', str(binding_path),
+                '--process', compilation_path(wpath, w, conf, 'process', True),
+                '--pi', compilation_path(wpath, w, conf, 'pi', True)]
+        p = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, timeout=60, check=False)
+        payload = None
+        raw = (p.stdout or p.stderr).strip()
+        if raw:
+            try:
+                payload = __import__('json').loads(raw)
+            except ValueError:
+                payload = {'status': 'inconclusive', 'error': raw[-1600:]}
+        if not isinstance(payload, dict):
+            payload = {'status': 'inconclusive', 'error': 'technology inspector produced no structured result'}
+        results.append({'technology': 'TypeScript', **payload})
+    statuses = [x.get('status', 'inconclusive') for x in results]
+    if any(x == 'blocked' for x in statuses):
+        return {'status': 'blocked', 'results': results, 'reason': 'technology conformance violation'}
+    if any(x != 'passed' for x in statuses):
+        return {'status': 'inconclusive', 'results': results, 'reason': 'technology conformance evidence incomplete'}
+    return {'status': 'passed', 'results': results, 'reason': 'available technology inspectors passed'}
+
+
 def conformance_context_sha(w):
     payload = {
         'id': w['id'],
@@ -243,6 +307,8 @@ def conformance_input_hashes(wpath, w, kind):
         keys.append('model')
     elif kind == 'implementation-conformance':
         keys.append('obligations')
+        if conf.get('conformance_binding'):
+            keys.append('conformance_binding')
     result = {}
     for key in keys:
         if not conf.get(key):
@@ -349,6 +415,10 @@ def conformance_work(wpath, w, kind):
         msg=(p.stderr or p.stdout).strip()
         status='inconclusive' if any(x in msg for x in ('unsupported','currently supports','unproven','cannot compare')) else 'blocked'
         return {'gate':kind,'status':status,'reason':msg[-1800:]}
+    tech = technology_conformance(wpath, w, conf)
+    if tech['status'] == 'blocked':
+        return {'gate': kind, 'status': 'blocked', 'reason': tech['reason'],
+                'technology_results': tech['results']}
     require(conf.get('obligations'), 'implementation-conformance requires Compilation Obligations')
     path=compilation_path(wpath,w,conf,'obligations',True)
     data=read_json(Path(path))
@@ -372,8 +442,14 @@ def conformance_work(wpath, w, kind):
     if any(x['status']=='failed' for x in items):
         return {'gate':kind,'status':'blocked','reason':'one or more implementation obligations failed','missing_categories':missing}
     if missing or any(x['status'] in ('inconclusive','not-run') for x in items):
-        return {'gate':kind,'status':'inconclusive','reason':'obligations are incomplete or not machine-decidable','missing_categories':missing}
-    return {'gate':kind,'status':'passed','reason':'all CAT implementation obligation categories have passed evidence'}
+        return {'gate':kind,'status':'inconclusive','reason':'obligations are incomplete or not machine-decidable',
+                'missing_categories':missing,'technology_results':tech['results']}
+    if tech['status'] != 'passed':
+        return {'gate':kind,'status':'inconclusive','reason':tech['reason'],
+                'missing_categories':missing,'technology_results':tech['results']}
+    return {'gate':kind,'status':'passed',
+            'reason':'all CAT implementation obligation categories and available technology inspectors passed',
+            'technology_results':tech['results']}
 
 
 def _repo_state(wpath,w):
@@ -758,13 +834,15 @@ def main(argv=None):
     init = sub.add_parser('init', help='create an unapproved Work scaffold')
     init.add_argument('--id', required=True)
     init.add_argument('-o', '--output', required=True)
-    for key in ('validate', 'route', 'git', 'compile', 'conformance', 'guard', 'run', 'status', 'handoff'):
+    for key in ('validate', 'route', 'git', 'compile', 'obligations', 'conformance', 'guard', 'run', 'status', 'handoff'):
         p = sub.add_parser(key)
         p.add_argument('--work', required=True)
         if key == 'route':
             p.add_argument('--stage', choices=STAGES, required=True)
         if key == 'compile':
             p.add_argument('--kind', choices=('model', 'queue', 'tests'), required=True)
+            p.add_argument('--check', action='store_true')
+        if key == 'obligations':
             p.add_argument('--check', action='store_true')
         if key == 'conformance':
             p.add_argument('--kind', choices=CONFORMANCE_GATES, required=True)
@@ -814,6 +892,8 @@ def main(argv=None):
                 result = {'repos': git_snapshot(p, w)}
             elif args.cmd == 'compile':
                 result = compile_work(p, w, args.kind, args.check)
+            elif args.cmd == 'obligations':
+                result = obligations_work(p, w, args.check)
             elif args.cmd == 'conformance':
                 result = record_conformance_evidence(p, w, args.kind, conformance_work(p, w, args.kind))
             elif args.cmd == 'guard':
@@ -827,7 +907,7 @@ def main(argv=None):
         print(json_bytes(result).decode(), end='')
         if args.cmd == 'validate' and result['status'] != 'passed':
             return 2
-        if args.cmd in ('route', 'compile', 'conformance', 'guard', 'run') and result['status' if args.cmd != 'run' else 'verdict'] not in ('passed', 'ready', 'inconclusive'):
+        if args.cmd in ('route', 'compile', 'obligations', 'conformance', 'guard', 'run') and result['status' if args.cmd != 'run' else 'verdict'] not in ('passed', 'ready', 'inconclusive'):
             return 2
         return 0
     except (Blocked, OSError, subprocess.TimeoutExpired) as exc:
