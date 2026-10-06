@@ -1,7 +1,7 @@
 ---
 title: CAT×TDD AI実行契約
 status: trial
-version: '0.8'
+version: '0.9'
 ---
 
 # CAT×TDD AI実行契約
@@ -49,7 +49,7 @@ confirmed promotion、merge、deploy等の高権限操作は通常の設計・�
 
 execution evidenceはRunner / Validator / Providerが生成する。AI Agentはevidence本文を書き換えない。意味解釈が必要ならReview / Interpretation Artifactからevidenceを参照する。
 
-`passed`は実行した検査だけに有効であり、別Gateへ伝播しない。特にGreen、CI、merge、deployment、real-useは互いに独立する。
+`passed`は実行した検査だけに有効であり、別Gateへ伝播しない。特にGreen、CI、merge、deployment、real-useは互いに独立する。process-closure / model-conformance / implementation-conformanceはScript所有のconformance evidenceを基準とし、Work本文に`passed`と記載しただけでは成立しない。deterministic verdictが`inconclusive`の場合だけ独立Review evidenceで閉じる。
 
 ## 4つのflow
 
@@ -57,7 +57,7 @@ execution evidenceはRunner / Validator / Providerが生成する。AI Agentはe
 
 confirmed assembled specificationを入口とする。process-closure、model-conformance、implementation-conformanceを独立Gateとして扱う。
 
-TestModelはCompiler所有、TDD Execution QueueはQueue Compiler / State Manager所有、generated testはRenderer所有であり、AIが直接補正しない。機械変換不能な意味をAIでproduction oracleへ補完せずblockedとする。
+TestModelはCompiler所有、TDD Execution QueueはQueue Compiler / State Manager所有、generated testはRenderer所有であり、AIが直接補正しない。機械変換不能な意味をAIでproduction oracleへ補完せずblockedとする。対象仕様にCommonRule / DomainSpecが含まれる場合も、対応するdeterministic mapping / verifierが無ければ同様に停止する。
 
 current Queue item 1件ごとの標準TDD cycleで、原則必須のLLM invocationは`tdd-implementer`だけとする。Red理由が機械判定不能な時だけ`tdd-checker`を起動する。
 

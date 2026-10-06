@@ -171,6 +171,8 @@ def compile_work(wpath, w, kind, check):
     conf = w.get('compilation')
     require(conf is not None, 'no machine-readable compilation declared')
     require(kind in ('model', 'queue', 'tests'), 'kind must be model, queue or tests')
+    unsupported = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
+    require(not unsupported, 'normative compiler does not map declared CommonRule/DomainSpec inputs: ' + ', '.join(unsupported))
     def loc(key):
         return compilation_path(wpath, w, conf, key, check)
     argv = [sys.executable, str(ROOT / 'scripts/cat_compile_v2.py'), kind]
@@ -200,10 +202,88 @@ def compile_work(wpath, w, kind, check):
             'normative': not conf['allow_draft'], 'check_only': check}
 
 
+def conformance_context_sha(w):
+    payload = {
+        'id': w['id'],
+        'flow': infer_flow(w),
+        'specification': w['specification'],
+        'scope': w['scope'],
+        'compilation': w.get('compilation'),
+        'repositories': w.get('repositories', []),
+    }
+    return sha(json_bytes(payload))
+
+
+def conformance_input_hashes(wpath, w, kind):
+    conf = w.get('compilation') or {}
+    keys = ['process', 'pi', 'tce', 'domain_rule']
+    if kind == 'model-conformance':
+        keys.append('model')
+    elif kind == 'implementation-conformance':
+        keys.append('obligations')
+    result = {}
+    for key in keys:
+        if not conf.get(key):
+            continue
+        path = Path(compilation_path(wpath, w, conf, key, True))
+        result[key] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    return result
+
+
+def record_conformance_evidence(wpath, w, kind, result):
+    runtime = wpath.parent / '.cat-flow' / 'conformance'
+    runtime.mkdir(parents=True, exist_ok=True)
+    supporting = result.get('evidence')
+    payload = {
+        'schema': 'cat-conformance-evidence/v1',
+        'work_id': w['id'],
+        'gate': kind,
+        'context_sha256': conformance_context_sha(w),
+        'input_sha256': conformance_input_hashes(wpath, w, kind),
+        'verdict': result['status'],
+        'reason': result.get('reason', ''),
+        'supporting_evidence': supporting,
+    }
+    if kind == 'implementation-conformance':
+        payload['repo_state_sha256'] = sha(json_bytes(_repo_state(wpath, w)))
+    path = runtime / (kind + '.json')
+    path.write_bytes(json_bytes(payload))
+    output = dict(result)
+    output['supporting_evidence'] = supporting
+    output['evidence'] = str(path)
+    return output
+
+
+def conformance_evidence_status(wpath, w, kind):
+    path = wpath.parent / '.cat-flow' / 'conformance' / (kind + '.json')
+    if not path.is_file():
+        return {'status': 'not-run', 'evidence': '', 'reason': 'deterministic conformance evidence missing'}
+    try:
+        e = read_json(path)
+        if e.get('schema') != 'cat-conformance-evidence/v1' or e.get('work_id') != w['id'] or e.get('gate') != kind:
+            return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance evidence identity mismatch'}
+        if e.get('context_sha256') != conformance_context_sha(w):
+            return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance context changed'}
+        for item in e.get('input_sha256', {}).values():
+            p = Path(item['path'])
+            if not p.is_file() or sha(p.read_bytes()) != item['sha256']:
+                return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance input changed'}
+        if kind == 'implementation-conformance':
+            if e.get('repo_state_sha256') != sha(json_bytes(_repo_state(wpath, w))):
+                return {'status': 'stale', 'evidence': str(path), 'reason': 'implementation repository state changed'}
+        return {'status': e.get('verdict', 'inconclusive'), 'evidence': str(path), 'reason': e.get('reason', '')}
+    except (OSError, KeyError, Blocked):
+        return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance evidence cannot be revalidated'}
+
+
 def conformance_work(wpath, w, kind):
     require(kind in CONFORMANCE_GATES, 'unknown conformance gate')
     conf = w.get('compilation')
     require(conf is not None, 'conformance requires Compilation inputs')
+    unmapped = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
+    if unmapped:
+        return {'gate': kind, 'status': 'blocked',
+                'reason': 'declared CommonRule/DomainSpec semantics are not mapped by the normative compiler: ' + ', '.join(unmapped)}
     if kind == 'process-closure':
         if len(w['scope']['process_ids']) != 1:
             return {'gate':kind,'status':'inconclusive',
@@ -216,8 +296,15 @@ def conformance_work(wpath, w, kind):
         argv += ['-o',str(runtime/'process-closure.model.json')]
         p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
         if p.returncode == 0:
+            model = read_json(runtime/'process-closure.model.json')
+            if model.get('coverage_requirement') != 'closed':
+                return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
+                        'reason':'local TCE coverage is partial; assembled Process closure requires additional deterministic or review evidence'}
+            if not all(x.get('result') == 'proved' for x in model.get('coverage_checks', {}).values()):
+                return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
+                        'reason':'closed-world declaration exists but closure proof is incomplete'}
             return {'gate':kind,'status':'passed','evidence':str(runtime/'process-closure.model.json'),
-                    'reason':'supported finite closure compiled from confirmed sources'}
+                    'reason':'supported finite closed-world coverage compiled and proved from confirmed sources'}
         msg=(p.stderr or p.stdout).strip()
         inconclusive_markers=('currently supports','unproven','non-finite','requires a technology','unsupported')
         status='inconclusive' if any(x in msg for x in inconclusive_markers) else 'blocked'
@@ -240,8 +327,13 @@ def conformance_work(wpath, w, kind):
     for item in items:
         require(isinstance(item,dict),'obligation must be object')
         require(item.get('category') in required,'unknown obligation category')
+        require(isinstance(item.get('source_ref'),str) and item['source_ref'],'obligation source_ref required')
+        require(isinstance(item.get('method'),str) and item['method'],'obligation verification method required')
         require(item.get('status') in ('passed','failed','inconclusive','not-run'),'invalid obligation status')
-        if item['status']=='passed': require(isinstance(item.get('evidence'),str) and item['evidence'],'passed obligation needs evidence')
+        if item['status'] in ('passed','failed'):
+            require(isinstance(item.get('evidence'),str) and item['evidence'],item['status']+' obligation needs evidence')
+        if item['status'] in ('inconclusive','not-run'):
+            require(isinstance(item.get('reason'),str) and item['reason'],item['status']+' obligation needs reason')
         categories.add(item['category'])
     missing=sorted(required-categories)
     if any(x['status']=='failed' for x in items):
@@ -522,9 +614,22 @@ def status_work(wpath, w):
                 evidence[c['id']] = {'stage': c['stage'], 'status': e['verdict'],
                                      'reason': e['reason']}
     spec = w['specification']
-    gate_map = {g['id']: {'status': g['status'], 'evidence': g.get('evidence', '')} for g in w.get('gates', [])}
+    declared_gates = {g['id']: {'status': g['status'], 'evidence': g.get('evidence', '')} for g in w.get('gates', [])}
+    gate_map = dict(declared_gates)
     for gid in ALL_GATES:
         gate_map.setdefault(gid, {'status': 'not-run', 'evidence': ''})
+    for gid in CONFORMANCE_GATES:
+        machine = conformance_evidence_status(wpath, w, gid)
+        declared = declared_gates.get(gid, {'status': 'not-run', 'evidence': ''})
+        if machine['status'] == 'passed':
+            gate_map[gid] = machine
+        elif machine['status'] == 'inconclusive' and declared['status'] == 'passed' and declared.get('evidence'):
+            gate_map[gid] = {'status': 'passed', 'evidence': declared['evidence'],
+                             'deterministic_status': 'inconclusive',
+                             'deterministic_evidence': machine['evidence'],
+                             'reason': 'deterministic validator was inconclusive; explicit review evidence supplied'}
+        else:
+            gate_map[gid] = machine
     spec_gate = 'reported-confirmed/unverified' if spec['status'] == 'confirmed' else spec['status']
     next_actions = []
     if spec['status'] != 'confirmed':
@@ -624,7 +729,7 @@ def main(argv=None):
             elif args.cmd == 'compile':
                 result = compile_work(p, w, args.kind, args.check)
             elif args.cmd == 'conformance':
-                result = conformance_work(p, w, args.kind)
+                result = record_conformance_evidence(p, w, args.kind, conformance_work(p, w, args.kind))
             elif args.cmd == 'guard':
                 result = guard_work(p, w, args.stage, args.phase)
             elif args.cmd == 'run':

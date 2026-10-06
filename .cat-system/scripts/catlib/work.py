@@ -178,6 +178,10 @@ def read_work_markdown(path):
         for humans, key in mapping.items():
             value = _cell(row, *humans, key, required=False)
             if not _none(value): compilation[key] = value
+        common_rules = _items(_cell(row, 'Common rules', 'CommonRules', '共通規則', 'common_rules', required=False))
+        domain_specs = _items(_cell(row, 'Domain specs', 'DomainSpecs', '領域仕様', 'domain_specs', required=False))
+        if common_rules: compilation['common_rules'] = common_rules
+        if domain_specs: compilation['domain_specs'] = domain_specs
         compilation['allow_draft'] = _bool(_cell(row, 'Allow draft', 'allow_draft', 'Draft許可'), 'Compilation Allow draft')
     decision = fm.get('decision_ref')
     if _none(str(decision or '')): decision = None
@@ -273,8 +277,8 @@ External/semantic gates are reported evidence. `passed` or `not-applicable` requ
 
 Remove this section when deterministic compilation is not used.
 
-| Process | PI | TCE | Domain rule | Model | Vectors | Queue | Binding | Tests | Obligations | Allow draft |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Process | PI | TCE | Domain rule | Common rules | Domain specs | Model | Vectors | Queue | Binding | Tests | Obligations | Allow draft |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 """
 
 

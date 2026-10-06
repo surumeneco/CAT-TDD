@@ -10,7 +10,7 @@ Production TestModelはconfirmed CAT仕様から`scripts/cat_compile_v2.py model
 1. Process / PI / TCE / DomainRuleのID、status、refs、source hashを固定する。
 2. CompilerがTrigger、field、Condition、Allowed Outcome、frame condition、coverage verificationを保持したsymbolic relationを生成する。
 3. `source_semantic_map`で入力Artifactの意味要素と生成要素の対応を保持する。
-4. normative compileでunsupported / uncovered / unprovenが残る場合はblockedとし、意味をAIで補完しない。
+4. normative compileでunsupported / uncovered / unprovenが残る場合はblockedとし、意味をAIで補完しない。対象仕様にCommonRule / DomainSpecが含まれるのにcompilerまたは専用deterministic verifierへ未写像なら、同様にproduction pathを停止する。
 5. `model-conformance`は現在のsourceからの完全再生成一致をまずValidatorで検査する。Validatorが構造上判定不能な場合だけ`cat-model-reviewer`へ委譲する。
 
 `--allow-draft`はcompiler開発・shadow検証専用であり、production oracleの代替にしない。TestModelは派生物なので手修正せず、欠落があればcompiler/schemaを修正して再生成する。

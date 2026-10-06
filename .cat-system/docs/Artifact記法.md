@@ -1,7 +1,7 @@
 ---
 title: CAT Artifact形式契約
 status: trial
-version: '0.8'
+version: '0.9'
 ---
 
 # CAT Artifact記法
@@ -364,7 +364,7 @@ depends_on: []
 | real-use | 成功 | manual-check:2026-10-05 |
 ~~~
 
-Gate statusの日本語aliasは `成功 / 対象外 / 未実行 / 停止 / 不確定`。内部では `passed / not-applicable / not-run / blocked / inconclusive`へ正規化する。
+Gate statusの日本語aliasは `成功 / 対象外 / 未実行 / 停止 / 不確定`。内部では `passed / not-applicable / not-run / blocked / inconclusive`へ正規化する。CAT適合性3 Gateの最終状態はScript所有の `.cat-flow/conformance/` 証拠を基準とし、Work表の `passed` だけでは成立しない。機械判定が `inconclusive` の場合に限り、独立Review evidenceで閉じることができる。
 
 ### Compilation
 
@@ -417,7 +417,7 @@ Queue itemにScenario、Expected Result、Oracle、Condition、Effect、input/ou
 
 ### Implementation obligations
 
-`cat-implementation-obligations/v1`は実装適合性GateのLifecycle/Evidence Artifactである。categoryは `interface / capability / behavior / invariant / cross-process / domain / implementation-constraint` を使用し、各obligationはstatusとevidence参照を持つ。Green/CIの結果だけを全categoryへ複製しない。
+`cat-implementation-obligations/v1`は実装適合性GateのLifecycle/Evidence Artifactである。categoryは `interface / capability / behavior / invariant / cross-process / domain / implementation-constraint` を使用する。各obligationは少なくとも `category / source_ref / method / status` を持ち、`passed / failed` は具体的な `evidence`、`inconclusive / not-run` は `reason` を持つ。Green/CIの結果だけを全categoryへ複製しない。
 
 ## 14. Candidate・Gate
 
@@ -433,4 +433,4 @@ Candidateは `Observation / Source / Proposed semantics / Unknown / Status` を�
 
 一回の決定論的compileではsemantic contractを混在させない。新規Artifact・fixture・例はv2を使用する。
 
-コンパイラ非対応の意味要素は、別の意味へ縮約して通さない。Artifactとして保持したまま `unsupported / BLOCKED` とし、production TestModelをAIで作成・補正しない。Compiler / schema改善Work、または仕様上定義された領域別検証へ分離する。
+コンパイラ非対応の意味要素は、別の意味へ縮約して通さない。Artifactとして保持したまま `unsupported / BLOCKED` とし、production TestModelをAIで作成・補正しない。とくにCommonRule / DomainSpecをWorkが宣言しているのに現在のnormative compiler / deterministic verifierへ写像されていない場合、そのWorkのnormative compileとCAT適合性Gateを停止する。Compiler / schema改善Work、または仕様上定義された領域別検証へ分離する。

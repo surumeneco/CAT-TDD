@@ -11,7 +11,7 @@ description: "Validate CAT artifact syntax and the independent process-closure, 
 
 ## process-closure
 
-assembled confirmed specificationの到達可能領域を閉じているか検査する。現行compilerが単一Process・有限guard範囲で証明できる場合はValidatorだけでpass/failを確定する。multi-Process compositionや非決定論的意味で判定不能なら`inconclusive`とし、`cat-reviewer`がその箇所だけを審査する。
+assembled confirmed specificationの到達可能領域を閉じているか検査する。単一Process・有限guard範囲でも、網羅要求が`closed`かつ全Triggerが`proved`の場合だけ機械的にpassとする。`partial`、multi-Process composition、非決定論的意味などは`inconclusive`として限定レビューへ渡す。
 
 ## model-conformance
 
@@ -19,6 +19,6 @@ TestModelをcurrent confirmed sourceから完全再生成し、一致、source h
 
 ## implementation-conformance
 
-`cat-implementation-obligations/v1`でInterface / Capability / Behavior / Invariant / Cross-process / Domain / implementation-constraintを独立obligationとして集約する。Green/CIをGate代替にしない。全categoryがpassed evidenceを持てばpass、failedがあればfail、未実行/判定不能はinconclusiveとして`cat-implementation-reviewer`へ限定委譲する。
+`cat-implementation-obligations/v1`でInterface / Capability / Behavior / Invariant / Cross-process / Domain / implementation-constraintを独立obligationとして集約する。各obligationは`source_ref`と検証`method`を持ち、passed/failedはevidence、not-run/inconclusiveはreasonを持つ。Green/CIをGate代替にしない。
 
-Reviewerは対象Artifactを修正せず、failedをpassへ上書きしない。
+Validator結果は`.cat-flow/conformance/`のScript所有証拠へ保存し、Work本文の`passed`だけではGateを成立させない。Reviewerは対象Artifactを修正せず、deterministic verdictが`inconclusive`の場合だけ独立Review evidenceで閉じる。failed / blocked / stale / not-runをpassへ上書きしない。CommonRule / DomainSpecが宣言されているのにdeterministic mapping / verifierが無い場合はnormative pathをblockedにする。
