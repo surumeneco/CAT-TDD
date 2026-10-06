@@ -310,12 +310,17 @@ def conformance_work(wpath, w, kind):
         status='inconclusive' if any(x in msg for x in inconclusive_markers) else 'blocked'
         return {'gate':kind,'status':status,'reason':msg[-1800:]}
     if kind == 'model-conformance':
-        result=compile_work(wpath,w,'model',True)
-        if result['status']=='passed':
-            return {'gate':kind,'status':'passed','reason':'TestModel exactly regenerates from current CAT sources'}
-        msg=result.get('stderr','')
-        status='inconclusive' if any(x in msg for x in ('unsupported','currently supports','unproven')) else 'blocked'
-        return {'gate':kind,'status':status,'reason':msg or 'TestModel differs from deterministic regeneration'}
+        require(conf.get('model'), 'model-conformance requires Compilation Model')
+        def loc(key): return compilation_path(wpath, w, conf, key, True)
+        argv=[sys.executable,str(ROOT/'scripts/cat_model_conformance.py'),loc('process'),loc('pi'),loc('tce'),loc('model')]
+        if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
+        p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
+        if p.returncode == 0:
+            return {'gate':kind,'status':'passed','evidence':p.stdout.strip(),
+                    'reason':'independent source-to-TestModel semantic inventory matched'}
+        msg=(p.stderr or p.stdout).strip()
+        status='inconclusive' if any(x in msg for x in ('unsupported','currently supports','unproven','cannot compare')) else 'blocked'
+        return {'gate':kind,'status':status,'reason':msg[-1800:]}
     require(conf.get('obligations'), 'implementation-conformance requires Compilation Obligations')
     path=compilation_path(wpath,w,conf,'obligations',True)
     data=read_json(Path(path))
@@ -361,23 +366,70 @@ def _repo_state(wpath,w):
     return result
 
 
+def _workspace_state(wpath, w):
+    root = workspace_root(wpath)
+    repo_roots = []
+    for repo in w.get('repositories', []):
+        try:
+            repo_roots.append(resolve_dir(wpath, w, '@repo:' + repo['name']))
+        except Blocked:
+            pass
+    excluded = {'.git', '__pycache__', 'node_modules', '.gradle', '.venv', 'venv', 'dist', 'build', 'target'}
+    state = {}
+    for path in sorted(root.rglob('*')):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(root)
+        if any(part in excluded for part in rel.parts):
+            continue
+        if len(rel.parts) >= 2 and rel.parts[0] == '.cat-flow' and rel.parts[1] == 'guards':
+            continue
+        if any(under(path, repo_root) for repo_root in repo_roots):
+            continue
+        state[str(rel)] = sha(path.read_bytes())
+    return state
+
+
+def _workspace_write_patterns(wpath, w, permissions):
+    mapping = {
+        'Lifecycle/Tasks': ['Lifecycle/Tasks/**'],
+        'Lifecycle/Works': ['Lifecycle/Works/**'],
+        'CAT/Candidates': ['Lifecycle/CAT/Candidates/**'],
+        'CAT/Draft': ['Lifecycle/CAT/Draft/**'],
+        'Review': ['Lifecycle/CAT/Reviews/**', 'Lifecycle/TDD/Results/**', 'Lifecycle/Reviews/**'],
+        'REF/Scopes': ['Lifecycle/REF/Scopes/**'],
+        'Workflow': ['Lifecycle/Workflow/**'],
+    }
+    patterns = []
+    for token in permissions.get('write', []):
+        patterns.extend(mapping.get(token, []))
+    root = workspace_root(wpath)
+    if '.cat-flow/evidence' in permissions.get('write', []):
+        ev = (wpath.parent / '.cat-flow' / 'evidence').resolve()
+        if under(ev, root):
+            patterns.append(str(ev.relative_to(root)) + '/**')
+    return patterns
+
+
 def guard_work(wpath,w,stage,phase):
     r=route(w,stage)
     require(r['status']=='ready', 'cannot guard blocked route')
     path=wpath.parent/'.cat-flow'/'guards'/(stage+'.json')
     if phase=='start':
         path.parent.mkdir(parents=True,exist_ok=True)
-        payload={'schema':'cat-write-guard/v1','work_id':w['id'],'stage':stage,
-                 'manifest_sha256':sha(wpath.read_bytes()),'state':_repo_state(wpath,w),
+        payload={'schema':'cat-write-guard/v2','work_id':w['id'],'stage':stage,
+                 'manifest_sha256':sha(wpath.read_bytes()),'repo_state':_repo_state(wpath,w),
+                 'workspace_state':_workspace_state(wpath,w),
                  'permissions':r['permissions']}
         path.write_bytes(json_bytes(payload))
         return {'status':'passed','guard':str(path),'stage':stage}
     require(path.is_file(),'guard baseline missing')
     base=read_json(path);require(base.get('manifest_sha256')==sha(wpath.read_bytes()),'Work changed after guard start')
+    require(base.get('schema')=='cat-write-guard/v2','guard baseline schema stale; restart guard')
     after=_repo_state(wpath,w);violations=[]
     repo_write='repo:production' in r['permissions'].get('write',[])
     for repo in w['repositories']:
-        before=base['state'].get(repo['name'],{});now=after.get(repo['name'],{})
+        before=base['repo_state'].get(repo['name'],{});now=after.get(repo['name'],{})
         changed=sorted(k for k in set(before)|set(now) if before.get(k)!=now.get(k))
         if repo_write:
             allowed=repo.get('production_paths') or repo.get('allowed_paths',[])
@@ -385,7 +437,13 @@ def guard_work(wpath,w,stage,phase):
             allowed=[]
         bad=[p for p in changed if not any(fnmatch.fnmatchcase(p,pat) for pat in allowed)]
         if bad: violations.append({'repository':repo['name'],'paths':bad})
-    return {'status':'blocked' if violations else 'passed','stage':stage,'violations':violations}
+    before_ws=base.get('workspace_state',{});now_ws=_workspace_state(wpath,w)
+    changed_ws=sorted(k for k in set(before_ws)|set(now_ws) if before_ws.get(k)!=now_ws.get(k))
+    allowed_ws=_workspace_write_patterns(wpath,w,r['permissions'])
+    bad_ws=[p for p in changed_ws if not any(fnmatch.fnmatchcase(p,pat) for pat in allowed_ws)]
+    if bad_ws: violations.append({'workspace':str(workspace_root(wpath)),'paths':bad_ws})
+    return {'status':'blocked' if violations else 'passed','stage':stage,'violations':violations,
+            'workspace_allowed':allowed_ws}
 
 
 def handoff_work(wpath,w,stage):

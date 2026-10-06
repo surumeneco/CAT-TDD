@@ -1058,9 +1058,18 @@ def render_model_markdown(model):
     h_source=('出典Artifact','Artifact ID','種別','SHA-256') if ja else ('Source artifacts','Artifact ID','Kind','SHA-256')
     lines += [f'## {h_source[0]}','',f'| {h_source[1]} | {h_source[2]} | {h_source[3]} |','| --- | --- | --- |']
     for aid,(kind,digest) in zip(model['source_artifacts'], model['source_sha256'].items()):lines.append(f'| {_md(aid)} | {_md(kind)} | `{digest}` |')
+    if model.get('process_interfaces') is not None:
+        lines += ['',('## Process境界' if ja else '## Process interfaces'),'', '| PI |','| --- |']
+        for ref in model.get('process_interfaces',[]): lines.append(f"| {_md(ref)} |")
     if model.get('pi_boundary'):
         lines += ['',('## PI境界' if ja else '## PI boundary'),'',('| 相手Process | 方向 |' if ja else '| Peer process | Direction |'),'| --- | --- |',
                   f"| {_md(model['pi_boundary']['peer'])} | {_md({'receive':'受信','send':'送信','bidirectional':'双方向'}.get(model['pi_boundary']['direction'],model['pi_boundary']['direction']) if ja else model['pi_boundary']['direction'])} |"]
+    if model.get('pi_operations') is not None:
+        lines += ['',('## PI操作' if ja else '## PI operations'),'',('| ID | 方向 | 起点 |' if ja else '| ID | Direction | Trigger |'),'| --- | --- | --- |']
+        direction_ja={'accept':'受付','provide':'提供'}
+        for op in model.get('pi_operations',[]):
+            direction=direction_ja.get(op['direction'],op['direction']) if ja else op['direction']
+            lines.append(f"| {_md(op['id'])} | {_md(direction)} | {_md(op.get('trigger') or '—')} |")
     lines += ['',('## 起点' if ja else '## Triggers'),'',('| ID | 由来 |' if ja else '| ID | Origin |'),'| --- | --- |']
     for t in model['triggers']:lines.append(f"| {_md(t['id'])} | {_md(t['origin'])} |")
     lines += ['',('## 仕様要素' if ja else '## Fields'),'',('| ID | 役割 | Domain |' if ja else '| ID | Role | Domain |'),'| --- | --- | --- |']
