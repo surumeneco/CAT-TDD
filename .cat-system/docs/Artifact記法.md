@@ -1,7 +1,7 @@
 ---
 title: CAT Artifact形式契約
 status: trial
-version: '0.7'
+version: '0.8'
 ---
 
 # CAT Artifact記法
@@ -303,9 +303,19 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 
 対象例はDOM構造、視覚、accessibility、統計的性質、複数実行間の関係等。単にTCEへ書きにくい内容を未定義のまま置く分類ではなく、対象・要求・検証方法を持つ。
 
-## 12. Work
+## 12. Issue / Task / Work
 
-WorkはSemantic ArtifactではなくLifecycle Artifactである。`Work.md`のfront matterと表を `cat_flow.py` が内部 `cat-work/v1`へ正規化する。Git、repository、runner、command、JUnit等はここに存在してよい。
+Issue / Task / Workは開発Lifecycleを段階的に具体化するArtifactである。通常運用では**人間が直接入力する開発要求の単位はIssue**とし、人間にTaskやWorkの手作成を要求しない。
+
+- `Issue`: 人間が要求・問題・目的・観測可能な完了条件・対象外・未決定事項を記述する入口。CAT/TDDの用語やProcess分割を知らなくても記述できることを前提とする。
+- `Task`: AIの`cycle-scope-divider`がIssueをProcess責務ごとに分解した単位。Process境界と子Workの依存関係を保持する。
+- `Work`: AIの`cycle-scope-divider`がTaskを、単独で仕様化・検証できる仕様差分へ分解した実行単位。人間可読なMarkdownであることは、人間による手作成を要求するという意味ではない。
+
+意味上の選択肢が複数ありIssueだけから確定できない場合、AIはその意味を補完せず、該当Task/Workを停止して人間へ判断を返す。Issue→Task→Workの構造化自体はAIの責務であり、人間の意味決定責務とは区別する。
+
+### Work
+
+WorkはSemantic ArtifactではなくLifecycle Artifactである。`Work.md`のfront matterと表を `cat_flow.py` が内部 `cat-work/v1`へ正規化する。Git、repository、runner、command、JUnit等はここに存在してよい。`cat_flow.py`は作成済みWorkを機械処理するもので、Issue→Task→Workの意味的分解は行わない。
 
 WorkのLifecycle進捗は`Lifecycle/Works/{New,InProgress,Blocked,Completed,Cancelled}/<work>/`という**配置**で表す。同じ情報を`lifecycle_status`としてfront matterへ重複させない。front matterの`status`や`spec_status`はLifecycleフォルダの代替ではない。Work状態を変えるときはWorkディレクトリ全体を移動し、`@work/`相対参照を維持する。
 
