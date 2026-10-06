@@ -30,6 +30,17 @@ class ScopeOrderTest(unittest.TestCase):
             r=cat_scope_order.build([str(parent),str(child)],{'child'})
             self.assertEqual([x['id'] for x in r['ready']],['parent'])
 
+
+    def test_independent_leaf_scopes_are_parallel_ready(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            parent=self.write(root,work('parent'))
+            left=self.write(root,work('left','parent'))
+            right=self.write(root,work('right','parent'))
+            result=cat_scope_order.build([str(parent),str(left),str(right)],set())
+            self.assertEqual([x['id'] for x in result['ready']],['left','right'])
+
+
     def test_dependency_cycle_blocks(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)

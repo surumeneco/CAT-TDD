@@ -50,6 +50,15 @@ class QueueRuntimeTest(unittest.TestCase):
             self.assertEqual(updated['items'][0]['status'],'done')
             self.assertEqual(updated['items'][1]['status'],'current')
 
+
+    def test_queue_becomes_stale_when_test_model_changes(self):
+        model=self.model();vectors=self.vectors()
+        original=b'original-model';vb=b'vectors'
+        q=compiler.make_queue(model,vectors,original,vb)
+        with self.assertRaisesRegex(compiler.Blocked,'Queue is stale: TestModel changed'):
+            compiler.current_vectors(model,vectors,q,b'changed-model',vb)
+
+
     def test_queue_rejects_semantic_payload(self):
         with tempfile.TemporaryDirectory() as td:
             p=Path(td)/'Queue.json'

@@ -17,6 +17,19 @@ class PolicyRuntimeTest(unittest.TestCase):
         self.assertNotIn('refactor',flows['spec-implementation']['stages'])
         self.assertEqual(flows['issue-work']['stages'],['intake'])
 
+
+    def test_non_implementation_issue_can_complete_without_tdd(self):
+        handoff=self.routing['flows']['issue-work']['handoff_by_work_kind']
+        self.assertEqual(handoff['analysis'],'complete-in-flow')
+        self.assertEqual(handoff['documentation'],'complete-in-flow')
+        self.assertEqual(handoff['verification'],'complete-in-flow')
+
+    def test_code_to_spec_cannot_write_production_source(self):
+        reverse=self.routing['stages']['reverse']['permissions']
+        self.assertNotIn('repo:production',reverse['write'])
+        self.assertIn('production-source',reverse['prohibited'])
+
+
     def test_deterministic_stages_do_not_invoke_agents_by_default(self):
         for stage in ('process-closure','model','model-conformance','queue','tests','red','green','implementation-conformance','regression','git'):
             self.assertNotEqual(self.routing['stages'][stage]['executor']['type'],'agent')
