@@ -168,8 +168,9 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 'allow_draft': False,
             }
             path = self.write_work(root, work)
-            with self.assertRaisesRegex(flow.Blocked, 'source_ref'):
-                flow.conformance_work(path, work, 'implementation-conformance')
+            with patch.object(flow, 'obligations_work', return_value={'status':'passed'}):
+                with self.assertRaisesRegex(flow.Blocked, 'source_ref'):
+                    flow.conformance_work(path, work, 'implementation-conformance')
 
 
 if __name__ == '__main__':

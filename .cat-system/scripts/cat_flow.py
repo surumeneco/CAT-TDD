@@ -430,6 +430,10 @@ def conformance_work(wpath, w, kind):
         return {'gate': kind, 'status': 'blocked', 'reason': tech['reason'],
                 'technology_results': tech['results']}
     require(conf.get('obligations'), 'implementation-conformance requires Compilation Obligations')
+    obligation_check=obligations_work(wpath,w,check=True)
+    if obligation_check['status'] != 'passed':
+        return {'gate':kind,'status':'blocked',
+                'reason':obligation_check.get('stderr') or 'implementation obligation skeleton is stale or not deterministic'}
     path=compilation_path(wpath,w,conf,'obligations',True)
     skeleton=read_json(Path(path))
     require(skeleton.get('schema')=='cat-implementation-obligations/v1','wrong implementation obligation schema')
@@ -541,6 +545,8 @@ def _lifecycle_scope_ready(wpath,w):
     root=workspace_root(wpath)
     lifecycle=root/'Lifecycle'/'Works'
     if not lifecycle.is_dir() or not under(wpath,lifecycle):
+        require(not (w.get('parent') or w.get('depends_on')),
+                'cannot verify deepest-ready scope outside standard Lifecycle/Works placement')
         return {'enforced':False,'ready':True}
     active=[]
     completed=set()
@@ -585,6 +591,25 @@ def _pending_guard(wpath,w,except_stage=None):
     return None
 
 
+def _verified_refactor_baseline(wpath,w):
+    checks=[x for x in w.get('checks',[]) if x.get('stage')=='refactor-baseline']
+    require(checks,'refactor requires at least one declared refactor-baseline check')
+    refs=[]
+    for check in checks:
+        path=wpath.parent/'.cat-flow'/'evidence'/(check['id']+'.json')
+        require(path.is_file(),'refactor baseline evidence missing: '+check['id'])
+        evidence=read_json(path)
+        require(evidence.get('work_id')==w['id'] and evidence.get('check_id')==check['id'],
+                'refactor baseline evidence identity mismatch')
+        require(evidence.get('stage')=='refactor-baseline' and evidence.get('verdict')=='passed',
+                'refactor baseline must be passed')
+        cwd=resolve_dir(wpath,w,check['cwd'])
+        require(evidence.get('context_sha256')==context_fingerprint(cwd),
+                'refactor baseline is stale for current source state')
+        refs.append({'check_id':check['id'],'evidence':str(path),'context_sha256':evidence['context_sha256']})
+    return refs
+
+
 def guard_work(wpath,w,stage,phase):
     r=route(w,stage)
     require(r['status']=='ready', 'cannot guard blocked route')
@@ -598,11 +623,13 @@ def guard_work(wpath,w,stage,phase):
         pending=_pending_guard(wpath,w,except_stage=stage)
         require(pending is None, 'previous Agent write guard is not passed: '+str(pending))
         scope=_lifecycle_scope_ready(wpath,w)
+        refactor_baseline=_verified_refactor_baseline(wpath,w) if stage=='refactor' else []
         path.parent.mkdir(parents=True,exist_ok=True)
         payload={'schema':'cat-write-guard/v3','work_id':w['id'],'stage':stage,
                  'manifest_sha256':sha(wpath.read_bytes()),'repo_state':_repo_state(wpath,w),
                  'workspace_state':_workspace_state(wpath,w),
-                 'permissions':r['permissions'],'scope_order':scope,'verdict':'pending'}
+                 'permissions':r['permissions'],'scope_order':scope,
+                 'refactor_baseline':refactor_baseline,'verdict':'pending'}
         path.write_bytes(json_bytes(payload))
         return {'status':'passed','guard':str(path),'stage':stage,'scope_order':scope}
     require(path.is_file(),'guard baseline missing')

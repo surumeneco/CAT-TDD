@@ -179,6 +179,21 @@ export function provideResult() { return false; }
             self.assertTrue(all(x['limitation'] for x in evaluated['items']))
             self.assertTrue(all(x.get('evidence') for x in evaluated['items']))
 
+    def test_tampered_obligation_skeleton_is_blocked_before_gate_evaluation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);repo=root/'app';self.write_api(repo)
+            process,pi,tce=self.confirmed_sources(root)
+            binding=self.binding(root)
+            target=root/'obligations.json'
+            generated=obligations.generate(process,pi,[tce],technologies=['TypeScript'])
+            generated['items'][0]['method']='manually-overridden'
+            target.write_text(json.dumps(generated,ensure_ascii=False,sort_keys=True,indent=2)+'\n',encoding='utf-8')
+            w=self.work(root,process,pi,tce,binding,target)
+            wp=root/'Work.json';wp.write_bytes(flow.json_bytes(w))
+            result=flow.conformance_work(wp,w,'implementation-conformance')
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('obligation',result['reason'].lower())
+
 
 if __name__=='__main__':
     unittest.main()
