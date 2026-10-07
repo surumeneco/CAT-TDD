@@ -142,6 +142,21 @@ def route(w, stage):
             'missing_agents': missing_agents, 'stage_in_flow': permitted,
             'status': 'blocked' if unknown or absent or missing_agents or not permitted else 'ready',
             'adoption_authority': 'project technical documents, not this catalogue'}
+def execution_route(w, stage, conditional=None):
+    r=route(w,stage)
+    if conditional is None:
+        return r
+    executor=r.get('conditional',{}).get(conditional)
+    require(isinstance(executor,dict) and executor.get('type')=='agent' and executor.get('id'),
+            f'no conditional Agent for {stage}:{conditional}')
+    result=dict(r)
+    result['base_executor']=r['executor']
+    result['executor']=executor
+    result['conditional_key']=conditional
+    result['guard_required']=bool(r.get('permissions',{}).get('write'))
+    return result
+
+
 def workspace_root(wpath):
     # Standard Work placement is <workspace>/Lifecycle/Works/<state>/<id>/Work.md.
     # Recover that workspace boundary even when the runtime itself is invoked from
@@ -575,7 +590,7 @@ def _lifecycle_scope_ready(wpath,w):
     return {'enforced':True,'ready':True,'ready_ids':sorted(ready)}
 
 
-def _pending_guard(wpath,w,except_stage=None):
+def _pending_guard(wpath,w,except_stage=None,except_conditional=None):
     folder=wpath.parent/'.cat-flow'/'guards'
     if not folder.is_dir():
         return None
@@ -584,7 +599,9 @@ def _pending_guard(wpath,w,except_stage=None):
             data=read_json(path)
         except Exception:
             continue
-        if data.get('work_id')!=w['id'] or data.get('stage')==except_stage:
+        if data.get('work_id')!=w['id']:
+            continue
+        if data.get('stage')==except_stage and data.get('conditional')==except_conditional:
             continue
         if data.get('verdict') not in ('passed',):
             return {'stage':data.get('stage'),'verdict':data.get('verdict','pending'),'path':str(path)}
@@ -610,28 +627,31 @@ def _verified_refactor_baseline(wpath,w):
     return refs
 
 
-def guard_work(wpath,w,stage,phase):
-    r=route(w,stage)
+def guard_work(wpath,w,stage,phase,conditional=None):
+    r=execution_route(w,stage,conditional)
     require(r['status']=='ready', 'cannot guard blocked route')
     require(r.get('guard_required'), 'write guard is only required for writing Agent stages')
-    path=wpath.parent/'.cat-flow'/'guards'/(stage+'.json')
+    guard_id=stage + (('--'+conditional) if conditional else '')
+    path=wpath.parent/'.cat-flow'/'guards'/(guard_id+'.json')
     if phase=='start':
         if path.is_file():
             previous=read_json(path)
             require(previous.get('verdict')=='passed',
                     'existing same-stage guard is pending/blocked; cannot replace its baseline')
-        pending=_pending_guard(wpath,w,except_stage=stage)
+        pending=_pending_guard(wpath,w,except_stage=stage,except_conditional=conditional)
         require(pending is None, 'previous Agent write guard is not passed: '+str(pending))
         scope=_lifecycle_scope_ready(wpath,w)
         refactor_baseline=_verified_refactor_baseline(wpath,w) if stage=='refactor' else []
         path.parent.mkdir(parents=True,exist_ok=True)
         payload={'schema':'cat-write-guard/v3','work_id':w['id'],'stage':stage,
+                 'conditional':conditional,
                  'manifest_sha256':sha(wpath.read_bytes()),'repo_state':_repo_state(wpath,w),
                  'workspace_state':_workspace_state(wpath,w),
                  'permissions':r['permissions'],'scope_order':scope,
                  'refactor_baseline':refactor_baseline,'verdict':'pending'}
         path.write_bytes(json_bytes(payload))
-        return {'status':'passed','guard':str(path),'stage':stage,'scope_order':scope}
+        return {'status':'passed','guard':str(path),'stage':stage,'conditional':conditional,
+                'scope_order':scope}
     require(path.is_file(),'guard baseline missing')
     base=read_json(path);require(base.get('manifest_sha256')==sha(wpath.read_bytes()),'Work changed after guard start')
     require(base.get('schema')=='cat-write-guard/v3','guard baseline schema stale; restart guard')
@@ -654,7 +674,7 @@ def guard_work(wpath,w,stage,phase):
     verdict='blocked' if violations else 'passed'
     base['verdict']=verdict;base['violations']=violations;base['finished_manifest_sha256']=sha(wpath.read_bytes())
     path.write_bytes(json_bytes(base))
-    return {'status':verdict,'stage':stage,'violations':violations,
+    return {'status':verdict,'stage':stage,'conditional':conditional,'violations':violations,
             'workspace_allowed':allowed_ws,'guard':str(path)}
 
 
@@ -682,14 +702,14 @@ def queue_state_work(wpath,w,evidence_path):
             'next_stage':'tests' if nxt else 'implementation-conformance'}
 
 
-def handoff_work(wpath,w,stage):
-    pending=_pending_guard(wpath,w,except_stage=stage)
+def handoff_work(wpath,w,stage,conditional=None):
+    pending=_pending_guard(wpath,w,except_stage=stage,except_conditional=conditional)
     require(pending is None,'cannot hand off while prior Agent guard is pending/blocked: '+str(pending))
-    r=route(w,stage)
+    r=execution_route(w,stage,conditional)
     st=status_work(wpath,w)
     guard=None
     if r.get('guard_required') and r.get('status')=='ready':
-        guard=guard_work(wpath,w,stage,'start')
+        guard=guard_work(wpath,w,stage,'start',conditional)
     conf=w.get('compilation') or {}
     source=[]
     for key in ('process','pi','tce','domain_rule','model','queue','obligations'):
@@ -713,7 +733,7 @@ def handoff_work(wpath,w,stage):
             'unresolved_decision':w['specification']['status']!='confirmed',
             'evidence_refs':[x['uri'] for x in w['evidence']],
             'stale_inputs':stale,'next_permitted_action':r['executor'],
-            'route_status':r['status'],'guard':guard}
+            'route_status':r['status'],'conditional_key':conditional,'guard':guard}
 def junit_report(path, expected_ids):
     root = ET.parse(path).getroot()
     cases = root.findall('.//testcase')
@@ -999,10 +1019,12 @@ def main(argv=None):
         if key == 'guard':
             p.add_argument('--stage', choices=STAGES, required=True)
             p.add_argument('--phase', choices=('start','finish'), required=True)
+            p.add_argument('--conditional')
         if key == 'queue-state':
             p.add_argument('--evidence', required=True)
         if key == 'handoff':
             p.add_argument('--stage', choices=STAGES, required=True)
+            p.add_argument('--conditional')
         if key == 'run':
             p.add_argument('--id', required=True)
             p.add_argument('--execute', action='store_true', help='explicitly execute the declared command')
@@ -1049,13 +1071,13 @@ def main(argv=None):
             elif args.cmd == 'conformance':
                 result = record_conformance_evidence(p, w, args.kind, conformance_work(p, w, args.kind))
             elif args.cmd == 'guard':
-                result = guard_work(p, w, args.stage, args.phase)
+                result = guard_work(p, w, args.stage, args.phase, args.conditional)
             elif args.cmd == 'queue-state':
                 result = queue_state_work(p, w, args.evidence)
             elif args.cmd == 'run':
                 result = command_work(p, w, args.id, args.execute)
             elif args.cmd == 'handoff':
-                result = handoff_work(p, w, args.stage)
+                result = handoff_work(p, w, args.stage, args.conditional)
             else:
                 result = status_work(p, w)
         print(json_bytes(result).decode(), end='')

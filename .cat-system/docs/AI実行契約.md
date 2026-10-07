@@ -41,7 +41,7 @@ orchestrator自身にはSemantic Artifact、TestModel、Queue、tests、producti
 | authority | draft / review / implementation / integration等の権限 |
 | prohibited | 明示的な禁止対象 |
 
-Agentはroutingで与えられた権限を拡張しない。書込みを持つAgent stageは`cat_flow.py handoff`からのみ開始し、handoffがpre snapshotを作成する。Agent終了後は`cat_flow.py guard --phase finish`を必須とし、write set外変更があればblockedとする。pending/blocked guardを再開始してbaselineを捨てることも禁止する。標準`Lifecycle/Works`配置ではguard開始時にscope-orderingを再計算し、deepest-readyでないWorkのAgent起動を拒否する。
+Agentはroutingで与えられた権限を拡張しない。書込みを持つAgent stageは`cat_flow.py handoff`からのみ開始し、handoffがpre snapshotを作成する。conditional Reviewerも例外ではなく、`--conditional inconclusive`を指定したhandoff/guardの内側でのみ起動する。Agent終了後は`cat_flow.py guard --phase finish`を必須とし、write set外変更があればblockedとする。pending/blocked guardを再開始してbaselineを捨てることも禁止する。標準`Lifecycle/Works`配置ではguard開始時にscope-orderingを再計算し、deepest-readyでないWorkのAgent起動を拒否する。
 
 confirmed promotion、merge、deploy等の高権限操作は通常の設計・実装Agentから分離する。confirmed promotionは明示されたnormative decisionを入力に専用authority executor `cat_promote.py`が行い、Reviewer自身は昇格しない。
 
