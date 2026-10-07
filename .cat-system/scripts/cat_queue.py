@@ -60,13 +60,60 @@ def activate_next(q):
         return pending[0]
     return None
 
+
+def _evidence(path):
+    p=Path(path).resolve()
+    require(p.is_file(),'Queue transition evidence file missing')
+    data=json.loads(p.read_text(encoding='utf-8'))
+    require(data.get('schema')=='cat-flow-evidence/v1','Queue transition requires cat-flow execution evidence')
+    return p,data
+
+
+def done_from_green(queue_path,evidence_path,expected_work_id=None,allowed_evidence_root=None):
+    path,q=load(queue_path)
+    before=hashlib.sha256(path.read_bytes()).hexdigest()
+    item=current(q)
+    require(item is not None,'Queue has no current item')
+    ep,ev=_evidence(evidence_path)
+    if allowed_evidence_root is not None:
+        root=Path(allowed_evidence_root).resolve()
+        try: ep.relative_to(root)
+        except ValueError as exc: raise Blocked('Queue evidence is outside script-owned evidence root') from exc
+    if expected_work_id is not None:
+        require(ev.get('work_id')==expected_work_id,'Green evidence Work mismatch')
+    require(ev.get('stage')=='green' and ev.get('verdict')=='passed',
+            'Queue item can be done only from passed Green evidence')
+    context=ev.get('queue_context') or {}
+    require(context.get('current_item_id')==item['id'],'Green evidence does not belong to current Queue item')
+    require(context.get('sha256')==before,'Queue changed since Green evidence')
+    item['status']='done';item['evidence_ref']=str(ep)
+    nxt=activate_next(q)
+    save(path,q)
+    return {'status':'passed','transitioned':item['id'],'new_status':'done','current':nxt,
+            'outcome':'next-item' if nxt else 'complete',
+            'queue_sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def block_from_evidence(queue_path,evidence_path):
+    path,q=load(queue_path)
+    before=hashlib.sha256(path.read_bytes()).hexdigest()
+    item=current(q);require(item is not None,'Queue has no current item')
+    ep,ev=_evidence(evidence_path)
+    context=ev.get('queue_context') or {}
+    require(context.get('current_item_id')==item['id'],'evidence does not belong to current Queue item')
+    require(context.get('sha256')==before,'Queue changed since transition evidence')
+    require(ev.get('verdict') in ('blocked','inconclusive'),'block requires blocked/inconclusive execution evidence')
+    item['status']='blocked';item['evidence_ref']=str(ep);save(path,q)
+    return {'status':'passed','transitioned':item['id'],'new_status':'blocked','current':None,
+            'queue_sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+
 def main(argv=None):
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--queue',required=True)
     sub=ap.add_subparsers(dest='command',required=True)
     sub.add_parser('status')
-    done=sub.add_parser('done');done.add_argument('--id',required=True);done.add_argument('--evidence',required=True)
-    block=sub.add_parser('block');block.add_argument('--id',required=True);block.add_argument('--evidence',required=True)
+    done=sub.add_parser('done');done.add_argument('--evidence-file',required=True)
+    block=sub.add_parser('block');block.add_argument('--evidence-file',required=True)
     resume=sub.add_parser('resume');resume.add_argument('--id',required=True)
     args=ap.parse_args(argv)
     try:
@@ -75,15 +122,10 @@ def main(argv=None):
         if args.command=='status':
             result={'status':'passed','current':current(q),'remaining':sum(x['status'] in ('pending','current','blocked') for x in q['items']),
                     'queue_sha256':before}
-        elif args.command in ('done','block'):
-            item=current(q)
-            require(item is not None and item['id']==args.id,'only the current item can transition')
-            item['status']='done' if args.command=='done' else 'blocked'
-            item['evidence_ref']=args.evidence
-            nxt=None if args.command=='block' else activate_next(q)
-            save(path,q)
-            result={'status':'passed','transitioned':args.id,'new_status':item['status'],'current':nxt,
-                    'queue_sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+        elif args.command=='done':
+            result=done_from_green(path,args.evidence_file)
+        elif args.command=='block':
+            result=block_from_evidence(path,args.evidence_file)
         else:
             target=next((x for x in q['items'] if x['id']==args.id),None)
             require(target is not None and target['status']=='blocked','resume requires a blocked item')

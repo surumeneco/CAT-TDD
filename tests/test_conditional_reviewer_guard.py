@@ -50,10 +50,13 @@ class ConditionalReviewerGuardTest(unittest.TestCase):
 
             (reviews/'review.md').write_text('review',encoding='utf-8')
             (draft/'spec.md').write_text('unauthorized edit',encoding='utf-8')
+            evidence=root/'.cat-flow'/'evidence';evidence.mkdir(parents=True,exist_ok=True)
+            (evidence/'forged.json').write_text('{}',encoding='utf-8')
             result=flow.guard_work(wp,w,'model-conformance','finish','inconclusive')
             self.assertEqual(result['status'],'blocked')
-            self.assertTrue(any('Lifecycle/CAT/Draft/spec.md' in x.get('paths',[])
-                                for x in result['violations']))
+            paths={p for item in result['violations'] for p in item.get('paths',[])}
+            self.assertIn('Lifecycle/CAT/Draft/spec.md',paths)
+            self.assertIn('.cat-flow/evidence/forged.json',paths)
 
     def test_conditional_reviewer_may_write_only_review_area(self):
         with tempfile.TemporaryDirectory() as td:

@@ -31,7 +31,7 @@ orchestrator自身にはSemantic Artifact、TestModel、Queue、tests、producti
 
 ## 実行権限
 
-各stageは`routing.json`で最低限次を宣言する。
+各stageは`routing.json`で最低限次を宣言する。加えて`evidence_policy`でexecution evidenceの所有主体、Agentによる直接編集禁止、external factのprovider必須性を機械可読に保持する。conditional Agentではexecution evidence ownerを`none`としてReview/Interpretation参照だけを許す。
 
 | 項目 | 意味 |
 | --- | --- |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,6 +72,30 @@ class WriteGuardTest(unittest.TestCase):
             self.assertEqual(flow.guard_work(wp,w,'spec','start')['status'],'passed')
             with self.assertRaisesRegex(flow.Blocked,'cannot replace its baseline'):
                 flow.guard_work(wp,w,'spec','start')
+
+
+    def test_implementer_guard_allows_production_and_rejects_test_edits(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);repo=root/'app';(repo/'src').mkdir(parents=True);(repo/'tests').mkdir()
+            subprocess.run(['git','init',str(repo)],check=True,capture_output=True)
+            source=repo/'src'/'main.py';test=repo/'tests'/'test_main.py'
+            source.write_text('value=1\n',encoding='utf-8');test.write_text('assert True\n',encoding='utf-8')
+            w=work()
+            w.update(entry='confirmed-spec',flow='spec-implementation',work_kind='implementation')
+            w['specification']={'status':'confirmed','decision_ref':'decision','artifact_refs':['demo.tce']}
+            w['repositories']=[{'name':'app','path':'./app','allowed_paths':['src/**','tests/**'],
+                                'production_paths':['src/**'],'test_paths':['tests/**']}]
+            wp=root/'work.json';wp.write_bytes(flow.json_bytes(w))
+
+            self.assertEqual(flow.guard_work(wp,w,'implementation','start')['status'],'passed')
+            source.write_text('value=2\n',encoding='utf-8')
+            self.assertEqual(flow.guard_work(wp,w,'implementation','finish')['status'],'passed')
+
+            self.assertEqual(flow.guard_work(wp,w,'implementation','start')['status'],'passed')
+            test.write_text('assert False\n',encoding='utf-8')
+            result=flow.guard_work(wp,w,'implementation','finish')
+            self.assertEqual(result['status'],'blocked')
+            self.assertTrue(any('tests/test_main.py' in item.get('paths',[]) for item in result['violations']))
 
 
 if __name__ == '__main__':

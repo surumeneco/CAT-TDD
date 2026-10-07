@@ -129,6 +129,12 @@
         "decision-required": "normative-authority",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "none",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "reverse": {
@@ -171,6 +177,12 @@
         "decision-required": "normative-authority",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "none",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "spec": {
@@ -212,6 +224,12 @@
         "decision-required": "normative-authority",
         "failed": "producer",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "none",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "process-closure": {
@@ -257,6 +275,17 @@
           "type": "agent",
           "id": "cat-reviewer"
         }
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only",
+        "conditional_agent": {
+          "execution_evidence_owner": "none",
+          "may_write_review_artifact": true,
+          "agent_may_edit_execution_evidence": false
+        }
       }
     },
     "model": {
@@ -291,6 +320,12 @@
         "passed": "model-conformance",
         "failed": "compiler-work",
         "inconclusive": "compiler-work"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "model-conformance": {
@@ -335,6 +370,17 @@
           "type": "agent",
           "id": "cat-model-reviewer"
         }
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only",
+        "conditional_agent": {
+          "execution_evidence_owner": "none",
+          "may_write_review_artifact": true,
+          "agent_may_edit_execution_evidence": false
+        }
       }
     },
     "queue": {
@@ -371,6 +417,12 @@
         "passed": "tests",
         "failed": "compiler-work",
         "inconclusive": "compiler-work"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "tests": {
@@ -408,6 +460,12 @@
         "passed": "red",
         "failed": "generator-work",
         "inconclusive": "generator-work"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "test-review": {
@@ -453,6 +511,17 @@
           "type": "agent",
           "id": "tdd-reviewer"
         }
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only",
+        "conditional_agent": {
+          "execution_evidence_owner": "none",
+          "may_write_review_artifact": true,
+          "agent_may_edit_execution_evidence": false
+        }
       }
     },
     "red": {
@@ -493,6 +562,17 @@
         "inconclusive": {
           "type": "agent",
           "id": "tdd-checker"
+        }
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only",
+        "conditional_agent": {
+          "execution_evidence_owner": "none",
+          "may_write_review_artifact": true,
+          "agent_may_edit_execution_evidence": false
         }
       }
     },
@@ -536,6 +616,12 @@
         "decision-required": "normative-authority",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "none",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "green": {
@@ -572,6 +658,12 @@
         "passed": "queue-state",
         "failed": "implementation",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "implementation-conformance": {
@@ -621,6 +713,17 @@
           "type": "agent",
           "id": "cat-implementation-reviewer"
         }
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only",
+        "conditional_agent": {
+          "execution_evidence_owner": "none",
+          "may_write_review_artifact": true,
+          "agent_may_edit_execution_evidence": false
+        }
       }
     },
     "refactor-scope": {
@@ -663,6 +766,12 @@
         "decision-required": "normative-authority",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "none",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "refactor": {
@@ -703,6 +812,12 @@
         "decision-required": "normative-authority",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "none",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "regression": {
@@ -738,6 +853,12 @@
         "passed": "complete",
         "failed": "refactor",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "git": {
@@ -771,6 +892,17 @@
         "inconclusive": {
           "type": "agent",
           "id": "cycle-git-manager"
+        }
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only",
+        "conditional_agent": {
+          "execution_evidence_owner": "none",
+          "may_write_review_artifact": true,
+          "agent_may_edit_execution_evidence": false
         }
       }
     },
@@ -812,6 +944,12 @@
         "failed": "stop",
         "inconclusive": "stop",
         "decision-required": "normative-authority"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "provider",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "ci": {
@@ -838,6 +976,12 @@
         "passed": "continue",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "provider",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "merge": {
@@ -869,6 +1013,12 @@
         "passed": "continue",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "authority-decision",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "deployment": {
@@ -899,6 +1049,12 @@
         "passed": "continue",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "provider",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "real-use": {
@@ -925,6 +1081,12 @@
         "passed": "complete",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "provider",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "spec-closure": {
@@ -970,6 +1132,17 @@
           "type": "agent",
           "id": "cat-reviewer"
         }
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only",
+        "conditional_agent": {
+          "execution_evidence_owner": "none",
+          "may_write_review_artifact": true,
+          "agent_may_edit_execution_evidence": false
+        }
       }
     },
     "vectors": {
@@ -1006,6 +1179,12 @@
         "passed": "queue",
         "failed": "compiler-work",
         "inconclusive": "compiler-work"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "queue-state": {
@@ -1048,6 +1227,12 @@
           "implementation-conformance"
         ],
         "source": "executor-result.next_stage"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "refactor-baseline": {
@@ -1083,6 +1268,12 @@
         "passed": "refactor",
         "failed": "stop",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     },
     "promotion": {
@@ -1122,6 +1313,12 @@
         "failed": "stop",
         "decision-required": "normative-authority",
         "inconclusive": "stop"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "authority-decision",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
       }
     }
   }

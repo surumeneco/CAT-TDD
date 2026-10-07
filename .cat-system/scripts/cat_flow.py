@@ -137,6 +137,7 @@ def route(w, stage):
     guard_required = executor.get('type') == 'agent' and bool(s.get('permissions', {}).get('write'))
     return {'stage': stage, 'flow': flow, 'executor': executor, 'guard_required': guard_required,
             'conditional': s.get('conditional', {}), 'permissions': s.get('permissions', {}),
+            'evidence_policy': s.get('evidence_policy', {}),
             'on_result': s.get('on_result', {}), 'skills': sorted(set(items)),
             'unknown_technologies': unknown, 'missing_skills': absent,
             'missing_agents': missing_agents, 'stage_in_flow': permitted,
@@ -154,6 +155,12 @@ def execution_route(w, stage, conditional=None):
     result['executor']=executor
     result['conditional_key']=conditional
     result['guard_required']=bool(r.get('permissions',{}).get('write'))
+    result['evidence_policy']={
+        'execution_evidence_owner':'none',
+        'agent_may_edit_execution_evidence':False,
+        'external_facts':'provider-required',
+        'interpretation':'review-reference-only',
+    }
     return result
 
 
@@ -718,24 +725,13 @@ def queue_state_work(wpath,w,evidence_path):
     conf=w.get('compilation') or {}
     require(conf.get('queue'),'queue-state requires Compilation Queue')
     qpath=Path(compilation_path(wpath,w,conf,'queue',True))
-    qfile,queue=cat_queue.load(qpath)
-    current=cat_queue.current(queue)
-    require(current is not None,'Queue has no current item')
-    evidence=Path(evidence_path).resolve()
     allowed=(wpath.parent/'.cat-flow'/'evidence').resolve()
-    require(under(evidence,allowed) and evidence.is_file(),'queue-state evidence must be script-owned .cat-flow/evidence')
-    ev=read_json(evidence)
-    require(ev.get('schema')=='cat-flow-evidence/v1' and ev.get('work_id')==w['id'],'invalid Green evidence identity')
-    require(ev.get('stage')=='green' and ev.get('verdict')=='passed','Queue item can be done only from passed Green evidence')
-    qc=ev.get('queue_context') or {}
-    require(qc.get('current_item_id')==current['id'],'Green evidence does not belong to current Queue item')
-    require(qc.get('sha256')==sha(qpath.read_bytes()),'Queue changed since Green evidence')
-    current['status']='done';current['evidence_ref']=str(evidence)
-    nxt=cat_queue.activate_next(queue)
-    cat_queue.save(qfile,queue)
-    return {'status':'passed','outcome':'next-item' if nxt else 'complete',
-            'transitioned':current['id'],'current':nxt,'queue':str(qpath),
-            'next_stage':'tests' if nxt else 'implementation-conformance'}
+    result=cat_queue.done_from_green(
+        qpath,Path(evidence_path).resolve(),
+        expected_work_id=w['id'],allowed_evidence_root=allowed)
+    result.update(queue=str(qpath),
+                  next_stage='tests' if result['outcome']=='next-item' else 'implementation-conformance')
+    return result
 
 
 def handoff_work(wpath,w,stage,conditional=None):

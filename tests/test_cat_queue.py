@@ -45,7 +45,15 @@ class QueueRuntimeTest(unittest.TestCase):
             p=Path(td)/'Queue.json'
             q=compiler.make_queue(self.model(),self.vectors(),b'model',b'vectors')
             p.write_text(json.dumps(q),encoding='utf-8')
-            self.assertEqual(cat_queue.main(['--queue',str(p),'done','--id','case.on','--evidence','evidence:red-green']),0)
+            evidence=Path(td)/'green.json'
+            evidence.write_text(json.dumps({
+                'schema':'cat-flow-evidence/v1','work_id':'demo','stage':'green','verdict':'passed',
+                'queue_context':{
+                    'current_item_id':'case.on',
+                    'sha256':__import__('hashlib').sha256(p.read_bytes()).hexdigest(),
+                },
+            }),encoding='utf-8')
+            self.assertEqual(cat_queue.main(['--queue',str(p),'done','--evidence-file',str(evidence)]),0)
             updated=json.loads(p.read_text(encoding='utf-8'))
             self.assertEqual(updated['items'][0]['status'],'done')
             self.assertEqual(updated['items'][1]['status'],'current')
@@ -79,6 +87,16 @@ class QueueRuntimeTest(unittest.TestCase):
         vectors['cases']=vectors['cases'][:1]
         with self.assertRaisesRegex(compiler.Blocked,'omitted TestModel rule'):
             compiler.make_queue(self.model(),vectors,b'model',b'vectors')
+
+
+    def test_state_manager_rejects_missing_evidence_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/'Queue.json'
+            q=compiler.make_queue(self.model(),self.vectors(),b'model',b'vectors')
+            p.write_text(json.dumps(q),encoding='utf-8')
+            code=cat_queue.main(['--queue',str(p),'done','--evidence-file',str(Path(td)/'missing.json')])
+            self.assertNotEqual(code,0)
+            self.assertEqual(json.loads(p.read_text(encoding='utf-8'))['items'][0]['status'],'current')
 
 
 if __name__=='__main__': unittest.main()

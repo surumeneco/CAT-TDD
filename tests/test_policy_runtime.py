@@ -63,6 +63,15 @@ class PolicyRuntimeTest(unittest.TestCase):
         self.assertEqual(self.routing['stages']['promotion']['executor']['type'],'authority')
         self.assertIn('normative-promotion',self.routing['stages']['promotion']['permissions']['authority'])
 
+    def test_every_stage_declares_machine_readable_evidence_policy(self):
+        for name,stage in self.routing['stages'].items():
+            policy=stage.get('evidence_policy')
+            self.assertIsInstance(policy,dict,name)
+            self.assertFalse(policy.get('agent_may_edit_execution_evidence'),name)
+            self.assertEqual(policy.get('external_facts'),'provider-required',name)
+            if any(x.get('type')=='agent' for x in stage.get('conditional',{}).values()):
+                self.assertEqual(policy['conditional_agent']['execution_evidence_owner'],'none',name)
+
     def test_orchestrator_has_no_artifact_write_authority(self):
         text=(RUNTIME/'agents'/'orchestrator.agent.md').read_text(encoding='utf-8')
         self.assertIn('直接変更しない',text)
