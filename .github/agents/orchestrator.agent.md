@@ -17,3 +17,5 @@ Roleの存在をAgent起動理由にしない。executorがscript/compiler/valid
 
 ## Handoff
 `cat_flow.py handoff --stage <stage>`の構造化出力を使用し、Work ID、flow/stage、source revision/hash、permissions、unresolved decision、evidence refs、stale差分、next actionだけを引き継ぐ。
+
+書込みを持つAgent executorではhandoffがwrite guardを自動開始する。Agent完了後は必ず`cat_flow.py guard --stage <stage> --phase finish`を実行し、passedでなければ結果を採用せず次stageへ進めない。pending/blocked guardを再開始してbaselineを更新してはならない。標準`Lifecycle/Works`配置ではguard開始時のdeepest-ready判定にも従う。

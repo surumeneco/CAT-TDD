@@ -47,6 +47,9 @@ class PolicyRuntimeTest(unittest.TestCase):
         spec=self.routing['flows']['spec-implementation']['stages']
         self.assertEqual(spec[spec.index('green')+1],'queue-state')
         self.assertEqual(self.routing['stages']['queue-state']['executor']['type'],'script')
+        self.assertEqual(self.routing['stages']['queue-state']['on_result']['passed'],'result.next_stage')
+        self.assertEqual(set(self.routing['stages']['queue-state']['result_next_stage']['allowed']),
+                         {'tests','implementation-conformance'})
         ref=self.routing['flows']['refactor']['stages']
         self.assertEqual(ref,['refactor-scope','refactor-baseline','refactor','regression'])
 

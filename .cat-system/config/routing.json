@@ -1038,9 +1038,16 @@
         ]
       },
       "on_result": {
-        "next-item": "tests",
-        "complete": "implementation-conformance",
-        "blocked": "stop"
+        "passed": "result.next_stage",
+        "blocked": "stop",
+        "inconclusive": "stop"
+      },
+      "result_next_stage": {
+        "allowed": [
+          "tests",
+          "implementation-conformance"
+        ],
+        "source": "executor-result.next_stage"
       }
     },
     "refactor-baseline": {

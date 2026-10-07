@@ -1,7 +1,7 @@
 ---
 title: CAT Artifact形式契約
 status: trial
-version: '1.0'
+version: '1.1'
 ---
 
 # CAT Artifact記法
@@ -388,7 +388,7 @@ TestModelでは次を明確に分ける。
 - Coverage requirement: TCEが要求した `closed / partial`。
 - Coverage verification: `proved / uncovered / unproven` 等の検査結果。
 
-内部IR、TestModel JSON、vectors、binding、execution evidenceは機械用派生物としてJSON等を使用できる。これらを人間向け意味正本へ昇格させない。
+内部IR、TestModel JSON、vectors、binding、execution evidenceは機械用派生物としてJSON等を使用できる。これらを人間向け意味正本へ昇格させない。normative vectorsは`cat_compile_v2.py vectors`のtest-selection ruleから生成される派生物であり、人間やAIが必要ケースを直接追記するTest Listとして扱わない。
 
 ### TDD Execution Queue
 
@@ -413,11 +413,11 @@ QueueはTestModelから導出されたテスト実行順と進捗だけを保持
 }
 ~~~
 
-Queue itemにScenario、Expected Result、Oracle、Condition、Effect、input/output値を記述してはならない。`pending / current / done / blocked`の遷移はQueue State Managerが機械的に行い、`current`は最大1件とする。実行可能testはcurrent itemだけから生成する。
+Queue itemにScenario、Expected Result、Oracle、Condition、Effect、input/output値を記述してはならない。`pending / current / done / blocked`の遷移はQueue State Managerが機械的に行い、`current`は最大1件とする。done化にはcurrent item IDとQueue hashへ結び付いたpassed Green evidenceを必須とし、古いGreen証拠や別itemの証拠では遷移できない。実行可能testはcurrent itemだけから生成する。
 
 ### Implementation obligations
 
-`cat-implementation-obligations/v1`は実装適合性GateのLifecycle/Evidence Artifactである。categoryは `interface / capability / behavior / invariant / cross-process / domain / implementation-constraint` を使用する。各obligationは少なくとも `category / source_ref / method / status` を持ち、`passed / failed` は具体的な `evidence`、`inconclusive / not-run` は `reason` を持つ。Green/CIの結果だけを全categoryへ複製しない。
+`cat-implementation-obligations/v1`は実装適合性GateのLifecycle/Evidence Artifactである。categoryは `interface / capability / behavior / invariant / cross-process / domain / implementation-constraint` を使用する。各obligationは少なくとも `category / source_ref / method / status / limitation` を持ち、`passed / failed` は具体的な `evidence`、`inconclusive / not-run` は `reason` を持つ。normative Gateでは骨格をconfirmed sourceから再生成して完全一致を確認してから、Script/Provider evidenceで評価する。Green/CIの結果だけを全categoryへ複製しない。
 
 ## 14. Candidate・Gate
 
@@ -434,3 +434,7 @@ Candidateは `Observation / Source / Proposed semantics / Unknown / Status` を�
 一回の決定論的compileではsemantic contractを混在させない。新規Artifact・fixture・例はv2を使用する。
 
 コンパイラ非対応の意味要素は、別の意味へ縮約して通さない。Artifactとして保持したまま `unsupported / BLOCKED` とし、production TestModelをAIで作成・補正しない。とくにCommonRule / DomainSpecをWorkが宣言しているのに現在のnormative compiler / deterministic verifierへ写像されていない場合、そのWorkのnormative compileとCAT適合性Gateを停止する。Compiler / schema改善Work、または仕様上定義された領域別検証へ分離する。
+
+## 16. confirmed昇格
+
+Candidate / Draftからconfirmedへの昇格はReview本文の編集ではない。明示されたnormative decisionを入力とする専用authority executorが、既存Artifactの意味本文を変えずにconfirmed配置へ移動し、`status: confirmed`と`decision_ref`を設定する。ReviewerやDesignerはこのpromotion権限を持たない。

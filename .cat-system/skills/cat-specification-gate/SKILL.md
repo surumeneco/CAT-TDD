@@ -24,3 +24,7 @@ TestModelをcurrent confirmed sourceから完全再生成し、一致、source h
 `cat-implementation-obligations/v1`でInterface / Capability / Behavior / Invariant / Cross-process / Domain / implementation-constraintを独立obligationとして集約する。各obligationは`source_ref`と検証`method`を持ち、passed/failedはevidence、not-run/inconclusiveはreasonを持つ。Green/CIをGate代替にしない。Technology Skillが決定論的Inspectorを提供する場合は同Gateから直接使用する。TypeScriptでは公開exportとPI operation、既知の外部能力使用とObservation/Actionを照合し、仕様外Interface/能力をblockedにする。
 
 Validator結果は`.cat-flow/conformance/`のScript所有証拠へ保存し、Work本文の`passed`だけではGateを成立させない。Reviewerは対象Artifactを修正せず、deterministic verdictが`inconclusive`の場合だけ独立Review evidenceで閉じる。failed / blocked / stale / not-runをpassへ上書きしない。CommonRule / DomainSpecが宣言されているのにdeterministic mapping / verifierが無い場合はnormative pathをblockedにする。
+
+## Implementation obligation evaluation
+
+`implementation-conformance`ではobligation skeletonをconfirmed sourceから再生成して一致を確認してから評価する。各obligationは`source_ref / method / status / limitation`を持ち、passed/failedはScript/Provider evidence、not-run/inconclusiveはreasonを必須とする。Aggregatorで確定不能な項目だけconditional reviewerへ渡す。

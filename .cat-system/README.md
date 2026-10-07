@@ -36,9 +36,10 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 | スクリプト | AIが呼ぶ機能 | 非対象 |
 |---|---|---|
 | `scripts/cat_flow.py` | flow-aware routing、permissions、Git read、write guard、command evidence、conformance、structured handoff | 規範意味の決定・外部provider結果の創作 |
-| `scripts/cat_compile_v2.py` | confirmed CAT source→TestModel、TestModel+vectors→TDD Queue、current item→技術renderer | unsupported意味のAI補完 |
-| `scripts/cat_queue.py` | Queueの`pending/current/done/blocked`遷移。currentは最大1件 | Scenario / Oracle等の意味記述 |
+| `scripts/cat_compile_v2.py` | confirmed CAT source→TestModel、TestModel→deterministic vectors、vectors→TDD Queue、current item→技術renderer | unsupported意味のAI補完・手入力Test List |
+| `scripts/cat_queue.py` | Queueの`pending/current/done/blocked`遷移。currentは最大1件。normative doneはGreen evidenceへ結び付ける | Scenario / Oracle等の意味記述 |
 | `scripts/cat_scope_order.py` | Work parent/depends-onのcycle、depth、ready最深scope算出 | 依存関係そのものの意味決定 |
+| `scripts/cat_promote.py` | 明示されたnormative decisionに基づくDraft/Candidate→confirmed配置の専用authority operation | 仕様意味の決定・Reviewerによる自己承認 |
 | `scripts/cat_install.py` | 採用済みSkillのディレクトリ一式と共通Agent/ツールを非破壊導入 | 技術採用の決定・無断上書き |
 | `scripts/cat_package_lint.py` | Agent/Skill定義のfront matterを静的検証 | CAT Semantic Artifactの意味・構文検証 |
 | `skills/cat-specification-gate/scripts/cat_artifact_lint.py` | CAT Artifactのfront matter、ID、明示参照を静的検証 | 自然言語Conditionの意味証明 |
@@ -80,7 +81,7 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 1. 起点と目的から4 flowのいずれかを選ぶ。Issueなら`cycle-scope-divider`がTask/Workへ分解し、`cat_scope_order.py`がreadyな最深scopeを選ぶ。既存Workの再開では`flow / work_kind / parent / depends_on`を使用する。
 2. 共通`agents/`と共通Skill、`routing.json`で採用技術に対応する技術Skillだけを配置し、プロジェクト手続きがある場合だけ`extensions/<project>-adapter`を明示選択して配置する。`optional-skills/`は通常導入に含めず、対象の診断・補助作業を明示した場合だけ個別に使用する。
 3. 指示ファイルは入口と正本への参照に留め、同じルールを繰り返さない。GitHub以外のremoteでも、Copilotの`.github/agents`/`.github/skills`はワークスペースの設定パスとして使用できる。
-4. `routing.json`のexecutorを直接使い、Script / Compiler / Validatorで確定できるstageではAgentを起動しない。Validatorが`inconclusive`の時だけconditional reviewerを使う。Agent書込みstageでは可能な限りpre/post guardを行い、Markdownの禁止文だけを強制権限制御とみなさない。
+4. `routing.json`のexecutorを直接使い、Script / Compiler / Validatorで確定できるstageではAgentを起動しない。Validatorが`inconclusive`の時だけconditional reviewerを使う。書込みAgentは`cat_flow.py handoff`でguard baselineを開始し、終了後のguard finishがpassedになるまで次stageへ進めない。標準Lifecycle配置ではdeepest-readyもguard開始時に再検査する。
 
 ## 参照資料
 

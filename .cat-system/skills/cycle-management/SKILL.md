@@ -17,3 +17,7 @@ description: "Manage Issue/Task/Work lifecycle, deterministic dependency orderin
 scope-order Scriptは依存関係の意味を発明しない。与えられたgraphだけを順序化する。cycle時はblocked。
 
 read-only Git inspectionはScriptで行い、`cycle-git-manager`はcommit境界やmulti-repo統合等の意味判断が必要な場合だけ起動する。CI / merge / deploy状態はproviderを正とする。
+
+## Runtime enforcement
+
+標準`Lifecycle/Works/{state}/<work>/Work.md`配置では、書込みAgentのhandoff前guardが全active Workからscope-orderingを再計算し、deepest-readyでないWorkのAgent起動をblockedにする。Lifecycle外で`parent / depends_on`を持つWorkは全graphを検証できないためfail closedとする。

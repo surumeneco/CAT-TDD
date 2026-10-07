@@ -1,7 +1,7 @@
 ---
 title: CAT×TDD AI実行契約
 status: trial
-version: '0.9'
+version: '1.0'
 ---
 
 # CAT×TDD AI実行契約
@@ -41,9 +41,9 @@ orchestrator自身にはSemantic Artifact、TestModel、Queue、tests、producti
 | authority | draft / review / implementation / integration等の権限 |
 | prohibited | 明示的な禁止対象 |
 
-Agentはroutingで与えられた権限を拡張しない。実行環境がpath制限を強制できない場合、pre/post snapshotで変更差分を検査し、write set外の変更を成功扱いしない。
+Agentはroutingで与えられた権限を拡張しない。書込みを持つAgent stageは`cat_flow.py handoff`からのみ開始し、handoffがpre snapshotを作成する。Agent終了後は`cat_flow.py guard --phase finish`を必須とし、write set外変更があればblockedとする。pending/blocked guardを再開始してbaselineを捨てることも禁止する。標準`Lifecycle/Works`配置ではguard開始時にscope-orderingを再計算し、deepest-readyでないWorkのAgent起動を拒否する。
 
-confirmed promotion、merge、deploy等の高権限操作は通常の設計・実装Agentから分離する。
+confirmed promotion、merge、deploy等の高権限操作は通常の設計・実装Agentから分離する。confirmed promotionは明示されたnormative decisionを入力に専用authority executor `cat_promote.py`が行い、Reviewer自身は昇格しない。
 
 ## Evidence
 
@@ -57,9 +57,9 @@ execution evidenceはRunner / Validator / Providerが生成する。AI Agentはe
 
 confirmed assembled specificationを入口とする。process-closure、model-conformance、implementation-conformanceを独立Gateとして扱う。
 
-TestModelはCompiler所有、TDD Execution QueueはQueue Compiler / State Manager所有、generated testはRenderer所有であり、AIが直接補正しない。機械変換不能な意味をAIでproduction oracleへ補完せずblockedとする。対象仕様にCommonRule / DomainSpecが含まれる場合も、対応するdeterministic mapping / verifierが無ければ同様に停止する。
+TestModelはCompiler所有、具体vectorはdeterministic test-selector所有、TDD Execution QueueはQueue Compiler / State Manager所有、generated testはRenderer所有であり、AIが直接補正しない。normative pathでは`rule-witness/v1`の再生成結果とvectorが一致しなければQueue/test生成を拒否する。機械変換不能な意味をAIでproduction oracleへ補完せずblockedとする。対象仕様にCommonRule / DomainSpecが含まれる場合も、対応するdeterministic mapping / verifierが無ければ同様に停止する。
 
-current Queue item 1件ごとの標準TDD cycleで、原則必須のLLM invocationは`tdd-implementer`だけとする。Red理由が機械判定不能な時だけ`tdd-checker`を起動する。
+current Queue item 1件ごとの標準TDD cycleで、原則必須のLLM invocationは`tdd-implementer`だけとする。Green evidenceはcurrent item IDとQueue hashへ結び付け、`cat_flow.py queue-state`だけがdone化と次current選択を行う。Red理由が機械判定不能な時だけ`tdd-checker`を起動する。
 
 ### issue-work
 
@@ -71,7 +71,7 @@ Issueの意味的Task/Work分解は`cycle-scope-divider`が行う。graphのcycl
 
 ### refactor
 
-`ref-scoper`が保存意味と変更範囲を決め、`ref-refactor`はproduction sourceだけを書ける。testsと仕様は固定する。behavior change要求は別flowへ返す。
+`ref-scoper`が保存意味と変更範囲を決め、production変更前に`refactor-baseline`を実測する。`ref-refactor`のwrite guard開始時にbaseline evidenceと現在source contextを再照合し、staleなら起動を拒否する。`ref-refactor`はproduction sourceだけを書ける。testsと仕様は固定し、behavior change要求は別flowへ返す。
 
 ## GateとReviewer
 
@@ -81,7 +81,7 @@ Gate ContractとGate Executorを分離する。Gateは必須でもReviewer Agent
 - model-conformance: Validator → inconclusive時だけ`cat-model-reviewer`
 - generated test: Renderer/validator。legacy/handwritten等のinconclusive時だけ`tdd-reviewer`
 - Red reason: signature等で確定できればScript。不能時だけ`tdd-checker`
-- implementation-conformance: obligation aggregator → inconclusive項目だけ`cat-implementation-reviewer`
+- implementation-conformance: deterministic obligation skeletonの再生成一致を確認後、Queue/technology/model-conformance evidenceをAggregatorが評価 → inconclusive項目だけ`cat-implementation-reviewer`。各obligationは`method / evidenceまたはreason / limitation`を保持する
 
 ## Git / CI / integration
 
