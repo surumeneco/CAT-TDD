@@ -23,11 +23,26 @@ def work():
 
 
 class ConditionalReviewerGuardTest(unittest.TestCase):
+    def inconclusive(self,root,wp,w):
+        target=root/'.cat-flow'/'conformance';target.mkdir(parents=True,exist_ok=True)
+        (target/'model-conformance.json').write_bytes(flow.json_bytes({
+            'schema':'cat-conformance-evidence/v1','work_id':w['id'],'gate':'model-conformance',
+            'context_sha256':flow.conformance_context_sha(w),'input_sha256':{},
+            'verdict':'inconclusive','reason':'fixture ambiguity','supporting_evidence':None,
+        }))
+
+    def test_reviewer_cannot_start_without_inconclusive_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);w=work();wp=root/'work.json';wp.write_bytes(flow.json_bytes(w))
+            with self.assertRaisesRegex(flow.Blocked,'requires current deterministic inconclusive evidence'):
+                flow.handoff_work(wp,w,'model-conformance','inconclusive')
+
     def test_conditional_reviewer_is_guarded_and_cannot_edit_draft(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);w=work();wp=root/'work.json';wp.write_bytes(flow.json_bytes(w))
             draft=root/'Lifecycle'/'CAT'/'Draft';draft.mkdir(parents=True)
             reviews=root/'Lifecycle'/'CAT'/'Reviews';reviews.mkdir(parents=True)
+            self.inconclusive(root,wp,w)
 
             handoff=flow.handoff_work(wp,w,'model-conformance','inconclusive')
             self.assertEqual(handoff['executor']['id'],'cat-model-reviewer')
@@ -44,6 +59,7 @@ class ConditionalReviewerGuardTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);w=work();wp=root/'work.json';wp.write_bytes(flow.json_bytes(w))
             reviews=root/'Lifecycle'/'CAT'/'Reviews';reviews.mkdir(parents=True)
+            self.inconclusive(root,wp,w)
             flow.handoff_work(wp,w,'model-conformance','inconclusive')
             (reviews/'review.md').write_text('review',encoding='utf-8')
             self.assertEqual(

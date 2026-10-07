@@ -608,6 +608,40 @@ def _pending_guard(wpath,w,except_stage=None,except_conditional=None):
     return None
 
 
+def _require_conditional_inconclusive(wpath,w,stage,conditional):
+    if conditional is None:
+        return
+    require(conditional=='inconclusive','conditional Agent invocation is limited to inconclusive results')
+    if stage in CONFORMANCE_GATES:
+        state=conformance_evidence_status(wpath,w,stage)
+        require(state.get('status')=='inconclusive',
+                f'{stage} conditional reviewer requires current deterministic inconclusive evidence')
+        return
+    if stage=='red':
+        current_manifest=sha(wpath.read_bytes())
+        found=False
+        for check in w.get('checks',[]):
+            if check.get('stage')!='red':
+                continue
+            path=wpath.parent/'.cat-flow'/'evidence'/(check['id']+'.json')
+            if not path.is_file():
+                continue
+            evidence=read_json(path)
+            if (evidence.get('work_id')==w['id'] and evidence.get('check_id')==check['id']
+                    and evidence.get('manifest_sha256')==current_manifest
+                    and evidence.get('verdict')=='inconclusive'):
+                found=True;break
+        require(found,'red conditional reviewer requires current inconclusive Red evidence')
+        return
+    if stage=='git':
+        require(any(x.get('status')=='inconclusive' for x in git_snapshot(wpath,w)),
+                'git conditional reviewer requires inconclusive Git inspection')
+        return
+    # Non-normative legacy test-review remains an explicitly selected review path;
+    # primary CAT-TDD flows do not include it.
+    require(stage=='test-review','conditional reviewer lacks an inconclusive evidence contract for this stage')
+
+
 def _verified_refactor_baseline(wpath,w):
     checks=[x for x in w.get('checks',[]) if x.get('stage')=='refactor-baseline']
     require(checks,'refactor requires at least one declared refactor-baseline check')
@@ -628,6 +662,8 @@ def _verified_refactor_baseline(wpath,w):
 
 
 def guard_work(wpath,w,stage,phase,conditional=None):
+    if phase=='start':
+        _require_conditional_inconclusive(wpath,w,stage,conditional)
     r=execution_route(w,stage,conditional)
     require(r['status']=='ready', 'cannot guard blocked route')
     require(r.get('guard_required'), 'write guard is only required for writing Agent stages')
@@ -703,6 +739,7 @@ def queue_state_work(wpath,w,evidence_path):
 
 
 def handoff_work(wpath,w,stage,conditional=None):
+    _require_conditional_inconclusive(wpath,w,stage,conditional)
     pending=_pending_guard(wpath,w,except_stage=stage,except_conditional=conditional)
     require(pending is None,'cannot hand off while prior Agent guard is pending/blocked: '+str(pending))
     r=execution_route(w,stage,conditional)
