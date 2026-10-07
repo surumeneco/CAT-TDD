@@ -533,7 +533,7 @@
       },
       "on_result": {
         "passed": "green",
-        "decision-required": "specification",
+        "decision-required": "normative-authority",
         "failed": "stop",
         "inconclusive": "stop"
       }
@@ -660,7 +660,7 @@
       },
       "on_result": {
         "passed": "refactor-baseline",
-        "decision-required": "specification",
+        "decision-required": "normative-authority",
         "failed": "stop",
         "inconclusive": "stop"
       }
@@ -700,7 +700,7 @@
       },
       "on_result": {
         "passed": "regression",
-        "decision-required": "specification",
+        "decision-required": "normative-authority",
         "failed": "stop",
         "inconclusive": "stop"
       }

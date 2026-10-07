@@ -53,6 +53,12 @@ class PolicyRuntimeTest(unittest.TestCase):
         ref=self.routing['flows']['refactor']['stages']
         self.assertEqual(ref,['refactor-scope','refactor-baseline','refactor','regression'])
 
+    def test_removed_specification_flow_has_no_dangling_transition(self):
+        self.assertNotIn('specification',self.routing['flows'])
+        for stage in ('implementation','refactor-scope','refactor'):
+            self.assertNotEqual(self.routing['stages'][stage]['on_result'].get('decision-required'),'specification')
+            self.assertEqual(self.routing['stages'][stage]['on_result'].get('decision-required'),'normative-authority')
+
     def test_promotion_is_authority_not_agent(self):
         self.assertEqual(self.routing['stages']['promotion']['executor']['type'],'authority')
         self.assertIn('normative-promotion',self.routing['stages']['promotion']['permissions']['authority'])
