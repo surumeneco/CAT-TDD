@@ -143,11 +143,15 @@ def route(w, stage):
             'status': 'blocked' if unknown or absent or missing_agents or not permitted else 'ready',
             'adoption_authority': 'project technical documents, not this catalogue'}
 def workspace_root(wpath):
-    # An installed runtime normally lives at <workspace>/.cat-system. Tests and
-    # external Work files may invoke the source runtime from another tree; in
-    # that case the Work directory is the only safe workspace boundary.
+    # Standard Work placement is <workspace>/Lifecycle/Works/<state>/<id>/Work.md.
+    # Recover that workspace boundary even when the runtime itself is invoked from
+    # a source checkout (tests/tools) rather than the installed .cat-system tree.
+    resolved=Path(wpath).resolve()
+    for ancestor in resolved.parents:
+        if ancestor.name=='Lifecycle' and (ancestor/'Works').is_dir():
+            return ancestor.parent.resolve()
     installed = ROOT.parent.resolve()
-    return installed if under(wpath, installed) else wpath.parent.resolve()
+    return installed if under(resolved, installed) else resolved.parent.resolve()
 
 
 def compilation_path(wpath, w, conf, key, check):
