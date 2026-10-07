@@ -12,14 +12,14 @@ from pathlib import Path
 from catlib.common import Blocked, read_json, require
 from catlib.markdown import parse_frontmatter
 
-STAGES = ("intake", "reverse", "spec", "review", "process-closure", "model", "model-conformance",
-          "queue", "tests", "test-review", "red", "implementation", "green",
-          "implementation-conformance", "integration", "refactor-scope", "refactor", "regression",
-          "ci", "git", "merge", "deployment", "real-use")
+STAGES = ("intake", "reverse", "spec", "review", "spec-closure", "process-closure", "model", "model-conformance",
+          "vectors", "queue", "tests", "test-review", "red", "implementation", "green", "queue-state",
+          "implementation-conformance", "integration", "refactor-scope", "refactor-baseline", "refactor", "regression",
+          "promotion", "ci", "git", "merge", "deployment", "real-use")
 CONFORMANCE_GATES = ("process-closure", "model-conformance", "implementation-conformance")
 EXTERNAL_GATES = ("semantic-review", "test-oracle-review", "red-review", "pr-review", "ci", "merge", "deployment", "real-use")
 ALL_GATES = CONFORMANCE_GATES + EXTERNAL_GATES
-FLOWS = ("spec-implementation", "issue-work", "specification", "code-to-spec", "refactor")
+FLOWS = ("spec-implementation", "issue-work", "code-to-spec", "refactor")
 WORK_KINDS = ("implementation", "specification", "analysis", "documentation", "verification", "refactor")
 ENTRIES = ("confirmed-spec", "issue", "bug", "existing-code", "refactor")
 STATUSES = ("draft", "candidate", "confirmed", "unknown", "conflict")

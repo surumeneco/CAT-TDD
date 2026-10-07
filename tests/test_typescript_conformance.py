@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / '.cat-system' / 'scripts'))
 sys.path.insert(0, str(ROOT / '.cat-system' / 'skills' / 'tech-typescript' / 'scripts'))
 
 import cat_flow as flow
+import cat_compile_v2 as compiler
 import cat_implementation_obligations as obligations
 import cat_typescript_conformance as inspector
 
@@ -58,6 +59,7 @@ class TypeScriptImplementationConformanceTest(unittest.TestCase):
                 'method':'fixture',
                 'status':'passed',
                 'evidence':'fixture:'+category,
+                'limitation':'fixture-only',
             })
         path=root/'obligations.json'
         path.write_text(json.dumps({'schema':'cat-implementation-obligations/v1','items':items},
@@ -158,6 +160,24 @@ export function provideResult() { return false; }
             data=json.loads(target.read_text(encoding='utf-8'))
             self.assertEqual({x['category'] for x in data['items']},set(CATEGORIES))
             self.assertTrue(all(x['status']=='not-run' for x in data['items']))
+
+    def test_obligation_aggregator_uses_queue_and_technology_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);process,pi,tce=self.confirmed_sources(root)
+            model=compiler.load(process,pi,[tce],allow_draft=False)
+            skeleton=obligations.generate(process,pi,[tce],technologies=['TypeScript'])
+            queue={'schema':'cat-tdd-queue/v1','process':model['process'],'items':[
+                {'id':'case.'+r['id'],'model_ref':r['id'],'vector_ref':'case.'+r['id'],
+                 'order':i+1,'status':'done','evidence_ref':'evidence:green:'+r['id']}
+                for i,r in enumerate(model['rules'])
+            ]}
+            tech=[{'technology':'TypeScript','status':'passed','checks':[]}]
+            evaluated=obligations.aggregate(
+                skeleton,queue,tech,
+                {'status':'passed','evidence':'evidence:model-conformance'})
+            self.assertTrue(all(x['status']=='passed' for x in evaluated['items']),evaluated)
+            self.assertTrue(all(x['limitation'] for x in evaluated['items']))
+            self.assertTrue(all(x.get('evidence') for x in evaluated['items']))
 
 
 if __name__=='__main__':

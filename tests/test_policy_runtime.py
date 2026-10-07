@@ -12,10 +12,11 @@ class PolicyRuntimeTest(unittest.TestCase):
 
     def test_four_primary_flows_remain_independent(self):
         flows=self.routing['flows']
-        for name in ('spec-implementation','issue-work','code-to-spec','refactor'):
-            self.assertIn(name,flows)
+        self.assertEqual(set(flows),{'spec-implementation','issue-work','code-to-spec','refactor'})
         self.assertNotIn('refactor',flows['spec-implementation']['stages'])
-        self.assertEqual(flows['issue-work']['stages'],['intake'])
+        self.assertIn('intake',flows['issue-work']['stages'])
+        self.assertIn('spec',flows['issue-work']['stages'])
+        self.assertIn('spec-closure',flows['issue-work']['stages'])
 
 
     def test_non_implementation_issue_can_complete_without_tdd(self):
@@ -31,7 +32,7 @@ class PolicyRuntimeTest(unittest.TestCase):
 
 
     def test_deterministic_stages_do_not_invoke_agents_by_default(self):
-        for stage in ('process-closure','model','model-conformance','queue','tests','red','green','implementation-conformance','regression','git'):
+        for stage in ('process-closure','model','model-conformance','vectors','queue','tests','red','green','queue-state','implementation-conformance','refactor-baseline','regression','git'):
             self.assertNotEqual(self.routing['stages'][stage]['executor']['type'],'agent')
         self.assertEqual(self.routing['stages']['implementation']['executor']['id'],'tdd-implementer')
 
@@ -41,6 +42,17 @@ class PolicyRuntimeTest(unittest.TestCase):
                   'implementation-conformance':'cat-implementation-reviewer','git':'cycle-git-manager'}
         for stage,agent in expected.items():
             self.assertEqual(self.routing['stages'][stage]['conditional']['inconclusive']['id'],agent)
+
+    def test_queue_state_and_refactor_baseline_are_connected(self):
+        spec=self.routing['flows']['spec-implementation']['stages']
+        self.assertEqual(spec[spec.index('green')+1],'queue-state')
+        self.assertEqual(self.routing['stages']['queue-state']['executor']['type'],'script')
+        ref=self.routing['flows']['refactor']['stages']
+        self.assertEqual(ref,['refactor-scope','refactor-baseline','refactor','regression'])
+
+    def test_promotion_is_authority_not_agent(self):
+        self.assertEqual(self.routing['stages']['promotion']['executor']['type'],'authority')
+        self.assertIn('normative-promotion',self.routing['stages']['promotion']['permissions']['authority'])
 
     def test_orchestrator_has_no_artifact_write_authority(self):
         text=(RUNTIME/'agents'/'orchestrator.agent.md').read_text(encoding='utf-8')

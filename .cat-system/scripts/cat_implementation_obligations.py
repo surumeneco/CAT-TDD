@@ -18,6 +18,7 @@ def item(identifier, category, source_ref, method):
         'method': method,
         'status': 'not-run',
         'reason': 'verification evidence not collected',
+        'limitation': 'verification has not yet established this obligation',
     }
 
 
@@ -126,6 +127,82 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
         'items': obligations,
     }
 
+
+
+def aggregate(document, queue=None, technology_results=(), model_conformance=None):
+    """Derive evaluated obligation state from script/provider-owned evidence without mutating the skeleton."""
+    result=json.loads(json.dumps(document))
+    items=result.get('items',[])
+    done_by_rule={}
+    if queue:
+        for q in queue.get('items',[]):
+            if q.get('status')=='done' and q.get('evidence_ref'):
+                done_by_rule.setdefault(q.get('model_ref'),[]).append(q.get('evidence_ref'))
+    tech=list(technology_results or [])
+    tech_pass=bool(tech) and all(x.get('status')=='passed' for x in tech)
+    model_pass=bool(model_conformance and model_conformance.get('status')=='passed')
+    model_evidence=(model_conformance or {}).get('evidence','')
+    for ob in items:
+        method=ob.get('method','')
+        source=ob.get('source_ref','')
+        evidence=[]
+        limitation=''
+        if method in ('generated-test','generated-test-frame'):
+            rule=source.split('#',1)[1].split(':outcome:',1)[0] if '#' in source else ''
+            evidence=done_by_rule.get(rule,[])
+            if evidence:
+                ob.update(status='passed',evidence=';'.join(sorted(set(evidence))))
+                ob.pop('reason',None)
+                limitation='finite deterministic selected-vector evidence; not a general proof over all executions'
+            else:
+                ob.update(status='inconclusive',reason='no completed Queue evidence for referenced TestModel rule')
+                ob.pop('evidence',None)
+                limitation='behavior remains unverified for the current implementation state'
+        elif method.startswith('technology-inspector:'):
+            if tech_pass:
+                ob.update(status='passed',evidence='technology-inspector')
+                ob.pop('reason',None)
+                limitation='bounded to configured technology inspector source/binding coverage'
+            else:
+                ob.update(status='inconclusive',reason='technology inspector evidence is absent or non-passing')
+                ob.pop('evidence',None)
+                limitation='technology-specific implementation boundary is not fully established'
+        elif method in ('model-conformance','deterministic-domain-verifier'):
+            if model_pass:
+                ob.update(status='passed',evidence=model_evidence or 'model-conformance')
+                ob.pop('reason',None)
+                limitation='proves semantic mapping/domain relation, not arbitrary runtime implementation behavior'
+            else:
+                ob.update(status='inconclusive',reason='model-conformance evidence is absent or non-passing')
+                ob.pop('evidence',None)
+                limitation='semantic mapping cannot substitute for implementation evidence'
+        elif method=='integration-contract':
+            if model_pass and tech_pass:
+                ob.update(status='passed',evidence='model-conformance;technology-inspector')
+                ob.pop('reason',None)
+                limitation='local contract/boundary conformance only; deployment/integration evidence remains a separate Gate'
+            else:
+                ob.update(status='inconclusive',reason='cross-process local contract evidence is incomplete')
+                ob.pop('evidence',None)
+                limitation='does not establish remote peer availability or deployed integration'
+        elif method.startswith('technology-skill:'):
+            tech_name=method.split(':',1)[1]
+            matched=[x for x in tech if x.get('technology')==tech_name]
+            if matched and all(x.get('status')=='passed' for x in matched):
+                ob.update(status='passed',evidence='technology-inspector:'+tech_name)
+                ob.pop('reason',None)
+                limitation='bounded to checks implemented by the selected technology Skill'
+            else:
+                ob.update(status='inconclusive',reason='selected technology has no passing deterministic constraint evidence')
+                ob.pop('evidence',None)
+                limitation='technology constraint coverage is incomplete'
+        else:
+            ob.update(status='inconclusive',reason='verification method has no deterministic aggregator')
+            ob.pop('evidence',None)
+            limitation='requires an explicit deterministic verifier or conditional reviewer'
+        ob['limitation']=limitation
+    result['evaluation']='deterministic-aggregate/v1'
+    return result
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)

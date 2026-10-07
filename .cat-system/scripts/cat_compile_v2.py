@@ -26,6 +26,7 @@ S = 'cat-machine/v2'
 M = 'cat-test-model/v2'
 D = 'cat-test-driver/v2'
 Q = 'cat-tdd-queue/v1'
+V = 'cat-test-vectors/v2'
 ID = re.compile(r'^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$')
 CODE = re.compile(r'(?ms)^```cat-machine\s*\n(.*?)\n```\s*$')
 INT = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')
@@ -919,8 +920,8 @@ def match_rules(model, trigger, env):
     return matched[0]
 
 def expand_cases(model, vectors):
-    check_keys(vectors,['schema','process','cases'],where='vectors')
-    require(vectors['schema']=='cat-test-vectors/v2' and vectors['process']==model['process'],'vector version/Process mismatch')
+    check_keys(vectors,['schema','process','cases'],optional=('selection_rule',),where='vectors')
+    require(vectors['schema']==V and vectors['process']==model['process'],'vector version/Process mismatch')
     fields={f['id']:f for f in model['fields']}
     inputs={f for f in fields if fields[f]['role']=='input'}
     states={f for f in fields if fields[f]['role']=='state'}
@@ -948,6 +949,48 @@ def expand_cases(model, vectors):
                       'input':test['input'],'initial_state':test['state'],'allowed':allowed})
     unique([t['id'] for t in cases],'vector IDs')
     return cases
+
+def selection_vectors(model, strategy='rule-witness/v1'):
+    require(strategy == 'rule-witness/v1', 'unsupported test-selection rule: ' + str(strategy))
+    require(model.get('status') == 'confirmed', 'normative vector selection requires confirmed TestModel')
+    fields={f['id']:f for f in model['fields']}
+    variable_ids=sorted(f for f in fields if fields[f]['role'] in ('input','state'))
+    domains=[]
+    for field_id in variable_ids:
+        domain=fields[field_id]['domain']
+        if domain['type']=='boolean':
+            values=[False,True]
+        elif domain['type']=='enum':
+            values=list(domain['values'])
+        else:
+            raise Blocked('rule-witness/v1 requires finite boolean/enum input/state domains; add a deterministic selector extension for '+field_id)
+        require(values, 'test-selection domain is empty: '+field_id)
+        domains.append(values)
+    require(__import__('math').prod(len(x) for x in domains)<=65536,
+            'test-selection exceeds configured 65536 combinations')
+    defs={d['id']:d for d in model['definitions']}
+    witnesses={}
+    for values in itertools.product(*domains):
+        env=dict(zip(variable_ids,values))
+        if not all(eval_expr(c,env,defs) for c in model['pi_constraints']):
+            continue
+        for trigger in sorted(t['id'] for t in model['triggers']):
+            hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
+            require(len(hit)==1, f'confirmed TestModel selection found {len(hit)} rules at {trigger}')
+            rule=hit[0]
+            if rule['id'] in witnesses:
+                continue
+            witnesses[rule['id']]={
+                'id':'case.'+rule['id'],
+                'trigger':trigger,
+                'input':{k:env[k] for k in variable_ids if fields[k]['role']=='input'},
+                'state':{k:env[k] for k in variable_ids if fields[k]['role']=='state'},
+            }
+    missing=[r['id'] for r in model['rules'] if r['id'] not in witnesses]
+    require(not missing, 'test-selection produced no witness for TestModel rule(s): '+str(missing))
+    return {'schema':V,'process':model['process'],'selection_rule':strategy,
+            'cases':[witnesses[r['id']] for r in model['rules']]}
+
 
 def _vitest_renderer():
     import importlib.util
@@ -978,6 +1021,9 @@ def make_queue(model, vectors, model_bytes, vector_bytes):
     require(model.get('status') == 'confirmed', 'normative Queue requires confirmed TestModel')
     cases = expand_cases(model, vectors)
     require(cases, 'Queue requires at least one concrete vector')
+    covered={case['source_tce'] for case in cases}
+    missing=sorted({r['id'] for r in model['rules']}-covered)
+    require(not missing, 'test-selection omitted TestModel rule(s): '+str(missing))
     items = []
     for order, case in enumerate(cases, 1):
         items.append({'id': case['id'], 'model_ref': case['source_tce'], 'vector_ref': case['id'],
@@ -1147,6 +1193,7 @@ def main(argv=None):
     cli=argparse.ArgumentParser(description=__doc__)
     sub=cli.add_subparsers(dest='command',required=True)
     m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
+    v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',required=True);v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
     q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
     t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
     args=cli.parse_args(argv)
@@ -1167,18 +1214,25 @@ def main(argv=None):
                 require(model.get('status')=='confirmed' or args.allow_draft,'draft model requires --allow-draft')
                 require(model.get('semantic_authority') in (S,'cat-markdown/v1','cat-markdown/v2'),'missing CAT semantic authority')
                 require(model==fresh,'test model does not match current CAT source: regenerate')
-            vector_bytes=Path(args.vectors).read_bytes()
-            vectors=json.loads(vector_bytes.decode('utf-8'))
-            if args.command=='queue':
-                result=make_queue(model,vectors,model_bytes,vector_bytes)
+            if args.command=='vectors':
+                result=selection_vectors(model,args.selection_rule)
                 write(args.output,json.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
             else:
-                if args.queue:
-                    queue=json.loads(Path(args.queue).read_text(encoding='utf-8'))
-                    vectors=current_vectors(model,vectors,queue,model_bytes,vector_bytes)
+                vector_bytes=Path(args.vectors).read_bytes()
+                vectors=json.loads(vector_bytes.decode('utf-8'))
+                if not args.allow_draft:
+                    require(vectors==selection_vectors(model),
+                            'test vectors differ from deterministic test-selection output: regenerate')
+                if args.command=='queue':
+                    result=make_queue(model,vectors,model_bytes,vector_bytes)
+                    write(args.output,json.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
                 else:
-                    require(args.allow_draft, 'normative test generation requires --queue with exactly one current item')
-                write(args.output,emit_vitest(model,vectors,args.binding),args.check)
+                    if args.queue:
+                        queue=json.loads(Path(args.queue).read_text(encoding='utf-8'))
+                        vectors=current_vectors(model,vectors,queue,model_bytes,vector_bytes)
+                    else:
+                        require(args.allow_draft, 'normative test generation requires --queue with exactly one current item')
+                    write(args.output,emit_vitest(model,vectors,args.binding),args.check)
         return 0
     except (Blocked,TypeError,KeyError,ValueError,FileNotFoundError) as e:
         print('BLOCKED: '+str(e),file=sys.stderr);return 2

@@ -16,7 +16,7 @@ def work():
         'id': 'demo.guard.work',
         'entry': 'issue',
         'mode': 'implementation',
-        'flow': 'specification',
+        'flow': 'issue-work',
         'work_kind': 'specification',
         'parent': '',
         'depends_on': [],
@@ -51,6 +51,26 @@ class WriteGuardTest(unittest.TestCase):
             result = flow.guard_work(wp, w, 'spec', 'finish')
             self.assertEqual(result['status'], 'blocked')
             self.assertTrue(any('unrelated.txt' in item.get('paths', []) for item in result['violations']))
+
+    def test_handoff_starts_guard_and_blocks_transition_until_finish(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);w=work();wp=root/'work.json';wp.write_bytes(flow.json_bytes(w))
+            (root/'Lifecycle'/'CAT'/'Draft').mkdir(parents=True)
+            handoff=flow.handoff_work(wp,w,'spec')
+            self.assertEqual(handoff['guard']['status'],'passed')
+            with self.assertRaisesRegex(flow.Blocked,'prior Agent guard'):
+                flow.handoff_work(wp,w,'spec-closure')
+            (root/'Lifecycle'/'CAT'/'Draft'/'demo.md').write_text('draft',encoding='utf-8')
+            self.assertEqual(flow.guard_work(wp,w,'spec','finish')['status'],'passed')
+            self.assertEqual(flow.handoff_work(wp,w,'spec-closure')['route_status'],'ready')
+
+    def test_pending_same_stage_guard_cannot_be_restarted(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);w=work();wp=root/'work.json';wp.write_bytes(flow.json_bytes(w))
+            (root/'Lifecycle'/'CAT'/'Draft').mkdir(parents=True)
+            self.assertEqual(flow.guard_work(wp,w,'spec','start')['status'],'passed')
+            with self.assertRaisesRegex(flow.Blocked,'cannot replace its baseline'):
+                flow.guard_work(wp,w,'spec','start')
 
 
 if __name__ == '__main__':

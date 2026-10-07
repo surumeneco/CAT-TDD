@@ -18,6 +18,9 @@ from pathlib import Path
 
 from catlib.common import Blocked, json_bytes, read_json, require, sha
 from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
+import cat_queue
+import cat_scope_order
+import cat_implementation_obligations as obligation_runtime
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / 'config' / 'routing.json'
@@ -130,8 +133,9 @@ def route(w, stage):
     flow = infer_flow(w)
     flows = c.get('flows', {})
     require(flow in flows, f'unknown Work flow: {flow}')
-    permitted = stage in flows[flow].get('stages', []) or stage in ('git','ci','merge','deployment','real-use','test-review')
-    return {'stage': stage, 'flow': flow, 'executor': executor,
+    permitted = stage in flows[flow].get('stages', []) or stage in ('git','ci','merge','deployment','real-use','test-review','promotion')
+    guard_required = executor.get('type') == 'agent' and bool(s.get('permissions', {}).get('write'))
+    return {'stage': stage, 'flow': flow, 'executor': executor, 'guard_required': guard_required,
             'conditional': s.get('conditional', {}), 'permissions': s.get('permissions', {}),
             'on_result': s.get('on_result', {}), 'skills': sorted(set(items)),
             'unknown_technologies': unknown, 'missing_skills': absent,
@@ -165,7 +169,7 @@ def compilation_path(wpath, w, conf, key, check):
     require(not Path(rel).is_absolute() and '..' not in Path(rel).parts, f'{key} escapes allowed compilation boundary')
     p = (base / rel).resolve()
     require(under(p, boundary), f'{key} escapes allowed compilation boundary')
-    require(p.is_file() or (not check and key in ('model', 'queue', 'tests_output', 'obligations')), f'{key} not found: {p}')
+    require(p.is_file() or (not check and key in ('model', 'vectors', 'queue', 'tests_output', 'obligations')), f'{key} not found: {p}')
     return str(p)
 
 
@@ -184,7 +188,7 @@ def compilation_tce_paths(wpath, w, conf, check):
 def compile_work(wpath, w, kind, check):
     conf = w.get('compilation')
     require(conf is not None, 'no machine-readable compilation declared')
-    require(kind in ('model', 'queue', 'tests'), 'kind must be model, queue or tests')
+    require(kind in ('model', 'vectors', 'queue', 'tests'), 'kind must be model, vectors, queue or tests')
     unsupported = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
     require(not unsupported, 'normative compiler does not map declared CommonRule/DomainSpec inputs: ' + ', '.join(unsupported))
     def loc(key):
@@ -196,13 +200,16 @@ def compile_work(wpath, w, kind, check):
         tces = compilation_tce_paths(wpath, w, conf, check)
         argv += [process, pi, *tces]
     else:
-        for key in ('model', 'vectors'):
-            require(conf.get(key), f'compilation.{key} missing')
-        argv += [loc('model'), loc('vectors')]
-        if kind == 'tests':
-            for key in ('binding', 'queue', 'tests_output'):
-                require(conf.get(key), f'compilation.{key} missing')
-            argv += [loc('binding'), '--queue', loc('queue')]
+        require(conf.get('model'), 'compilation.model missing')
+        if kind == 'vectors':
+            argv += [loc('model')]
+        else:
+            require(conf.get('vectors'), 'compilation.vectors missing')
+            argv += [loc('model'), loc('vectors')]
+            if kind == 'tests':
+                for key in ('binding', 'queue', 'tests_output'):
+                    require(conf.get(key), f'compilation.{key} missing')
+                argv += [loc('binding'), '--queue', loc('queue')]
         process = loc('process')
         pi = loc('pi')
         tces = compilation_tce_paths(wpath, w, conf, check)
@@ -211,7 +218,7 @@ def compile_work(wpath, w, kind, check):
             argv += ['--tce', tce]
     if conf.get('domain_rule'):
         argv += ['--domain-rule', loc('domain_rule')]
-    output_key = {'model':'model','queue':'queue','tests':'tests_output'}[kind]
+    output_key = {'model':'model','vectors':'vectors','queue':'queue','tests':'tests_output'}[kind]
     argv += ['-o', loc(output_key)]
     if conf['allow_draft']:
         argv.append('--allow-draft')
@@ -222,7 +229,6 @@ def compile_work(wpath, w, kind, check):
             'exit_code': p.returncode, 'status': 'passed' if p.returncode == 0 else 'blocked',
             'stdout': p.stdout.strip()[-1000:], 'stderr': p.stderr.strip()[-1800:],
             'normative': not conf['allow_draft'], 'check_only': check}
-
 
 def obligations_work(wpath, w, check=False):
     conf = w.get('compilation')
@@ -306,7 +312,7 @@ def conformance_input_hashes(wpath, w, kind):
     if kind == 'model-conformance':
         keys.append('model')
     elif kind == 'implementation-conformance':
-        keys.append('obligations')
+        keys.extend(['model','queue','obligations'])
         if conf.get('conformance_binding'):
             keys.append('conformance_binding')
     result = {}
@@ -421,8 +427,18 @@ def conformance_work(wpath, w, kind):
                 'technology_results': tech['results']}
     require(conf.get('obligations'), 'implementation-conformance requires Compilation Obligations')
     path=compilation_path(wpath,w,conf,'obligations',True)
-    data=read_json(Path(path))
-    require(data.get('schema')=='cat-implementation-obligations/v1','wrong implementation obligation schema')
+    skeleton=read_json(Path(path))
+    require(skeleton.get('schema')=='cat-implementation-obligations/v1','wrong implementation obligation schema')
+    queue=None
+    if conf.get('queue'):
+        qpath=Path(compilation_path(wpath,w,conf,'queue',True))
+        queue=read_json(qpath)
+    model_gate=conformance_evidence_status(wpath,w,'model-conformance')
+    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate)
+    runtime=wpath.parent/'.cat-flow'/'cache'
+    runtime.mkdir(parents=True,exist_ok=True)
+    evaluated=runtime/'implementation-obligations-evaluated.json'
+    evaluated.write_bytes(json_bytes(data))
     items=data.get('items')
     require(isinstance(items,list) and items,'implementation obligations required')
     required={'interface','capability','behavior','invariant','cross-process','domain','implementation-constraint'}
@@ -432,6 +448,7 @@ def conformance_work(wpath, w, kind):
         require(item.get('category') in required,'unknown obligation category')
         require(isinstance(item.get('source_ref'),str) and item['source_ref'],'obligation source_ref required')
         require(isinstance(item.get('method'),str) and item['method'],'obligation verification method required')
+        require(isinstance(item.get('limitation'),str) and item['limitation'],'obligation limitation required')
         require(item.get('status') in ('passed','failed','inconclusive','not-run'),'invalid obligation status')
         if item['status'] in ('passed','failed'):
             require(isinstance(item.get('evidence'),str) and item['evidence'],item['status']+' obligation needs evidence')
@@ -439,17 +456,16 @@ def conformance_work(wpath, w, kind):
             require(isinstance(item.get('reason'),str) and item['reason'],item['status']+' obligation needs reason')
         categories.add(item['category'])
     missing=sorted(required-categories)
+    base={'missing_categories':missing,'technology_results':tech['results'],
+          'evaluated_obligations':str(evaluated)}
     if any(x['status']=='failed' for x in items):
-        return {'gate':kind,'status':'blocked','reason':'one or more implementation obligations failed','missing_categories':missing}
+        return {'gate':kind,'status':'blocked','reason':'one or more implementation obligations failed',**base}
     if missing or any(x['status'] in ('inconclusive','not-run') for x in items):
-        return {'gate':kind,'status':'inconclusive','reason':'obligations are incomplete or not machine-decidable',
-                'missing_categories':missing,'technology_results':tech['results']}
+        return {'gate':kind,'status':'inconclusive','reason':'obligations are incomplete or not machine-decidable',**base}
     if tech['status'] != 'passed':
-        return {'gate':kind,'status':'inconclusive','reason':tech['reason'],
-                'missing_categories':missing,'technology_results':tech['results']}
+        return {'gate':kind,'status':'inconclusive','reason':tech['reason'],**base}
     return {'gate':kind,'status':'passed',
-            'reason':'all CAT implementation obligation categories and available technology inspectors passed',
-            'technology_results':tech['results']}
+            'reason':'all CAT implementation obligations and available technology inspectors passed',**base}
 
 
 def _repo_state(wpath,w):
@@ -515,21 +531,77 @@ def _workspace_write_patterns(wpath, w, permissions):
     return patterns
 
 
+def _lifecycle_scope_ready(wpath,w):
+    root=workspace_root(wpath)
+    lifecycle=root/'Lifecycle'/'Works'
+    if not lifecycle.is_dir() or not under(wpath,lifecycle):
+        return {'enforced':False,'ready':True}
+    active=[]
+    completed=set()
+    blocked_ids=set()
+    for state in ('New','InProgress','Blocked','Completed','Cancelled'):
+        base=lifecycle/state
+        if not base.is_dir():
+            continue
+        for work_dir in sorted(x for x in base.iterdir() if x.is_dir()):
+            if state=='Completed':
+                completed.add(work_dir.name)
+                continue
+            if state=='Cancelled':
+                continue
+            if state=='Blocked':
+                blocked_ids.add(work_dir.name)
+            candidates=[work_dir/'Work.md',work_dir/'work.json']
+            hit=next((x for x in candidates if x.is_file()),None)
+            if hit:
+                active.append(str(hit))
+    require(active,'Lifecycle/Works contains no active Work manifests')
+    order=cat_scope_order.build(active,completed)
+    ready={x['id'] for x in order['ready'] if x['id'] not in blocked_ids}
+    require(w['id'] in ready,
+            'Work is not a deepest ready scope; ready='+','.join(sorted(ready)))
+    return {'enforced':True,'ready':True,'ready_ids':sorted(ready)}
+
+
+def _pending_guard(wpath,w,except_stage=None):
+    folder=wpath.parent/'.cat-flow'/'guards'
+    if not folder.is_dir():
+        return None
+    for path in sorted(folder.glob('*.json')):
+        try:
+            data=read_json(path)
+        except Exception:
+            continue
+        if data.get('work_id')!=w['id'] or data.get('stage')==except_stage:
+            continue
+        if data.get('verdict') not in ('passed',):
+            return {'stage':data.get('stage'),'verdict':data.get('verdict','pending'),'path':str(path)}
+    return None
+
+
 def guard_work(wpath,w,stage,phase):
     r=route(w,stage)
     require(r['status']=='ready', 'cannot guard blocked route')
+    require(r.get('guard_required'), 'write guard is only required for writing Agent stages')
     path=wpath.parent/'.cat-flow'/'guards'/(stage+'.json')
     if phase=='start':
+        if path.is_file():
+            previous=read_json(path)
+            require(previous.get('verdict')=='passed',
+                    'existing same-stage guard is pending/blocked; cannot replace its baseline')
+        pending=_pending_guard(wpath,w,except_stage=stage)
+        require(pending is None, 'previous Agent write guard is not passed: '+str(pending))
+        scope=_lifecycle_scope_ready(wpath,w)
         path.parent.mkdir(parents=True,exist_ok=True)
-        payload={'schema':'cat-write-guard/v2','work_id':w['id'],'stage':stage,
+        payload={'schema':'cat-write-guard/v3','work_id':w['id'],'stage':stage,
                  'manifest_sha256':sha(wpath.read_bytes()),'repo_state':_repo_state(wpath,w),
                  'workspace_state':_workspace_state(wpath,w),
-                 'permissions':r['permissions']}
+                 'permissions':r['permissions'],'scope_order':scope,'verdict':'pending'}
         path.write_bytes(json_bytes(payload))
-        return {'status':'passed','guard':str(path),'stage':stage}
+        return {'status':'passed','guard':str(path),'stage':stage,'scope_order':scope}
     require(path.is_file(),'guard baseline missing')
     base=read_json(path);require(base.get('manifest_sha256')==sha(wpath.read_bytes()),'Work changed after guard start')
-    require(base.get('schema')=='cat-write-guard/v2','guard baseline schema stale; restart guard')
+    require(base.get('schema')=='cat-write-guard/v3','guard baseline schema stale; restart guard')
     after=_repo_state(wpath,w);violations=[]
     repo_write='repo:production' in r['permissions'].get('write',[])
     for repo in w['repositories']:
@@ -546,13 +618,45 @@ def guard_work(wpath,w,stage,phase):
     allowed_ws=_workspace_write_patterns(wpath,w,r['permissions'])
     bad_ws=[p for p in changed_ws if not any(fnmatch.fnmatchcase(p,pat) for pat in allowed_ws)]
     if bad_ws: violations.append({'workspace':str(workspace_root(wpath)),'paths':bad_ws})
-    return {'status':'blocked' if violations else 'passed','stage':stage,'violations':violations,
-            'workspace_allowed':allowed_ws}
+    verdict='blocked' if violations else 'passed'
+    base['verdict']=verdict;base['violations']=violations;base['finished_manifest_sha256']=sha(wpath.read_bytes())
+    path.write_bytes(json_bytes(base))
+    return {'status':verdict,'stage':stage,'violations':violations,
+            'workspace_allowed':allowed_ws,'guard':str(path)}
+
+
+def queue_state_work(wpath,w,evidence_path):
+    conf=w.get('compilation') or {}
+    require(conf.get('queue'),'queue-state requires Compilation Queue')
+    qpath=Path(compilation_path(wpath,w,conf,'queue',True))
+    qfile,queue=cat_queue.load(qpath)
+    current=cat_queue.current(queue)
+    require(current is not None,'Queue has no current item')
+    evidence=Path(evidence_path).resolve()
+    allowed=(wpath.parent/'.cat-flow'/'evidence').resolve()
+    require(under(evidence,allowed) and evidence.is_file(),'queue-state evidence must be script-owned .cat-flow/evidence')
+    ev=read_json(evidence)
+    require(ev.get('schema')=='cat-flow-evidence/v1' and ev.get('work_id')==w['id'],'invalid Green evidence identity')
+    require(ev.get('stage')=='green' and ev.get('verdict')=='passed','Queue item can be done only from passed Green evidence')
+    qc=ev.get('queue_context') or {}
+    require(qc.get('current_item_id')==current['id'],'Green evidence does not belong to current Queue item')
+    require(qc.get('sha256')==sha(qpath.read_bytes()),'Queue changed since Green evidence')
+    current['status']='done';current['evidence_ref']=str(evidence)
+    nxt=cat_queue.activate_next(queue)
+    cat_queue.save(qfile,queue)
+    return {'status':'passed','outcome':'next-item' if nxt else 'complete',
+            'transitioned':current['id'],'current':nxt,'queue':str(qpath),
+            'next_stage':'tests' if nxt else 'implementation-conformance'}
 
 
 def handoff_work(wpath,w,stage):
+    pending=_pending_guard(wpath,w,except_stage=stage)
+    require(pending is None,'cannot hand off while prior Agent guard is pending/blocked: '+str(pending))
     r=route(w,stage)
     st=status_work(wpath,w)
+    guard=None
+    if r.get('guard_required') and r.get('status')=='ready':
+        guard=guard_work(wpath,w,stage,'start')
     conf=w.get('compilation') or {}
     source=[]
     for key in ('process','pi','tce','domain_rule','model','queue','obligations'):
@@ -576,7 +680,7 @@ def handoff_work(wpath,w,stage):
             'unresolved_decision':w['specification']['status']!='confirmed',
             'evidence_refs':[x['uri'] for x in w['evidence']],
             'stale_inputs':stale,'next_permitted_action':r['executor'],
-            'route_status':r['status']}
+            'route_status':r['status'],'guard':guard}
 def junit_report(path, expected_ids):
     root = ET.parse(path).getroot()
     cases = root.findall('.//testcase')
@@ -650,12 +754,24 @@ def context_fingerprint(cwd):
     return 'tree:' + h.hexdigest()
 
 
+def _queue_context(wpath,w):
+    conf=w.get('compilation') or {}
+    if not conf.get('queue'):
+        return None
+    path=Path(compilation_path(wpath,w,conf,'queue',True))
+    queue=read_json(path)
+    current=[x for x in queue.get('items',[]) if x.get('status')=='current']
+    require(len(current)<=1,'Queue may contain at most one current item')
+    return {'path':str(path),'sha256':sha(path.read_bytes()),
+            'current_item_id':current[0]['id'] if current else None}
+
+
 def command_work(wpath, w, key, execute=False):
     require(execute, 'commands do not run without the explicit --execute switch')
     check = next((c for c in w['checks'] if c['id'] == key), None)
     require(check is not None, f'check id not declared in Work: {key}')
     require(w['mode'] == 'implementation', 'shadow Work cannot execute declared commands; use validate/route/git/compile or an isolated external sandbox')
-    if check['stage'] in ('red', 'green', 'regression'):
+    if check['stage'] in ('red', 'green', 'regression', 'refactor-baseline'):
         require(w['mode'] == 'implementation', 'shadow Work cannot record real TDD stages')
         require(w['specification']['status'] == 'confirmed', 'no TDD gate without declared confirmed specification')
     cwd = resolve_dir(wpath, w, check['cwd'])
@@ -721,6 +837,7 @@ def command_work(wpath, w, key, execute=False):
             outcome = 'blocked'
             reason += f'; declared output missing: {name}'
     context_sha = context_fingerprint(cwd)
+    queue_context = _queue_context(wpath,w) if check['stage'] in ('red','green') else None
     evidence = {'schema': 'cat-flow-evidence/v1', 'work_id': w['id'],
                 'manifest_sha256': sha(wpath.read_bytes()), 'check_id': key,
                 'stage': check['stage'], 'runner': check['runner'],
@@ -730,7 +847,7 @@ def command_work(wpath, w, key, execute=False):
                 'input_sha256': inputs, 'output_sha256': outputs, 'context_sha256': context_sha,
                 'junit_sha256': sha(report.read_bytes()) if check['runner'] == 'junit' and report.exists() else None,
                 'observed_targets': named, 'verdict': outcome, 'reason': reason,
-                'semantics_approved': False}
+                'queue_context': queue_context, 'semantics_approved': False}
     evpath = runtime / 'evidence' / (key + '.json')
     evpath.parent.mkdir(parents=True, exist_ok=True)
     evpath.write_bytes(json_bytes(evidence))
@@ -834,13 +951,13 @@ def main(argv=None):
     init = sub.add_parser('init', help='create an unapproved Work scaffold')
     init.add_argument('--id', required=True)
     init.add_argument('-o', '--output', required=True)
-    for key in ('validate', 'route', 'git', 'compile', 'obligations', 'conformance', 'guard', 'run', 'status', 'handoff'):
+    for key in ('validate', 'route', 'git', 'compile', 'obligations', 'conformance', 'guard', 'queue-state', 'run', 'status', 'handoff'):
         p = sub.add_parser(key)
         p.add_argument('--work', required=True)
         if key == 'route':
             p.add_argument('--stage', choices=STAGES, required=True)
         if key == 'compile':
-            p.add_argument('--kind', choices=('model', 'queue', 'tests'), required=True)
+            p.add_argument('--kind', choices=('model', 'vectors', 'queue', 'tests'), required=True)
             p.add_argument('--check', action='store_true')
         if key == 'obligations':
             p.add_argument('--check', action='store_true')
@@ -849,6 +966,8 @@ def main(argv=None):
         if key == 'guard':
             p.add_argument('--stage', choices=STAGES, required=True)
             p.add_argument('--phase', choices=('start','finish'), required=True)
+        if key == 'queue-state':
+            p.add_argument('--evidence', required=True)
         if key == 'handoff':
             p.add_argument('--stage', choices=STAGES, required=True)
         if key == 'run':
@@ -898,6 +1017,8 @@ def main(argv=None):
                 result = record_conformance_evidence(p, w, args.kind, conformance_work(p, w, args.kind))
             elif args.cmd == 'guard':
                 result = guard_work(p, w, args.stage, args.phase)
+            elif args.cmd == 'queue-state':
+                result = queue_state_work(p, w, args.evidence)
             elif args.cmd == 'run':
                 result = command_work(p, w, args.id, args.execute)
             elif args.cmd == 'handoff':

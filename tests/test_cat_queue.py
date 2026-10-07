@@ -67,5 +67,18 @@ class QueueRuntimeTest(unittest.TestCase):
             p.write_text(json.dumps(q),encoding='utf-8')
             with self.assertRaises(cat_queue.Blocked):
                 cat_queue.load(p)
+    def test_deterministic_selection_generates_rule_witnesses(self):
+        selected=compiler.selection_vectors(self.model())
+        self.assertEqual(selected['selection_rule'],'rule-witness/v1')
+        self.assertEqual({x['id'] for x in selected['cases']},{'case.demo.on','case.demo.off'})
+        q=compiler.make_queue(self.model(),selected,b'model',json.dumps(selected,sort_keys=True).encode())
+        self.assertEqual({x['model_ref'] for x in q['items']},{'demo.on','demo.off'})
+
+    def test_queue_rejects_selection_that_omits_model_rule(self):
+        vectors=self.vectors()
+        vectors['cases']=vectors['cases'][:1]
+        with self.assertRaisesRegex(compiler.Blocked,'omitted TestModel rule'):
+            compiler.make_queue(self.model(),vectors,b'model',b'vectors')
+
 
 if __name__=='__main__': unittest.main()
