@@ -506,7 +506,9 @@ def _workspace_state(wpath, w):
         rel = path.relative_to(root)
         if any(part in excluded for part in rel.parts):
             continue
-        if len(rel.parts) >= 2 and rel.parts[0] == '.cat-flow' and rel.parts[1] == 'guards':
+        parts=rel.parts
+        if any(parts[i]=='.cat-flow' and i+1 < len(parts) and parts[i+1]=='guards'
+               for i in range(len(parts))):
             continue
         if any(under(path, repo_root) for repo_root in repo_roots):
             continue
