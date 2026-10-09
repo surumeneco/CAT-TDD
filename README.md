@@ -12,7 +12,7 @@ git clone <target-repository-url> Room0/<repository-name>
 
 その後、この **CAT-TDD ルート**を VS Code / Copilot で開きます。開発対象のソースコードは `Room0/<repository-name>/` に置き、CAT-TDD 側の Lifecycle / Docs / TestModels と分離して扱います。
 
-`Room0/**` と `RoomN/**` に加え、`Lifecycle/**`、トップレベル `Docs/**`、`TestModels/**` は親 CAT-TDD リポジトリの Git 管理対象外です。CAT-TDD はテンプレートと共通実行環境だけを管理し、個別プロジェクトのソースコード・仕様Artifact・Work・TestModel等を commit に混入させません。各ディレクトリ自体は追跡済み `.gitkeep` により clone 直後から存在します。
+`Room0/**` と `Room1/**`、`Room2/**` などの番号付きRoom、および `Lifecycle/**`、トップレベル `Docs/**`、`TestModels/**` は親 CAT-TDD リポジトリの Git 管理対象外です。CAT-TDD はテンプレートと共通実行環境だけを管理し、個別プロジェクトのソースコード・仕様Artifact・Work・TestModel等を commit に混入させません。`Room0/` は `.gitkeep` により clone 直後から存在し、`Room1/` 以降は必要時に作成します。`RoomN` という名前の実ディレクトリやGitリポジトリは使用しません。
 
 ## 新規開発の入口
 
@@ -37,10 +37,30 @@ Docs/
   Processes/
 TestModels/
 Room0/                    開発対象 repo。親 Git では完全に ignore
-RoomN/                    作業用 worktree。親 Git では完全に ignore
+Room1/                    並列作業空間1。配下に各repoのworktreeを配置
+Room2/                    並列作業空間2。Room1と独立したworktreeを配置
+Room3/...                 必要に応じて番号を増やす（RoomNは説明上のN）
 ```
 
 Lifecycle 状態の正本は Issue / Task / Work の配置フォルダです。ID は移動しても変更しません。
+
+## 並列作業用RoomとGit worktree
+
+`Room0/<repository-name>/` は元のGitリポジトリです。`Room1/`、`Room2/` … は**作業空間の番号**であり、リポジトリ名でもブランチ名でもありません。1つのRoomに複数リポジトリのworktreeを個別配置できます。同じリポジトリを複数Roomで使う場合は、各worktreeに異なるブランチを割り当てます。
+
+```text
+Room0/  repo-A/  repo-B/         # 元repo
+Room1/  repo-A/  repo-B/         # 並列作業1、それぞれ独立したworktree
+Room2/  repo-A/  repo-B/         # 並列作業2、それぞれ独立したworktree
+```
+
+例えば `repo-A` を Room1 に配置するには以下を実行します。Room2や他のrepoも同様です。ブランチ名は各プロジェクトの運用規則に従ってください。
+
+```bash
+mkdir -p Room1
+git -C Room0/repo-A worktree add ../../Room1/repo-A -b <new-branch-name>
+git -C Room0/repo-A worktree list
+```
 
 ## Git 境界
 
@@ -49,10 +69,11 @@ CAT-TDD 自身の変更はルートで Git 操作します。開発対象の Git
 ```bash
 git status
 git -C Room0/<repository-name> status
-git -C RoomN/<worktree-name> status
+git -C Room1/<repository-name> status
+git -C Room2/<repository-name> status
 ```
 
-通常の `git add .` を CAT-TDD ルートで行っても、`Room0/**` / `RoomN/**` / `Lifecycle/**` / `Docs/**` / `TestModels/**` のプロジェクト固有内容は追加されません。さらに、プロジェクトごとに選択導入される `.github/skills/tech-*`、`.github/skills/*-adapter`、`.cat-system/extensions/**` も親Gitから除外されます。強制追加 (`git add -f`) はこの分離を破壊するため使用しないでください。
+通常の `git add .` を CAT-TDD ルートで行っても、`Room0/**` / `Room1/**`・`Room2/**`等 / `Lifecycle/**` / `Docs/**` / `TestModels/**` のプロジェクト固有内容は追加されません。さらに、プロジェクトごとに選択導入される `.github/skills/tech-*`、`.github/skills/*-adapter`、`.cat-system/extensions/**` も親Gitから除外されます。強制追加 (`git add -f`) はこの分離を破壊するため使用しないでください。
 
 ## Skill の扱い
 
@@ -68,7 +89,7 @@ git -C RoomN/<worktree-name> status
 - `Lifecycle/**`: Issue / Task / Work、CAT Candidate/Draft/Review、TDD/REF結果
 - `Docs/**`: 個別プロジェクトのConstraintsとconfirmed Process仕様
 - `TestModels/**`: 個別プロジェクトから導出されたTestModel
-- `Room0/**` / `RoomN/**`: 対象repoとworktree
+- `Room0/**`: 開発対象の元repo。`Room1/**`・`Room2/**`等: 各並列作業空間のrepo別worktree
 - `.github/skills/<selected-technology-skill>` / `*-adapter`: 個別Workで選択されたCopilot Skill
 - `.cat-system/extensions/**`: プロジェクト固有adapter
 - `.cat-flow/**`: 実行証拠・一時状態
