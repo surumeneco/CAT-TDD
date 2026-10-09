@@ -1,14 +1,14 @@
 # ---------------------------------------------------------------------------
 # Project-local CAT artifacts and source repositories
 # ---------------------------------------------------------------------------
-# These directories are intentionally present in the template via tracked
-# .gitkeep files, but all project-specific contents created after clone belong
-# to the workspace user/project, not to the CAT-TDD template repository.
+# Stable template directories use tracked .gitkeep files; numbered Room directories
+# (Room1, Room2, ...) are created on demand and must not be tracked.
+# Project-specific contents belong to the workspace, not to this repository.
 /Lifecycle/**
 /Docs/**
 /TestModels/**
 /Room0/**
-/RoomN/**
+/Room[1-9]*/
 
 # ---------------------------------------------------------------------------
 # Project-specific Copilot/runtime selections
