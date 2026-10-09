@@ -10,15 +10,11 @@ import json
 from pathlib import Path
 import sys
 
+from catlib.common import Blocked, require
+
 Q = 'cat-tdd-queue/v1'
 STATUSES = ('pending','current','done','blocked')
 
-class Blocked(ValueError):
-    pass
-
-def require(ok, msg):
-    if not ok:
-        raise Blocked(msg)
 
 def load(path):
     p=Path(path)
