@@ -5,6 +5,7 @@
     "Vue": "tech-vue",
     "Vitest": "tech-vitest",
     "Playwright": "tech-playwright",
+    "Web Accessibility": "tech-web-accessibility",
     "PostgreSQL": "tech-postgresql",
     "React": "tech-react",
     "Next.js": "tech-nextjs",

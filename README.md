@@ -77,7 +77,7 @@ git -C Room2/<repository-name> status
 
 ## Skill の扱い
 
-共通 Skill は最初から `.github/skills` に配置されています。技術Skill（自作 `tech-*` および `routing.json` に登録した外部Skill）は `.cat-system/skills` の pool に保持し、Work で採用技術が確定した後に `.cat-system/scripts/cat_install.py` が選択導入します。未採用技術の Skill を最初から Copilot の探索対象へ混在させません。
+共通 Skill は最初から `.github/skills` に配置されています。技術Skill（自作 `tech-*` および `routing.json` に登録した外部Skill）は `.cat-system/skills` の pool に保持し、Work で採用技術が確定した後に `.cat-system/scripts/cat_install.py` が選択導入します。未採用技術の Skill を最初から Copilot の探索対象へ混在させません。Web UIのアクセシビリティ実装・検証用Skillは`Web Accessibility`をWorkの`technologies`に明示した場合だけ選択し、UIフレームワークやE2EテストのSkillと併用します。
 
 詳細な契約は `.cat-system/docs/` を参照してください。
 

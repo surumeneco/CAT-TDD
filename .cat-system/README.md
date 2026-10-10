@@ -63,6 +63,7 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 - UI / Web: `tech-vue`、`tech-react`、`tech-nextjs`、`tech-aspnet-core`、`tech-spring-boot`、`tech-fastapi`。
 - DB: `tech-postgresql`、`tech-mysql`、`tech-sqlserver`、`tech-oracle-db`。
 - Test: `tech-vitest`、`tech-playwright`、`tech-xunit`、`tech-junit`、`tech-pytest`。
+- Web UI横断品質: `tech-web-accessibility`（Workの`technologies`に`Web Accessibility`を明示した場合のみ）。
 - Container: Docker公式`docker-project-foundations`、`docker-build-strategies`、`docker-compose-patterns`、`docker-destructive-guardrails`。Dockerは1つの採用技術から複数Skillへrouteする。
 
 採用しない技術のSkillは配布先へ入れない。未収録技術は技術構成文書に基づいて独立Skillを追加し、CAT共通Skillへ技術固有の方法を混入させない。Docker外部Skillの固定版・出典は[外部Skill](docs/外部Skill.md)に記録する。

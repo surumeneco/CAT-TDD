@@ -67,6 +67,23 @@ class InstallTest(unittest.TestCase):
         names={p.parent.name for p in skills}
         self.assertTrue(expected.isdisjoint(names))
 
+    def test_accessibility_skill_is_opt_in_and_installs_references(self):
+        self.work['technologies'] = ['TypeScript']
+        _, skills, _ = self.selected()
+        self.assertNotIn('tech-web-accessibility', {p.parent.name for p in skills})
+        self.work['technologies'] = ['TypeScript', 'Web Accessibility']
+        agents, skills, extension = self.selected()
+        self.assertIn('tech-web-accessibility', {p.parent.name for p in skills})
+        rows = installer.plan(self.project, agents, skills, False, extension)
+        targets = {str(dst.relative_to(self.project)) for _, dst, _ in rows}
+        self.assertIn('.github/skills/tech-web-accessibility/SKILL.md', targets)
+        self.assertIn('.github/skills/tech-web-accessibility/references/evaluation-checklist.md', targets)
+        self.assertIn('.cat-system/skills/tech-web-accessibility/references/evaluation-checklist.md', targets)
+        self.assertEqual(installer.planned_reference_errors(self.project, rows), [])
+        self.work['technologies'] = ['Playwright']
+        _, skills, _ = self.selected()
+        self.assertNotIn('tech-web-accessibility', {p.parent.name for p in skills})
+
     def test_unknown_technology_blocks(self):
         self.work['technologies']=['MadeUpFramework']
         with self.assertRaises(flow.Blocked): installer.sources(self.work,None)
