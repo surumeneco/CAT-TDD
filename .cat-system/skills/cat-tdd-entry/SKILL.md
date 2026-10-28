@@ -1,11 +1,6 @@
 ---
 name: cat-tdd-entry
-description: >
-  Use for software development in this CAT-TDD workspace: feature implementation,
-  bug fixes, Issue maintenance, code-to-spec reverse engineering, tests,
-  and behavior-preserving refactors. Also applies to 開発・実装・機能追加・修正・バグ対応・
-  テスト・既存コードからの仕様化・リファクタリング. Select one of four independent flows
-  and use the shared CAT-TDD runtime; do not invent test or validation evidence.
+description: "Use CAT-TDD for software development in VS Code: implement features, fix bugs, maintain Issues, write tests, code-to-spec, and behavior-preserving refactors; 開発・実装・修正・バグ対応・テスト・仕様化・リファクタリング. Choose one of four independent flows and run shared deterministic CAT gates."
 ---
 
 # CAT-TDD development entry
