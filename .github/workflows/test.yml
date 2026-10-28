@@ -2,7 +2,7 @@ name: CAT-TDD tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**']
   pull_request:
 
 permissions:
