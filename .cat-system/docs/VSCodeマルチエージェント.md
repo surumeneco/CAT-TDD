@@ -20,13 +20,19 @@ CAT-TDDの意味・工程・責任・許可・実行証拠の正本は、利用�
 
 ## 導入
 
-CAT-TDDのパッケージインストーラは、Workの`technologies`で確定したSkillだけを配る。未採用技術、未選択Adapterは配布しない。共通Skillsは3種類の探索パスへ複製**配置**するが、編集元は`.cat-system/skills/`の一つだけとする。配置コピーを独立正本として修正しない。
+CAT-TDDのパッケージインストーラは、最初のWorkが存在しない段階では`--bootstrap`で共通入口・共通Skill・Agentを配置する。Work確定後はその`technologies`に対応する技術Skillだけを追加する。未採用技術、未選択Adapterは配布しない。共通Skillsは3種類の探索パスへ複製**配置**するが、編集元は`.cat-system/skills/`の一つだけとする。配置コピーを独立正本として修正しない。
 
 ```bash
-python .cat-system/scripts/cat_install.py --work Lifecycle/Works/InProgress/<work-id>/Work.md --project-root . 
-# 計画と競合を確認した後
+# 初回: 共通入口を計画し、問題なければ適用する
+python .cat-system/scripts/cat_install.py --project-root . --bootstrap
+python .cat-system/scripts/cat_install.py --project-root . --bootstrap --apply
+
+# Work確定後: そのWorkで採用した技術Skillを追加する
+python .cat-system/scripts/cat_install.py --work Lifecycle/Works/InProgress/<work-id>/Work.md --project-root .
 python .cat-system/scripts/cat_install.py --work Lifecycle/Works/InProgress/<work-id>/Work.md --project-root . --apply
 ```
+
+初回`--bootstrap`では技術Skillを勝手に選択しない。`--bootstrap`と`--work`は排他である。テンプレートをcloneしただけではCodex/Claudeの入口が全て作られたことを意味しないため、最初にbootstrapを実行する。
 
 既定`--harness all`で3種を用意する。特定環境に絞る場合は`--harness copilot`、`--harness codex`、`--harness claude`を使用する。作業時の認証・権限は各Harnessと実行環境に依存する。
 
