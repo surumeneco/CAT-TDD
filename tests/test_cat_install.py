@@ -84,6 +84,46 @@ class InstallTest(unittest.TestCase):
         _, skills, _ = self.selected()
         self.assertNotIn('tech-web-accessibility', {p.parent.name for p in skills})
 
+    def test_all_harnesses_share_selected_skill_set(self):
+        agents, skills, extension = self.selected()
+        rows = installer.plan(self.project, agents, skills, False, extension)
+        rel = {str(dest.relative_to(self.project)) for _, dest, _ in rows}
+        for root in ('.github/skills', '.agents/skills', '.claude/skills'):
+            self.assertIn(f'{root}/tech-vitest/scripts/cat_vitest_renderer.py', rel)
+            self.assertNotIn(f'{root}/tech-playwright/SKILL.md', rel)
+        self.assertIn('.github/agents/orchestrator.agent.md', rel)
+        self.assertIn('.claude/agents/orchestrator.md', rel)
+        self.assertIn('AGENTS.md', rel)
+        self.assertIn('CLAUDE.md', rel)
+        self.assertIn('.github/copilot-instructions.md', rel)
+        self.assertIn('.cat-system/entrypoints/AGENTS.md', rel)
+        self.assertEqual(installer.planned_reference_errors(self.project, rows), [])
+
+    def test_harness_specific_selection(self):
+        agents, skills, extension = self.selected()
+        for harness, expected, excluded in (
+            ('copilot', '.github/skills/tech-vitest/SKILL.md', '.claude/skills/tech-vitest/SKILL.md'),
+            ('codex', '.agents/skills/tech-vitest/SKILL.md', '.github/skills/tech-vitest/SKILL.md'),
+            ('claude', '.claude/skills/tech-vitest/SKILL.md', '.agents/skills/tech-vitest/SKILL.md'),
+        ):
+            with self.subTest(harness=harness):
+                rows = installer.plan(self.project, agents, skills, False, extension, harness)
+                rel = {str(dest.relative_to(self.project)) for _, dest, _ in rows}
+                self.assertIn(expected, rel)
+                self.assertNotIn(excluded, rel)
+                self.assertEqual(installer.planned_reference_errors(self.project, rows), [])
+        with self.assertRaises(flow.Blocked):
+            installer.plan(self.project, agents, skills, False, extension, 'unknown')
+
+    def test_cross_harness_conflicts_block(self):
+        agents, skills, extension = self.selected()
+        target = self.project / '.claude/skills/tech-vitest/SKILL.md'
+        target.parent.mkdir(parents=True)
+        target.write_text('CUSTOM', encoding='utf-8')
+        rows = installer.plan(self.project, agents, skills, False, extension)
+        self.assertIn(str(target), [str(dest) for _, dest, state in rows if state == 'conflict'])
+        self.assertEqual(target.read_text(encoding='utf-8'), 'CUSTOM')
+
     def test_unknown_technology_blocks(self):
         self.work['technologies']=['MadeUpFramework']
         with self.assertRaises(flow.Blocked): installer.sources(self.work,None)
