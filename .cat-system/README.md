@@ -6,7 +6,7 @@ version: '1.0'
 
 # CAT実用エージェント体系
 
-CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための定義原本。**Gitを前提とするが、GitHubでのホスティングを前提としない。** 理論正本は`forGPT/SystemDevelopment/00_理論・構想/設計理論.md`。自然言語Conditionの網羅性、一般的なProcess合成、テストの完全性を機械証明できるとは扱わない。
+CAT理論をVS Code / GitHub Copilot・Codex・Claude Code上の開発作業へ接続するための共通定義原本。**Gitを前提とするが、GitHubでのホスティングを前提としない。** 理論正本は`forGPT/SystemDevelopment/00_理論・構想/設計理論.md`。自然言語Conditionの網羅性、一般的なProcess合成、テストの完全性を機械証明できるとは扱わない。
 
 | 原本 | 開発ワークスペースへの配置 | 管轄 |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ CAT理論をVS Code / GitHub Copilot上の開発作業へ接続するための�
 
 **対象は「開発を実行できる環境」であり、特定プロダクトのCAT変換プロジェクトではない。** CAT-TDDは単一の一本道ではなく、`spec-implementation / issue-work / code-to-spec / refactor`を独立flowとして扱う。通常の新規要求では人間がIssueを入力し、`cycle-scope-divider`がIssue→Task(Process)→Workへ意味的に分解し、依存graphのcycle/depth/ready算出はScriptへ委譲する。決定論的なmodel/Queue/test生成、Gate validation、Git inspection、evidence集約はPythonが担当し、AIは意味判断とproduction implementation等に限定する。
 
-入口: [AI実行契約](docs/AI実行契約.md)、[開発フロー](docs/開発フロー.md)、[Issue / Task / Workを含むArtifact Markdown形式](docs/Artifact記法.md)。
+入口: [AI実行契約](docs/AI実行契約.md)、[開発フロー](docs/開発フロー.md)、[Issue / Task / Workを含むArtifact Markdown形式](docs/Artifact記法.md)。\n\nVS Code各Harnessへの入口・配布・初回bootstrapは [VS Codeマルチエージェント](docs/VSCodeマルチエージェント.md) を参照。いずれのHarnessも共通のruntimeとstage権限定義を使用する。
 
 | スクリプト | AIが呼ぶ機能 | 非対象 |
 |---|---|---|

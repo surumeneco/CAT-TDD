@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idempotent non-destructive VS Code/Copilot package planner/installer.
+"""Idempotent non-destructive VS Code CAT-TDD multi-harness planner/installer.
 
 Plan by default. Requires --apply for writes; existing differing files are
 never overwritten without --overwrite. Does not choose the technology stack.
@@ -61,26 +61,47 @@ def _add_tree(files, base, dest_base):
         files.append((source, dest_base / rel))
 
 
-def plan(target, agents, skills, overwrite, extension=None):
+def plan(target, agents, skills, overwrite, extension=None, harness='all'):
+    require(harness in ('all', 'copilot', 'codex', 'claude'),
+            f'unsupported harness: {harness}')
+    enabled = {'copilot', 'codex', 'claude'} if harness == 'all' else {harness}
     files = []
-    for top in ('README.md', 'scripts', 'docs', 'config', 'optional-skills'):
+    for top in ('README.md', 'scripts', 'docs', 'config', 'optional-skills', 'entrypoints'):
         base = ROOT / top
         dest = target / '.cat-system' / top if base.is_dir() else target / '.cat-system'
         _add_tree(files, base, dest)
-    # Only selected skills are present in the runtime package; copy the complete Skill
-    # directory so its scripts/references/assets remain available to the Skill.
+    # Harness entrypoints point to the same runtime rather than copying CAT rules.
+    # All harnesses can reference this single shared contract.
+    files.append((ROOT / 'entrypoints' / 'AGENTS.md', target / 'AGENTS.md'))
+    if 'claude' in enabled:
+        files.append((ROOT / 'entrypoints' / 'CLAUDE.md', target / 'CLAUDE.md'))
+    if 'copilot' in enabled:
+        files.append((ROOT / 'entrypoints' / 'copilot-instructions.md',
+                      target / '.github' / 'copilot-instructions.md'))
+    # Keep scripts, references and assets alongside the chosen Skill.
+    skill_destinations = {
+        'copilot': target / '.github' / 'skills',
+        'codex': target / '.agents' / 'skills',
+        'claude': target / '.claude' / 'skills',
+    }
     for skill in skills:
         skill_dir = skill.parent
         _add_tree(files, skill_dir, target / '.cat-system' / 'skills' / skill_dir.name)
-        _add_tree(files, skill_dir, target / '.github' / 'skills' / skill_dir.name)
+        for name in sorted(enabled):
+            _add_tree(files, skill_dir, skill_destinations[name] / skill_dir.name)
     for agent in agents:
         files.append((agent, target / '.cat-system' / 'agents' / agent.name))
-        files.append((agent, target / '.github' / 'agents' / agent.name))
+        if 'copilot' in enabled or 'codex' in enabled:
+            files.append((agent, target / '.github' / 'agents' / agent.name))
+        if 'claude' in enabled:
+            files.append((agent, target / '.claude' / 'agents' /
+                          agent.name.replace('.agent.md', '.md')))
     if extension is not None:
         for source in sorted(p for p in extension.rglob('*') if p.is_file()):
             rel = source.relative_to(extension)
             files.append((source, target / '.cat-system' / 'extensions' / extension.name / rel))
-        _add_tree(files, extension, target / '.github' / 'skills' / extension.name)
+        for name in sorted(enabled):
+            _add_tree(files, extension, skill_destinations[name] / extension.name)
     # Deduplicate exact destinations while preserving deterministic order.
     unique = {}
     for source, dest in files:
@@ -129,17 +150,25 @@ def planned_reference_errors(target, rows):
 def main(argv=None):
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument('--project-root', required=True)
-    cli.add_argument('--work', required=True)
+    entry = cli.add_mutually_exclusive_group(required=True)
+    entry.add_argument('--work', help='selected Work.md (selects its adopted technology skills)')
+    entry.add_argument('--bootstrap', action='store_true', help='install common entrypoints/skills before first Work')
     cli.add_argument('--adapter', help='optional explicitly selected <project>-adapter')
+    cli.add_argument('--harness', choices=('all','copilot','codex','claude'), default='all',
+                     help='which VS Code harness receives native Skills and agents')
     cli.add_argument('--apply', action='store_true')
     cli.add_argument('--overwrite', action='store_true', help='explicitly replace conflicting managed files')
     args = cli.parse_args(argv)
     try:
-        _, w = work_file(args.work)
+        if args.bootstrap:
+            w = {'id': None, 'technologies': []}
+        else:
+            _, w = work_file(args.work)
         target = Path(args.project_root).resolve()
         require(target.is_dir(), 'project root directory not found')
+        require(not (args.bootstrap and args.adapter), 'adapter selection requires a Work')
         agents, skills, extension = sources(w, args.adapter)
-        files = plan(target, agents, skills, args.overwrite, extension)
+        files = plan(target, agents, skills, args.overwrite, extension, args.harness)
         conflicts = [str(dst) for _, dst, state in files if state == 'conflict']
         refs = planned_reference_errors(target, files)
         require(not refs, 'post-install references unresolved: ' + '; '.join(refs[:10]))
@@ -155,13 +184,14 @@ def main(argv=None):
                 os.replace(temp, dest)
         result = {'project_root': str(target), 'work_id': w['id'], 'apply': args.apply,
                   'installed_techs': sorted(set(w['technologies'])),
-                  'adapter': args.adapter, 'agent_files': len(agents), 'skill_files': len(skills),
+                  'adapter': args.adapter, 'harness': args.harness, 'bootstrap': args.bootstrap,
+                  'agent_files': len(agents), 'skill_files': len(skills),
                   'created': sum(s == 'create' for _, _, s in files),
                   'identical': sum(s == 'same' for _, _, s in files),
                   'replacements': sum(s == 'replace' for _, _, s in files),
                   'conflicts': conflicts, 'reference_errors': refs,
                   'status': 'blocked' if conflicts else ('applied' if args.apply else 'plan-only'),
-                  'note': 'Static package/reference checks passed; Copilot runtime behavior still requires environment validation'}
+                  'note': 'Static package/reference checks passed; actual harness activation and runtime gates require environment validation'}
         print(json_bytes(result).decode(), end='')
         return 2 if conflicts else 0
     except (Blocked, OSError) as exc:
