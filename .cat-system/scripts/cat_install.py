@@ -71,11 +71,10 @@ def plan(target, agents, skills, overwrite, extension=None, harness='all'):
         dest = target / '.cat-system' / top if base.is_dir() else target / '.cat-system'
         _add_tree(files, base, dest)
     # Harness entrypoints point to the same runtime rather than copying CAT rules.
-    if 'codex' in enabled:
-        files.append((ROOT / 'entrypoints' / 'AGENTS.md', target / 'AGENTS.md'))
+    # All harnesses can reference this single shared contract.
+    files.append((ROOT / 'entrypoints' / 'AGENTS.md', target / 'AGENTS.md'))
     if 'claude' in enabled:
         files.append((ROOT / 'entrypoints' / 'CLAUDE.md', target / 'CLAUDE.md'))
-        files.append((ROOT / 'entrypoints' / 'AGENTS.md', target / 'AGENTS.md'))
     if 'copilot' in enabled:
         files.append((ROOT / 'entrypoints' / 'copilot-instructions.md',
                       target / '.github' / 'copilot-instructions.md'))
@@ -151,7 +150,9 @@ def planned_reference_errors(target, rows):
 def main(argv=None):
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument('--project-root', required=True)
-    cli.add_argument('--work', required=True)
+    entry = cli.add_mutually_exclusive_group(required=True)
+    entry.add_argument('--work', help='selected Work.md (selects its adopted technology skills)')
+    entry.add_argument('--bootstrap', action='store_true', help='install common entrypoints/skills before first Work')
     cli.add_argument('--adapter', help='optional explicitly selected <project>-adapter')
     cli.add_argument('--harness', choices=('all','copilot','codex','claude'), default='all',
                      help='which VS Code harness receives native Skills and agents')
@@ -159,9 +160,13 @@ def main(argv=None):
     cli.add_argument('--overwrite', action='store_true', help='explicitly replace conflicting managed files')
     args = cli.parse_args(argv)
     try:
-        _, w = work_file(args.work)
+        if args.bootstrap:
+            w = {'id': None, 'technologies': []}
+        else:
+            _, w = work_file(args.work)
         target = Path(args.project_root).resolve()
         require(target.is_dir(), 'project root directory not found')
+        require(not (args.bootstrap and args.adapter), 'adapter selection requires a Work')
         agents, skills, extension = sources(w, args.adapter)
         files = plan(target, agents, skills, args.overwrite, extension, args.harness)
         conflicts = [str(dst) for _, dst, state in files if state == 'conflict']
@@ -179,7 +184,7 @@ def main(argv=None):
                 os.replace(temp, dest)
         result = {'project_root': str(target), 'work_id': w['id'], 'apply': args.apply,
                   'installed_techs': sorted(set(w['technologies'])),
-                  'adapter': args.adapter, 'harness': args.harness,
+                  'adapter': args.adapter, 'harness': args.harness, 'bootstrap': args.bootstrap,
                   'agent_files': len(agents), 'skill_files': len(skills),
                   'created': sum(s == 'create' for _, _, s in files),
                   'identical': sum(s == 'same' for _, _, s in files),
