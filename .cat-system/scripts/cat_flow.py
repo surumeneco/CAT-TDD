@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import fnmatch
 import hashlib
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -668,7 +669,9 @@ def _verified_refactor_baseline(wpath,w):
     return refs
 
 
-def guard_work(wpath,w,stage,phase,conditional=None):
+def guard_work(wpath,w,stage,phase,conditional=None,accepted_changes=None,decision_ref=None):
+    require(not accepted_changes or (phase=='finish' and decision_ref),
+            'accepted external changes require finish phase and an explicit decision reference')
     if phase=='start':
         _require_conditional_inconclusive(wpath,w,stage,conditional)
     r=execution_route(w,stage,conditional)
@@ -698,6 +701,24 @@ def guard_work(wpath,w,stage,phase,conditional=None):
     require(path.is_file(),'guard baseline missing')
     base=read_json(path);require(base.get('manifest_sha256')==sha(wpath.read_bytes()),'Work changed after guard start')
     require(base.get('schema')=='cat-write-guard/v3','guard baseline schema stale; restart guard')
+    # An authority may acknowledge an independently authored change at one exact
+    # revision. This never replaces the original snapshot or permits future edits.
+    accepted=list(base.get('accepted_changes',[]))
+    for item in accepted_changes or []:
+        rel=item.get('path','').replace('\\','/')
+        require(rel and not rel.startswith('/') and ':' not in rel and
+                all(p not in ('','.','..') for p in rel.split('/')) and
+                not any(c in rel for c in '*?['), 'accepted change requires an exact relative path')
+        require('.cat-flow' not in rel.split('/'), 'cannot accept changes to execution evidence')
+        require(item.get('scope') in {'workspace',*(r['name'] for r in w['repositories'])},
+                'accepted change scope is not declared')
+        require(re.fullmatch('[0-9a-f]{64}',item.get('sha256','')) is not None,
+                'accepted change requires a SHA-256 hash')
+        accepted.append({'scope':item['scope'],'path':rel,'sha256':item['sha256'],
+                         'decision_ref':decision_ref})
+    def acknowledged(scope,rel,digest):
+        return any(a['scope']==scope and a['path']==rel.replace('\\','/') and
+                   a['sha256']==digest for a in accepted)
     after=_repo_state(wpath,w);violations=[]
     repo_write='repo:production' in r['permissions'].get('write',[])
     for repo in w['repositories']:
@@ -707,14 +728,21 @@ def guard_work(wpath,w,stage,phase,conditional=None):
             allowed=repo.get('production_paths') or repo.get('allowed_paths',[])
         else:
             allowed=[]
-        bad=[p for p in changed if not any(fnmatch.fnmatchcase(p,pat) for pat in allowed)]
+        bad=[p for p in changed if not any(fnmatch.fnmatchcase(p.replace('\\','/'),pat.replace('\\','/')) for pat in allowed)
+             and not acknowledged(repo['name'],p,now.get(p))]
         if bad: violations.append({'repository':repo['name'],'paths':bad})
-    before_ws=base.get('workspace_state',{});now_ws=_workspace_state(wpath,w)
+    before_ws={k.replace('\\','/'):v for k,v in base.get('workspace_state',{}).items()}
+    now_ws={k.replace('\\','/'):v for k,v in _workspace_state(wpath,w).items()}
     changed_ws=sorted(k for k in set(before_ws)|set(now_ws) if before_ws.get(k)!=now_ws.get(k))
     allowed_ws=_workspace_write_patterns(wpath,w,r['permissions'])
-    bad_ws=[p for p in changed_ws if not any(fnmatch.fnmatchcase(p,pat) for pat in allowed_ws)]
+    bad_ws=[p for p in changed_ws if not any(fnmatch.fnmatchcase(p,pat.replace('\\','/')) for pat in allowed_ws)
+            and not acknowledged('workspace',p,now_ws.get(p))]
     if bad_ws: violations.append({'workspace':str(workspace_root(wpath)),'paths':bad_ws})
     verdict='blocked' if violations else 'passed'
+    if base.get('verdict')!='pending':
+        base.setdefault('finish_history',[]).append({'verdict':base['verdict'],
+            'violations':base.get('violations',[]),'accepted_changes':base.get('accepted_changes',[])})
+    if accepted: base['accepted_changes']=accepted
     base['verdict']=verdict;base['violations']=violations;base['finished_manifest_sha256']=sha(wpath.read_bytes())
     path.write_bytes(json_bytes(base))
     return {'status':verdict,'stage':stage,'conditional':conditional,'violations':violations,
@@ -1053,6 +1081,9 @@ def main(argv=None):
             p.add_argument('--stage', choices=STAGES, required=True)
             p.add_argument('--phase', choices=('start','finish'), required=True)
             p.add_argument('--conditional')
+            p.add_argument('--accept-change', action='append', default=[], metavar='SCOPE:PATH=SHA256',
+                           help='authority-acknowledged independent change, exact path and hash only')
+            p.add_argument('--decision-ref', help='explicit user/authority decision for accepted changes')
         if key == 'queue-state':
             p.add_argument('--evidence', required=True)
         if key == 'handoff':
@@ -1104,7 +1135,12 @@ def main(argv=None):
             elif args.cmd == 'conformance':
                 result = record_conformance_evidence(p, w, args.kind, conformance_work(p, w, args.kind))
             elif args.cmd == 'guard':
-                result = guard_work(p, w, args.stage, args.phase, args.conditional)
+                accepted=[]
+                for raw in args.accept_change:
+                    require(':' in raw and '=' in raw,'accepted change format is SCOPE:PATH=SHA256')
+                    scope,rest=raw.split(':',1);rel,digest=rest.rsplit('=',1)
+                    accepted.append({'scope':scope,'path':rel,'sha256':digest})
+                result = guard_work(p, w, args.stage, args.phase, args.conditional,accepted,args.decision_ref)
             elif args.cmd == 'queue-state':
                 result = queue_state_work(p, w, args.evidence)
             elif args.cmd == 'run':

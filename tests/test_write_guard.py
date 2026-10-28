@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.cat-system' / 'scripts'))
@@ -35,6 +36,40 @@ def work():
 
 
 class WriteGuardTest(unittest.TestCase):
+    def test_windows_snapshot_keys_match_portable_permissions(self):
+        with tempfile.TemporaryDirectory() as td:
+            wp = Path(td) / 'work.json'; w = work(); wp.write_bytes(flow.json_bytes(w))
+            with patch.object(flow, '_workspace_state', side_effect=[{}, {'Lifecycle\\CAT\\Draft\\demo.md': 'new'}]):
+                flow.guard_work(wp, w, 'spec', 'start')
+                self.assertEqual(flow.guard_work(wp, w, 'spec', 'finish')['status'], 'passed')
+
+    def test_authorized_external_change_is_hash_bound_and_preserves_baseline(self):
+        with tempfile.TemporaryDirectory() as td:
+            wp = Path(td) / 'work.json'; w = work(); wp.write_bytes(flow.json_bytes(w))
+            with patch.object(flow, '_workspace_state', side_effect=[{}, {'outside.txt': 'a'*64}, {'outside.txt': 'a'*64}, {'outside.txt': 'b'*64}]):
+                flow.guard_work(wp, w, 'spec', 'start')
+                self.assertEqual(flow.guard_work(wp, w, 'spec', 'finish')['status'], 'blocked')
+                accepted = [{'scope': 'workspace', 'path': 'outside.txt', 'sha256': 'a'*64}]
+                result = flow.guard_work(wp, w, 'spec', 'finish', accepted_changes=accepted, decision_ref='user:external-change')
+                self.assertEqual(result['status'], 'passed')
+                data = flow.read_json(Path(result['guard']))
+                self.assertEqual(data['workspace_state'], {})
+                self.assertEqual(data['finish_history'][0]['verdict'], 'blocked')
+                self.assertEqual(data['accepted_changes'][0]['decision_ref'], 'user:external-change')
+                self.assertEqual(flow.guard_work(wp, w, 'spec', 'finish')['status'], 'blocked')
+
+    def test_external_change_requires_decision_and_cannot_accept_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            wp = Path(td) / 'work.json'; w = work(); wp.write_bytes(flow.json_bytes(w))
+            with patch.object(flow, '_workspace_state', return_value={}):
+                flow.guard_work(wp, w, 'spec', 'start')
+                accepted = [{'scope': 'workspace', 'path': 'outside.txt', 'sha256': 'a'*64}]
+                with self.assertRaisesRegex(flow.Blocked, 'decision'):
+                    flow.guard_work(wp, w, 'spec', 'finish', accepted_changes=accepted)
+                accepted[0]['path'] = '.cat-flow/evidence/result.json'
+                with self.assertRaisesRegex(flow.Blocked, 'evidence'):
+                    flow.guard_work(wp, w, 'spec', 'finish', accepted_changes=accepted, decision_ref='user:decision')
+
     def test_workspace_guard_allows_owned_path_and_rejects_other_path(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
