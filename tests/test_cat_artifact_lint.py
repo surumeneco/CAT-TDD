@@ -22,6 +22,10 @@ def doc(identifier='alpha.test', status='confirmed', ref=''):
 
 
 class ContractLintTests(unittest.TestCase):
+    def test_distributable_common_agent_and_skill_metadata(self):
+        self.assertEqual(skill_errors(ROOT / '.cat-system' / 'skills'), [])
+        self.assertEqual(agent_errors(ROOT / '.cat-system' / 'agents'), [])
+
     def test_valid_and_duplicate(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
