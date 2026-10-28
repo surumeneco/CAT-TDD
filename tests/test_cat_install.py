@@ -89,6 +89,7 @@ class InstallTest(unittest.TestCase):
         rows = installer.plan(self.project, agents, skills, False, extension)
         rel = {str(dest.relative_to(self.project)) for _, dest, _ in rows}
         for root in ('.github/skills', '.agents/skills', '.claude/skills'):
+            self.assertIn(f'{root}/cat-tdd-entry/SKILL.md', rel)
             self.assertIn(f'{root}/tech-vitest/scripts/cat_vitest_renderer.py', rel)
             self.assertNotIn(f'{root}/tech-playwright/SKILL.md', rel)
         self.assertIn('.github/agents/orchestrator.agent.md', rel)
@@ -110,6 +111,7 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(payload['installed_techs'], [])
         for path in ('AGENTS.md', 'CLAUDE.md',
                      '.github/copilot-instructions.md',
+                     '.github/skills/cat-tdd-entry/SKILL.md',
                      '.github/skills/cycle-management/SKILL.md',
                      '.agents/skills/cycle-management/SKILL.md',
                      '.claude/skills/cycle-management/SKILL.md',
