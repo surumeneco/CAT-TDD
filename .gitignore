@@ -16,6 +16,7 @@
 # Common skills are tracked. Technology skills copied into .github/skills by
 # cat_install.py are a per-project selection; the canonical skill pool remains
 # tracked under .cat-system/skills/.
+/.github/skills/cat-tdd-entry/
 /.github/skills/tech-*/
 # Registered external technology Skills whose upstream names do not use tech-*.
 /.github/skills/docker-project-foundations/
