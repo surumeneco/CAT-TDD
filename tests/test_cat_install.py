@@ -99,6 +99,38 @@ class InstallTest(unittest.TestCase):
         self.assertIn('.cat-system/entrypoints/AGENTS.md', rel)
         self.assertEqual(installer.planned_reference_errors(self.project, rows), [])
 
+    def test_bootstrap_before_first_work(self):
+        command = [sys.executable, str(installer.ROOT/'scripts/cat_install.py'),
+                   '--project-root', str(self.project), '--bootstrap', '--apply']
+        result = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['harness'], 'all')
+        self.assertIsNone(payload['work_id'])
+        self.assertEqual(payload['installed_techs'], [])
+        for path in ('AGENTS.md', 'CLAUDE.md',
+                     '.github/copilot-instructions.md',
+                     '.github/skills/cycle-management/SKILL.md',
+                     '.agents/skills/cycle-management/SKILL.md',
+                     '.claude/skills/cycle-management/SKILL.md',
+                     '.claude/agents/orchestrator.md'):
+            self.assertTrue((self.project/path).is_file(), path)
+        self.assertFalse((self.project/'.github/skills/tech-vitest').exists())
+        selected = subprocess.run([sys.executable, str(installer.ROOT/'scripts/cat_install.py'),
+                    '--project-root', str(self.project),
+                    '--work', str(self.workpath), '--apply'], text=True, capture_output=True)
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertTrue((self.project/'.agents/skills/tech-vitest/SKILL.md').is_file())
+
+    def test_copilot_only_installs_shared_contract(self):
+        agents, skills, extension = self.selected()
+        rows = installer.plan(self.project, agents, skills, False, extension, 'copilot')
+        rel = {str(dest.relative_to(self.project)) for _, dest, _ in rows}
+        self.assertIn('AGENTS.md', rel)
+        self.assertNotIn('CLAUDE.md', rel)
+        self.assertIn('.github/copilot-instructions.md', rel)
+        self.assertEqual(installer.planned_reference_errors(self.project, rows), [])
+
     def test_harness_specific_selection(self):
         agents, skills, extension = self.selected()
         for harness, expected, excluded in (
