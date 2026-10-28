@@ -24,6 +24,16 @@
 /.github/skills/docker-destructive-guardrails/
 /.github/skills/*-adapter/
 
+# Native Codex / Claude discovery copies are generated from .cat-system and
+# should not be committed as independent sources of truth. The tracked entry
+# skill is intentionally retained.
+# Per-project selections (including external technology skill names):
+/.agents/skills/*/
+/!.agents/skills/cat-tdd-entry/
+/.claude/skills/*/
+/!.claude/skills/cat-tdd-entry/
+/.claude/agents/
+
 # Project adapters/extensions are local to the project using this template.
 /.cat-system/extensions/**
 
