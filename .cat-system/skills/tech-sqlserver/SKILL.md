@@ -13,5 +13,5 @@ description: "Design, migrate, query, and test Microsoft SQL Server persistence 
 
 ## DB性能・I/O・競合のレビュー
 
-DBアクセス・クエリ・大量書込み・Migration・性能改善を扱うWorkでは、[共通の8観点と実測・例外規則](../../docs/DB性能設計・検証.md)を適用する。逐次COMMITとbulk insert、並列write競合、索引/INCLUDEの読取利益と更新コスト、identity/sequence/UUID PK、selectivity・skew、集計行のUPDATE競合、幅広いテーブル、DBでのJOIN/絞込/集約とN+1を検討し、無関係な観点は必須化しない。
+DBアクセス・クエリ・大量書込み・Migration・性能改善を扱うWorkでは、[共通の8観点と実測・例外規則](../../../.cat-system/docs/DB性能設計・検証.md)を適用する。逐次COMMITとbulk insert、並列write競合、索引/INCLUDEの読取利益と更新コスト、identity/sequence/UUID PK、selectivity・skew、集計行のUPDATE競合、幅広いテーブル、DBでのJOIN/絞込/集約とN+1を検討し、無関係な観点は必須化しない。
 SQL Serverでは利用可能なQuery Store、actual execution plan、`SET STATISTICS IO/TIME`、DMV等で実行計画・読み取り量・待機・ログ/ロックを観測する。row versioningとtransaction isolation、lock escalation、online index操作の製品版・edition・設定依存性を確認する。性能閾値や採否は承認済みSLOと測定条件を基準とし、migration/復旧の正しさを性能から推測しない。
