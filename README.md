@@ -96,3 +96,7 @@ git -C Room2/<repository-name> status
 - `.env*`、仮想環境、cache、coverage、build/temp/log、IDE/OSローカル状態
 
 一方、`.cat-system/skills/` 内の `routing.json` 登録済み技術Skillは利用可能な技術Skillの**テンプレート側pool**なので追跡対象です。個別プロジェクトが実際に採用したものだけが `.github/skills/` へ展開され、その展開結果はignoreされます。
+
+## ChatモードでのCAT-TDD
+
+ChatモードでChatGPTがソフトウェア開発を行う場合は、**要件・期待動作の確定後、コード実装前にCAT Artifactを作成**し、承認済み仕様に対して機械的Gateを実行してから実装に進みます。Python実行可能なChat環境なら正規CATスクリプトを**MCPなしで直接実行**できます。生成されたcurrentテストはGitHubへ配置し、CIの実測Red/Greenを根拠に実装を進めます。Chat専用の適用範囲・実行手順・証拠・例外は [ChatGPT運用](.cat-system/docs/ChatGPT運用.md) を参照してください。VS Code等の他環境へこのChat専用運用を強制しません。
