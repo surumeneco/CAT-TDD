@@ -1,7 +1,7 @@
 ---
 title: DB性能設計・検証の実践知
 role: reusable-database-engineering-guidance
-scope: cat-tdd-technology-skills-and-chatgpt-review
+scope: cat-tdd-technology-skills-and-database-review
 status: adopted-guidance-not-normative-project-spec
 updated: 2026-10-29
 format: markdown
@@ -19,7 +19,7 @@ cat_tdd_issue: https://github.com/surumeneco/CAT-TDD/issues/2
 
 2026-10-29の利用者の依頼により、記事「データベースを遅くするための８つの方法」から、DBを用いるアプリケーション開発時に再利用すべき判断基準を抽出した。記事の経験則は**検討すべきリスクの発見**に利用し、DB製品・バージョン・設定・クエリ・データ分布・負荷・整合性要件を確認せずに普遍的ルールへ昇格させない。
 
-本書は**ChatGPT向けの技術レビュー知見**であり、個別プロジェクトの規範仕様、CATのTestModel/Queue、実測ログの代替ではない。CAT-TDDに反映する実装作業はIssue #2で管理し、CAT-TDD本体のStage権限・guardに従う。本書だけでPlugin自動適用やテスト成功を主張しない。
+本書は**VS Code上のCAT-TDDにおけるDB技術レビューの参考資料**であり、個別プロジェクトの規範仕様、CATのTestModel/Queue、実測ログの代替ではない。技術Skillへの統合作業はIssue #2で管理し、CAT-TDD本体のStage権限・guardに従う。本書だけでSkillの採用やテスト成功を主張しない。
 
 ## 開発・レビュー時の8観点
 
