@@ -84,3 +84,9 @@ def render_suite(work_path, work, prefix):
               "binding_version": digest(Path(paths["binding"]).read_bytes())}
     return desired, rendered, inputs
 
+
+def repo_sha(root, expected):
+    p = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=15)
+    if p.returncode or p.stdout.strip() != expected:
+        raise Blocked('repository HEAD differs from pinned revision')
+
