@@ -38,3 +38,28 @@ def load_manifest(root, relative):
     if not isinstance(data, dict) or data.get("schema") != SCHEMA or not isinstance(data.get("entries"), dict):
         raise ValueError("invalid existing Test Suite Manifest")
     return data
+
+
+def create_plan(root, manifest_path, prefix, desired, rendered, inputs, revision):
+    if (not prefix.endswith("/") or prefix.startswith("/") or
+            any(x in ("", ".", "..") for x in prefix[:-1].split("/"))):
+        raise ValueError("invalid generated test prefix")
+    if not manifest_path.startswith(".cat-flow/") or manifest_path.startswith(prefix):
+        raise ValueError("Manifest path must be under .cat-flow")
+    old = load_manifest(root, manifest_path)
+    entries = old.get("entries", {})
+    if set(rendered) != {x["path"] for x in desired}:
+        raise ValueError("rendered files do not match selected vectors")
+    disk = {}
+    for name in set(rendered) | set(entries):
+        if not name.startswith(prefix):
+            raise ValueError("Manifest owns file outside generated prefix")
+        path = checked_path(root, name)
+        if path.exists():
+            if not path.is_file():
+                raise ValueError("generated test target is not a file")
+            disk[name] = digest(path.read_bytes())
+    proposal = plan_suite(
+        **inputs, repo_revision=revision, allowed_prefix=prefix,
+        desired=desired, disk_hashes=disk, manifest=entries)
+    return proposal, old
