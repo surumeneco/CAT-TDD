@@ -135,6 +135,9 @@ def route(w, stage):
     require(flow in flows, f'unknown Work flow: {flow}')
     permitted = stage in flows[flow].get('stages', []) or stage in ('git','ci','merge','deployment','real-use','test-review','promotion')
     guard_required = executor.get('type') == 'agent' and bool(s.get('permissions', {}).get('write'))
+    on_result = dict(s.get('on_result', {}))
+    if flow == 'spec-test-sync' and stage == 'vectors':
+        on_result['passed'] = 'suite-plan'
     # Normative test regeneration is not executable from observations or Drafts.
     spec = w.get('specification') or {}
     normative_blocked = (flow == 'spec-test-sync' and
@@ -142,7 +145,7 @@ def route(w, stage):
     return {'stage': stage, 'flow': flow, 'executor': executor, 'guard_required': guard_required,
             'conditional': s.get('conditional', {}), 'permissions': s.get('permissions', {}),
             'evidence_policy': s.get('evidence_policy', {}),
-            'on_result': s.get('on_result', {}), 'skills': sorted(set(items)),
+            'on_result': on_result, 'skills': sorted(set(items)),
             'unknown_technologies': unknown, 'missing_skills': absent,
             'missing_agents': missing_agents, 'stage_in_flow': permitted,
             'status': 'blocked' if unknown or absent or missing_agents or not permitted or normative_blocked else 'ready',
