@@ -156,11 +156,12 @@ def execute(args):
         raise Blocked("execution report must live under .cat-flow/evidence/")
     evidence_path = checked_path(root, args.report_path)
     if args.phase == "run":
-        if not args.runner_argv_json:
-            raise Blocked("explicit test-runner argv required")
+        if not args.check_id:
+            raise Blocked("run requires --check-id for a declared Work JUnit check")
         outcome = {**verified, "repo_revision": args.repo_revision,
-                   "test_execution": run_tests(
-                       root, json.loads(args.runner_argv_json), args.timeout)}
+                   "test_execution": run_declared_check(
+                       work_path, work, root,
+                       [item["test_id"] for item in desired], args.check_id)}
         atomic_write(evidence_path, encoded(outcome))
         return outcome
     record = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -178,7 +179,7 @@ def main(argv=None):
     parser.add_argument("--repo-revision", required=True)
     parser.add_argument("--prefix", default="tests/generated/")
     parser.add_argument("--manifest", default=".cat-flow/test-suite-manifest.json")
-    parser.add_argument("--runner-argv-json")
+    parser.add_argument("--check-id", help="Work-declared suite-run JUnit check ID")
     parser.add_argument("--report-path",
                         default=".cat-flow/evidence/test-suite-execution.json")
     parser.add_argument("--timeout", type=int, default=300)
