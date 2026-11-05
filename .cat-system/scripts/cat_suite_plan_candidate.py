@@ -1,8 +1,9 @@
-"""Inactive spec-test-sync suite-plan prototype: deterministic read-only decisions.
+"""Pure deterministic test suite plan, reused by the spec-test-sync executor.
 
-This is a candidate implementation, NOT the active CAT-TDD router or an
-approved test oracle. In particular, it does not read/write the TDD Queue,
-change generated tests, or declare test execution and CAT Gate results.
+This module is a non-normative metadata decision function; it neither renders
+an oracle nor writes tests/Manifest/TDD Queue or asserts CAT Gate results.
+The caller must independently prove Confirmed source, renderer binding, fresh
+Gate evidence, repo revision, ownership and current disk hashes.
 """
 from __future__ import annotations
 
