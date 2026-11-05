@@ -1,0 +1,27 @@
+name: spec-test-sync inactive suite-plan candidate
+on:
+  push:
+    branches:
+      - feature/spec-test-sync-suite-plan-candidate-20261105-queue-c
+    paths:
+      - '.cat-system/scripts/cat_suite_plan_candidate.py'
+      - 'tests/test_cat_suite_plan_candidate.py'
+      - 'docs/cat/spec-test-sync-suite-plan-candidate.md'
+      - '.github/workflows/spec-test-sync-suite-plan-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile candidate implementation and contract tests
+        run: python -m py_compile .cat-system/scripts/cat_suite_plan_candidate.py tests/test_cat_suite_plan_candidate.py
+      - name: Directly run ten scoped, deterministic candidate tests
+        run: python -m unittest discover -s tests -p 'test_cat_suite_plan_candidate.py' -v
