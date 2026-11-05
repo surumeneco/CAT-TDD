@@ -145,7 +145,7 @@ def route(w, stage):
             'on_result': s.get('on_result', {}), 'skills': sorted(set(items)),
             'unknown_technologies': unknown, 'missing_skills': absent,
             'missing_agents': missing_agents, 'stage_in_flow': permitted,
-            'status': 'blocked' if unknown or absent or missing_agents or not permitted else 'ready',
+            'status': 'blocked' if unknown or absent or missing_agents or not permitted or normative_blocked else 'ready',
             'adoption_authority': 'project technical documents, not this catalogue'}
 def execution_route(w, stage, conditional=None):
     r=route(w,stage)
