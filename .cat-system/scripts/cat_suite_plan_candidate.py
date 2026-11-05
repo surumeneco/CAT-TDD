@@ -124,7 +124,7 @@ def plan_suite(*, source_sha256: str, model_sha256: str,
         elif (previous["file_sha256"] == record["content_sha256"] and
               all(previous[k] == inputs[k] for k in (
                   "source_sha256", "model_sha256", "vectors_sha256",
-                  "renderer_version", "binding_version")):
+                  "renderer_version", "binding_version"))):
             row["action"] = "unchanged"
         else:
             row["action"] = "update"
