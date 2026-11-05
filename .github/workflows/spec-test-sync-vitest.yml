@@ -1,0 +1,70 @@
+name: Spec-test-sync generated Vitest acceptance
+
+on:
+  push:
+    branches:
+      - 'feature/spec-test-sync-completion-*'
+    paths:
+      - '.github/workflows/spec-test-sync-vitest.yml'
+      - '.cat-system/scripts/cat_spec_test_sync.py'
+      - '.cat-system/scripts/cat_suite_manifest.py'
+      - 'tests/test_spec_test_sync_integration.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generated-vitest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Produce tests from actual Confirmed CAT artifacts and Gate evidence
+        env:
+          CAT_SYNC_VITEST_SMOKE_DIR: ${{ github.workspace }}/.cat-vitest-smoke/tests/generated
+        run: python -m unittest discover -s tests -p test_spec_test_sync_integration.py -v
+      - name: Install an isolated real Vitest runner
+        working-directory: .cat-vitest-smoke
+        run: |
+          printf '{"private":true,"type":"module","devDependencies":{"vitest":"2.1.9","typescript":"5.8.3"}}\n' > package.json
+          npm install --no-audit --no-fund
+      - name: Verify generated tests accept conforming implementation
+        working-directory: .cat-vitest-smoke
+        run: |
+          npx vitest run tests/generated --reporter=junit --outputFile=vitest-green.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse('vitest-green.xml').getroot().findall('.//testcase')
+          assert len(cases) == 2, len(cases)
+          assert all(c.find('failure') is None and c.find('error') is None and c.find('skipped') is None for c in cases)
+          print('real Vitest confirmed: 2 passing tests')
+          PY
+      - name: Verify generated tests reject nonconforming implementation
+        working-directory: .cat-vitest-smoke
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/generated/driver.ts')
+          source = p.read_text()
+          before = "return { 'output.accepted': enabled };"
+          assert source.count(before) == 1
+          p.write_text(source.replace(before, "return { 'output.accepted': !enabled };"))
+          PY
+          set +e
+          npx vitest run tests/generated --reporter=junit --outputFile=vitest-red.xml
+          code=$?
+          set -e
+          test "$code" -ne 0
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse('vitest-red.xml').getroot().findall('.//testcase')
+          assert len(cases) == 2, len(cases)
+          assert sum(c.find('failure') is not None or c.find('error') is not None for c in cases) >= 1
+          print('real Vitest confirmed: incorrect implementation rejected')
+          PY
