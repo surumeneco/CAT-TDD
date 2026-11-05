@@ -76,3 +76,49 @@ class SyncEngineTests(unittest.TestCase):
             p, old = plan(root, [case], data)
             self.assertEqual(p["entries"][0]["action"], "blocked")
 
+
+    def test_preflight_blocks_all_writes_and_retains_old_scope(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first, a = make_case()
+            second, b = make_case(b"two", "v2", "tests/generated/b.test.ts")
+            p, old = plan(root, [first, second], {**a, **b})
+            target = root / second["path"]
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"external")
+            with self.assertRaises(ValueError):
+                synchronize(root, MANIFEST, p, old, {**a, **b})
+            self.assertFalse((root / first["path"]).exists())
+            target.unlink()
+            p, old = plan(root, [first], a)
+            synchronize(root, MANIFEST, p, old, a)
+            p, old = plan(root, [], {})
+            self.assertEqual(p["entries"][0]["action"], "retain")
+            synchronize(root, MANIFEST, p, old, {})
+            self.assertTrue((root / first["path"]).is_file())
+
+    def test_symlinks_and_unsafe_paths_are_blocked(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as other:
+            root = Path(folder)
+            (root / "tests").mkdir()
+            (root / "tests/generated").symlink_to(other, target_is_directory=True)
+            case, data = make_case()
+            with self.assertRaises(ValueError):
+                plan(root, [case], data)
+            for path in ("/tmp/x", "../escape", "tests/generated/../bad",
+                         "tests/generated/control\x01.ts"):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    checked_path(root, path)
+
+    def test_runner_outcomes_are_separate_from_suite_sync(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            passed = run_tests(root, [sys.executable, "-c", "raise SystemExit(0)"], 10)
+            failed = run_tests(root, [sys.executable, "-c", "raise SystemExit(1)"], 10)
+            missing = run_tests(root, ["not-a-real-command-123456"], 10)
+            self.assertEqual(passed["status"], "test-execution-passed")
+            self.assertEqual(failed["status"], "test-execution-failed")
+            self.assertEqual(missing["status"], "test-execution-not-run")
+
+if __name__ == "__main__":
+    unittest.main()
