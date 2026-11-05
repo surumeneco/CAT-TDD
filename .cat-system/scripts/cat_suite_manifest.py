@@ -49,7 +49,7 @@ def create_plan(root, manifest_path, prefix, desired, rendered, inputs, revision
         raise ValueError("invalid generated test prefix")
     if not re.fullmatch(r"(?:(?:apps|packages|services)/[A-Za-z0-9_.-]+/)?(?:tests|test|__tests__)/generated/", prefix):
         raise ValueError("generated tests must be under an explicit test/generated namespace")
-    if not manifest_path.startswith(".cat-flow/") or manifest_path.startswith(prefix):
+    if not re.fullmatch(r"\.cat-flow/test-suite-manifest(?:\.[A-Za-z0-9_.-]+)?\.json", manifest_path):
         raise ValueError("Manifest path must be under .cat-flow")
     old = load_manifest(root, manifest_path)
     entries = old.get("entries", {})
