@@ -87,3 +87,42 @@ def atomic_write(target, data):
         if os.path.exists(temp):
             os.unlink(temp)
 
+
+def synchronize(root, manifest_path, proposal, previous, rendered):
+    """Verify ownership and all on-disk hashes before any generated test write."""
+    rows = proposal["entries"]
+    if any(row["action"] == "blocked" for row in rows):
+        raise ValueError("suite conflicts: no files changed")
+    if load_manifest(root, manifest_path) != previous:
+        raise ValueError("Manifest was modified after planning")
+    owners = dict(previous.get("entries", {}))
+    for row in rows:
+        name, action = row["path"], row["action"]
+        target = checked_path(root, name)
+        previous_owner = owners.get(name)
+        if action == "create" and target.exists():
+            raise ValueError("new test target appeared after planning")
+        if action in ("update", "unchanged", "retain"):
+            if (not previous_owner or not target.is_file()
+                    or digest(target.read_bytes()) != previous_owner["file_sha256"]):
+                raise ValueError("owned test changed after planning")
+        if action in ("create", "update", "unchanged"):
+            if name not in rendered or digest(rendered[name]) != row["content_sha256"]:
+                raise ValueError("renderer bytes changed after planning")
+            owners[name] = {
+                "test_id": row["test_id"], "owner": "generated",
+                "file_sha256": row["content_sha256"],
+                **{key: proposal["inputs"][key] for key in (
+                    "source_sha256", "model_sha256", "vectors_sha256",
+                    "renderer_version", "binding_version")},
+            }
+        elif action != "retain":
+            raise ValueError("unknown suite action")
+    result = {"schema": SCHEMA, "inputs": proposal["inputs"], "entries": owners}
+    for row in rows:
+        if row["action"] in ("create", "update"):
+            atomic_write(checked_path(root, row["path"]), rendered[row["path"]])
+    atomic_write(checked_path(root, manifest_path), encoded(result))
+    return {"status": "test-suite-synced", "manifest_sha256": digest(encoded(result)),
+            "actions": {key: sum(row["action"] == key for row in rows)
+                        for key in ("create", "update", "unchanged", "retain")}}
