@@ -1,0 +1,15 @@
+name: Candidate path validation
+on:
+  push:
+    branches: [feature/spec-test-sync-control-path-20261105-queue-a]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m unittest discover -s tests -p test_suite_plan_control_paths.py -v
