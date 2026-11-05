@@ -57,3 +57,30 @@ def render_suite(work_path, work, prefix):
     if not vectors["cases"]:
         raise Blocked("no selected test vectors")
     rendered, desired = {}, []
+
+    for vector in vectors["cases"]:
+        identity = vector["id"]
+        safe = re.sub(r"[^a-z0-9]+", "_", identity.lower()).strip("_")[:40] or "vector"
+        name = prefix + "cat_" + safe + "_" + hashlib.sha256(identity.encode()).hexdigest()[:12] + ".test.ts"
+        subset = {"schema": vectors["schema"], "process": vectors["process"],
+                  "cases": [vector]}
+        case = compiler.expand_cases(model, subset)[0]
+        data = compiler.emit_vitest(model, subset, paths["binding"]).encode("utf-8")
+        if name in rendered:
+            raise Blocked("generated test filename collision")
+        rendered[name] = data
+        desired.append({"test_id": identity, "model_ref": case["source_tce"],
+                        "vector_ref": identity, "path": name,
+                        "content_sha256": digest(data)})
+    sources = [paths["process"], paths["pi"], *tces, *([domain] if domain else [])]
+    hashes = [digest(Path(name).read_bytes()) for name in sources]
+    scripts = [Path(compiler.__file__),
+               compiler.ROOT / "skills/tech-vitest/scripts/cat_vitest_renderer.py"]
+    inputs = {"source_sha256": digest(encoded(hashes)),
+              "model_sha256": digest(model_bytes),
+              "vectors_sha256": digest(vector_bytes),
+              "selection_rule": vectors["selection_rule"],
+              "renderer_version": "cat-v2:" + digest(b"".join(p.read_bytes() for p in scripts)),
+              "binding_version": digest(Path(paths["binding"]).read_bytes())}
+    return desired, rendered, inputs
+
