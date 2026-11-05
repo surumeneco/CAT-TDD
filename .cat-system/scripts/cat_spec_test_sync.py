@@ -124,3 +124,21 @@ def execute(args):
     verified = verify_plan(plan, prior)
     if args.phase == "verify":
         return verified
+
+    if not args.report_path.startswith(".cat-flow/evidence/"):
+        raise Blocked("execution report must live under .cat-flow/evidence/")
+    evidence_path = checked_path(root, args.report_path)
+    if args.phase == "run":
+        if not args.runner_argv_json:
+            raise Blocked("explicit test-runner argv required")
+        outcome = {**verified, "repo_revision": args.repo_revision,
+                   "test_execution": run_tests(
+                       root, json.loads(args.runner_argv_json), args.timeout)}
+        atomic_write(evidence_path, encoded(outcome))
+        return outcome
+    record = json.loads(evidence_path.read_text(encoding="utf-8"))
+    if (record.get("manifest_sha256") != verified["manifest_sha256"] or
+            record.get("repo_revision") != args.repo_revision):
+        raise Blocked("stale test execution evidence")
+    return record
+
