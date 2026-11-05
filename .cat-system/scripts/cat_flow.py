@@ -135,6 +135,10 @@ def route(w, stage):
     require(flow in flows, f'unknown Work flow: {flow}')
     permitted = stage in flows[flow].get('stages', []) or stage in ('git','ci','merge','deployment','real-use','test-review','promotion')
     guard_required = executor.get('type') == 'agent' and bool(s.get('permissions', {}).get('write'))
+    # Normative test regeneration is not executable from observations or Drafts.
+    spec = w.get('specification') or {}
+    normative_blocked = (flow == 'spec-test-sync' and
+                         (spec.get('status') != 'confirmed' or not spec.get('decision_ref')))
     return {'stage': stage, 'flow': flow, 'executor': executor, 'guard_required': guard_required,
             'conditional': s.get('conditional', {}), 'permissions': s.get('permissions', {}),
             'evidence_policy': s.get('evidence_policy', {}),
