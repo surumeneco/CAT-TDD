@@ -817,6 +817,8 @@ def _git_context_fingerprint(cwd):
     h = hashlib.sha256(); h.update(head.stdout); h.update(diff.stdout)
     for raw in sorted(x for x in untracked.stdout.split(b'\0') if x):
         rel = raw.decode(errors='surrogateescape'); path = root / rel
+        if '.cat-flow' in Path(rel).parts:
+            continue  # executor-owned evidence must not invalidate itself
         h.update(raw); h.update(b'\0')
         if path.is_file(): h.update(path.read_bytes())
         else: h.update(b'<missing>')
