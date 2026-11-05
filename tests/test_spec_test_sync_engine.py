@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".cat-system" / "scripts"))
 from cat_suite_manifest import create_plan, synchronize, verify_plan, checked_path
-from cat_spec_test_sync import run_tests
+from cat_spec_test_sync import run_tests, run_declared_check
 
 HASHES = {
     "source_sha256": "a" * 64, "model_sha256": "b" * 64,
@@ -134,6 +134,53 @@ class SyncEngineTests(unittest.TestCase):
             again, old = create_plan(root, MANIFEST, "tests/generated/",
                                      [case], body, HASHES, "new-head")
             self.assertEqual(verify_plan(again, old)["status"], "test-suite-verified")
+
+
+    def test_runner_rejects_undeclared_commands_and_wrong_scope(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            workpath = root / "Work.json"
+            workpath.write_text("{}")
+            work = {"id": "demo.sync", "flow": "spec-test-sync",
+                    "mode": "implementation", "technologies": [],
+                    "specification": {"status": "confirmed", "decision_ref": "approved"},
+                    "repositories": [{"name": "app", "path": str(root)}], "checks": []}
+            with self.assertRaisesRegex(ValueError, "declared JUnit"):
+                run_declared_check(workpath, work, root, ["v1"], "untrusted")
+            cmd = [sys.executable, "-c", "pass", "{report}"]
+            check = {"id": "test", "stage": "suite-run", "runner": "junit",
+                     "cwd": "@repo:app", "test_ids": ["wrong"],
+                     "argv": cmd}
+            work["checks"] = [check]
+            with self.assertRaisesRegex(ValueError, "test IDs"):
+                run_declared_check(workpath, work, root, ["v1"], "test")
+            check["test_ids"] = ["v1"]
+            check["cwd"] = "@work"
+            with self.assertRaisesRegex(ValueError, "declared target repository"):
+                run_declared_check(workpath, work, root, ["v1"], "test")
+
+    def test_declared_runner_captures_fresh_junit_success_and_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            workpath = root / "Work.json"
+            work = {"id": "demo.sync", "flow": "spec-test-sync",
+                    "mode": "implementation", "technologies": [],
+                    "specification": {"status": "confirmed", "decision_ref": "approved"},
+                    "repositories": [{"name": "app", "path": str(root)}], "checks": []}
+            def check(xml, code):
+                snippet = "import pathlib,sys;pathlib.Path(sys.argv[1]).write_text(" + repr(xml) + ");sys.exit(" + str(code) + ")"
+                return {"id": "suite", "stage": "suite-run", "runner": "junit",
+                        "cwd": "@repo:app", "test_ids": ["v1"],
+                        "argv": [sys.executable, "-c", snippet, "{report}"]}
+            work["checks"] = [check('<testsuite><testcase name="v1"/></testsuite>', 0)]
+            workpath.write_text("{}")
+            passed = run_declared_check(workpath, work, root, ["v1"], "suite")
+            self.assertEqual(passed["status"], "test-execution-passed")
+            self.assertEqual(passed["observed_targets"], {"v1": "passed"})
+            work["checks"] = [check('<testsuite><testcase name="v1"><failure/></testcase></testsuite>', 1)]
+            failed = run_declared_check(workpath, work, root, ["v1"], "suite")
+            self.assertEqual(failed["status"], "test-execution-failed")
+            self.assertEqual(failed["observed_targets"], {"v1": "failed"})
 
     def test_runner_outcomes_are_separate_from_suite_sync(self):
         with tempfile.TemporaryDirectory() as folder:
