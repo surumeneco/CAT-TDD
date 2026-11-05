@@ -187,6 +187,9 @@ def execute(args):
     if (record.get("manifest_sha256") != verified["manifest_sha256"] or
             record.get("repo_revision") != args.repo_revision):
         raise Blocked("stale test execution evidence")
+    check_id = record.get("test_execution", {}).get("check_id")
+    if not check_id:
+        raise Blocked("run report requires declared suite-run evidence")
     return record
 
 
