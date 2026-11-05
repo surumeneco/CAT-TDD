@@ -87,7 +87,7 @@ def plan_suite(*, source_sha256: str, model_sha256: str,
         disk[path] = _hash(value, "disk hash")
 
     existing: dict[str, dict[str, str]] = {}
-    owned_ids: dict[str, str] = {}
+    manifest_ids: dict[str, str] = {}
     for key, value in manifest.items():
         path = _path(key, prefix)
         if not isinstance(value, Mapping) or set(value) != _MANIFEST_KEYS:
@@ -98,10 +98,11 @@ def plan_suite(*, source_sha256: str, model_sha256: str,
             entry[name] = _hash(value[name], name)
         if entry["owner"] not in {"generated", "handwritten"}:
             raise ValueError("unknown manifest ownership")
-        if entry["owner"] == "generated":
-            if entry["test_id"] in owned_ids and owned_ids[entry["test_id"]] != path:
-                raise ValueError("one generated test ID has multiple locations")
-            owned_ids[entry["test_id"]] = path
+        # Test identity is namespace-wide, even when a record is handwritten.
+        # A generated test must never reuse a manual test's existing ID.
+        if entry["test_id"] in manifest_ids and manifest_ids[entry["test_id"]] != path:
+            raise ValueError("one manifest test ID has multiple locations")
+        manifest_ids[entry["test_id"]] = path
         existing[path] = entry
 
     output: list[dict[str, str]] = []
@@ -109,7 +110,7 @@ def plan_suite(*, source_sha256: str, model_sha256: str,
         row = dict(record)
         previous = existing.get(path)
         actual_hash = disk.get(path)
-        if record["test_id"] in owned_ids and owned_ids[record["test_id"]] != path:
+        if record["test_id"] in manifest_ids and manifest_ids[record["test_id"]] != path:
             row.update(action="blocked", reason="test-id-owned-at-another-path")
         elif previous is None and actual_hash is None:
             row["action"] = "create"
