@@ -195,6 +195,9 @@ def execute(args):
     expected = work_path.parent / ".cat-flow" / "evidence" / (check_id + ".json")
     if not expected.is_file() or digest(expected.read_bytes()) != record["test_execution"].get("work_evidence_sha256"):
         raise Blocked("declared JUnit evidence was replaced or removed")
+    check_state = cat_flow.status_work(work_path, work)["checks"][check_id]["status"]
+    if check_state not in ("passed", "blocked", "inconclusive"):
+        raise Blocked("JUnit evidence freshness check failed: " + check_state)
     return record
 
 
