@@ -31,6 +31,7 @@ The companion `cat_suite_plan_candidate.py` is a pure function returning an orde
 | STS-SP-04 | Old generated records outside the current desired selection are retained, never deleted as a side effect of plan construction. | `test_stale_generated_unselected_files_are_retained_not_deleted` |
 | STS-SP-05 | Duplicate desired IDs/paths and duplicate Manifest IDs across **generated and handwritten** owners are rejected. A handwritten record retaining a test ID at another path blocks generated creation under that ID; malformed hashes, forged oracle fields, unsafe paths, and unknown ownership also fail closed. | `test_duplicate_test_ids_paths_and_oracle_fields_fail_closed`, `ManifestIdentityCollision` (4 regressions), `test_absolute_parent_and_backslash_paths_fail_closed`, `test_invalid_hash_and_ambiguous_manifest_owner_fail_closed` |
 | STS-SP-06 | Entries are sorted deterministically and caller collections are unmodified; there is no Queue or test-execution status in the proposal. | `test_sorted_results_independent_of_input_order`, other tests |
+| STS-SP-07 | Planner target paths, observed disk paths, Manifest keys, and generated namespace prefixes containing ASCII control codes (U+0000–U+001F, U+007F) are rejected before emitting any proposal. Ordinary nested Unicode paths remain valid. This is an *inactive Candidate guard*, not a confirmed path policy or active renderer change. | `CandidateControlPathBoundary` (5 methods, including negative subtests) |
 
 ## Deliberately unresolved
 
