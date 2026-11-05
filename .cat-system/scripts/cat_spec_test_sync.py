@@ -106,6 +106,33 @@ def run_tests(root, argv, timeout):
             "stderr_tail": result.stderr[-2000:]}
 
 
+
+def run_declared_check(work_path, work, root, selected_ids, check_id):
+    """Run a Work-declared JUnit check, not an arbitrary caller-supplied command."""
+    check = next((item for item in work["checks"] if item["id"] == check_id), None)
+    if not check or check["stage"] != "suite-run" or check["runner"] != "junit":
+        raise Blocked("suite-run requires a declared JUnit check in Work")
+    ids = check.get("test_ids", [])
+    if len(ids) != len(set(ids)) or set(ids) != set(selected_ids):
+        raise Blocked("declared JUnit test IDs differ from the generated suite")
+    if not check["cwd"].startswith("@repo:"):
+        raise Blocked("suite runner must execute in a declared target repository")
+    declared_root = cat_flow.resolve_dir(work_path, work, check["cwd"])
+    if declared_root != root:
+        raise Blocked("declared suite-run repository does not match pinned target")
+    if cat_flow.route(work, "suite-run")["status"] != "ready":
+        raise Blocked("suite-run stage is not ready")
+    executed = cat_flow.command_work(work_path, work, check_id, True)
+    verdict = executed["verdict"]
+    state = ("test-execution-passed" if verdict == "passed" else
+             "test-execution-failed" if verdict == "blocked" else
+             "test-execution-not-run")
+    return {"status": state, "check_id": check_id,
+            "work_evidence_sha256": digest(Path(executed["evidence"]).read_bytes()),
+            "observed_targets": executed["observed_targets"],
+            "reason": executed["reason"], "exit_code": executed["exit_code"]}
+
+
 def execute(args):
     root = Path(args.repo).resolve(strict=True)
     if not root.is_dir() or not 1 <= args.timeout <= 3600:
