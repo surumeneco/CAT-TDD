@@ -13,11 +13,11 @@ semantic_contract: markdown-v2
 language: ja
 ---
 
-# spec-test-sync: pure suite plan prototype (Candidate)
+# spec-test-sync: pure suite plan semantics (Candidate)
 
 ## Scope and authority
 
-This is an **inactive, isolated candidate prototype** for the adopted fifth flow; it is not a Confirmed CAT Semantic Artifact, a final Test Suite Manifest schema, or an activated route in `routing.json`. The source design is `trial` and explicitly says `implementation_status: pending`. The live four flows, their Red/Green Gate, and current TDD Queue remain unchanged. This candidate does not authorize production changes or synthesis of a missing test oracle.
+This is a **non-normative Candidate for the pure planner algorithm**, now called by the separately guarded `cat_spec_test_sync.py` implementation on a feature branch. It is not a Confirmed CAT Semantic Artifact or a test oracle. The original four flows retain their Red/Green contract and TDD Queue unchanged. Actual synchronization requires current Confirmed source, process-closure/model-conformance evidence, safe file ownership and a pinned repository revision; none is granted by the planner itself.
 
 The companion `cat_suite_plan_candidate.py` is a pure function returning an ordered **proposal** from caller-supplied metadata. It never reads or changes the filesystem or Git, never invokes a renderer, and cannot execute tests. Consequently its caller must separately prove that the input source/model/vector hashes, confirmed specification, Git revision, and observed disk hashes are authentic and fresh before any future authorized sync.
 
@@ -35,7 +35,7 @@ The companion `cat_suite_plan_candidate.py` is a pure function returning an orde
 
 ## Deliberately unresolved
 
-The field names, input provider, ownership proof, manifest authority, target namespace, actual renderer binding, compiler integration, stale revision detection, semantic closure and generated-test conformance are **not finalized** by this prototype. It does not claim conformance to authoritative Process/PI/TCE or validate a confirmed oracle. Future implementation must use the existing TestModel/compiler/vector selector rather than creating a second independent source of semantics. Handwritten tests and existing TDD Queue must remain protected. No automatic routing, Green promotion, or develop merge is permitted on the strength of these prototype tests alone.
+The Manifest field names, source provider and Vitest compiler/renderer integration are implemented by `cat_spec_test_sync.py` and `cat_suite_manifest.py`; this pure planner alone still neither proves semantic closure nor produces CAT Gate evidence. It does not claim conformance to authoritative Process/PI/TCE or validate a confirmed oracle. Future implementation must use the existing TestModel/compiler/vector selector rather than creating a second independent source of semantics. Handwritten tests and existing TDD Queue must remain protected. A green planner unit test alone never authorizes normative promotion, Green status, develop merge or production-code edits.
 
 ## Evidence classification
 
