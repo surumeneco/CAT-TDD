@@ -4,6 +4,7 @@
 from __future__ import annotations
 import argparse
 import hashlib
+import fnmatch
 import json
 import re
 import subprocess
@@ -139,7 +140,22 @@ def execute(args):
         raise Blocked("invalid repo or timeout")
     repo_sha(root, args.repo_revision)
     work_path, work = cat_flow.work_file(args.work)
+    declared = [
+        record for record in work["repositories"]
+        if cat_flow.resolve_dir(work_path, work, "@repo:" + record["name"]) == root
+    ]
+    if len(declared) != 1:
+        raise Blocked("target repository must be uniquely declared by Work")
     desired, rendered, inputs = render_suite(work_path, work, args.prefix)
+    owned_paths = [item["path"] for item in desired]
+    owned_paths += [args.manifest]
+    if args.phase in ("run", "report"):
+        owned_paths += [args.report_path]
+    allowed = declared[0].get("allowed_paths", [])
+    if not allowed or any(not any(fnmatch.fnmatchcase(name, pattern)
+                                   for pattern in allowed)
+                          for name in owned_paths):
+        raise Blocked("generated outputs outside declared Work allowed_paths")
     plan, prior = create_plan(root, args.manifest, args.prefix,
                               desired, rendered, inputs, args.repo_revision)
     if args.phase == "plan":
