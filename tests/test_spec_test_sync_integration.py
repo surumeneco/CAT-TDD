@@ -49,6 +49,19 @@ class ConfirmedSyncIntegration(unittest.TestCase):
                                 "vectors": "Vectors.json", "binding": "binding.json",
                                 "allow_draft": False},
             }
+
+            suite_xml = "<testsuite>" + "".join(
+                '<testcase name="' + case["id"] + '"/>'
+                for case in vectors["cases"]) + "</testsuite>"
+            command = ("from pathlib import Path;import sys;"
+                       "Path(sys.argv[1]).write_text(" + repr(suite_xml) + ")")
+            work["repositories"] = [{"name": "app", "path": str(root),
+                                      "allowed_paths": ["tests/generated/*", ".cat-flow/*"]}]
+            work["checks"] = [{
+                "id": "suite", "stage": "suite-run", "runner": "junit",
+                "cwd": "@repo:app",
+                "argv": [sys.executable, "-c", command, "{report}"],
+                "test_ids": [case["id"] for case in vectors["cases"]]}]
             workpath = root / "Work.json"
             workpath.write_text(json.dumps(work), encoding="utf-8")
             self.assertEqual(cat_flow.validate(work), [])
