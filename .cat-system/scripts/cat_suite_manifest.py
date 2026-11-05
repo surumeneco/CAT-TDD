@@ -63,3 +63,9 @@ def create_plan(root, manifest_path, prefix, desired, rendered, inputs, revision
         **inputs, repo_revision=revision, allowed_prefix=prefix,
         desired=desired, disk_hashes=disk, manifest=entries)
     return proposal, old
+
+
+def verify_plan(plan, recorded):
+    if not recorded or any(r['action'] not in ('unchanged','retain') for r in plan['entries']):
+        raise ValueError('suite out of sync')
+    return {'status':'test-suite-verified','manifest_sha256':digest(encoded(recorded))}
