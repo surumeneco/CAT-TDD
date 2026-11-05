@@ -111,6 +111,15 @@ class SyncEngineTests(unittest.TestCase):
                     checked_path(root, path)
 
 
+    def test_generated_namespace_cannot_target_source_or_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            case, body = make_case()
+            for prefix in ("src/", "src/generated/", ".cat-flow/evidence/",
+                           "production/test/generated/", "tests/../generated/"):
+                with self.subTest(prefix=prefix), self.assertRaises(ValueError):
+                    create_plan(root, MANIFEST, prefix, [case], body, HASHES, "base")
+
     def test_new_commit_requires_new_manifest_provenance(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
