@@ -40,3 +40,39 @@ class SyncEngineTests(unittest.TestCase):
             self.assertEqual(verify_plan(proposal, before)["status"], "test-suite-verified")
             self.assertEqual(synchronize(root, MANIFEST, proposal, before, data)["actions"]["unchanged"], 1)
 
+
+    def test_regeneration_preserves_handwritten(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            case, data = make_case()
+            p, old = plan(root, [case], data)
+            synchronize(root, MANIFEST, p, old, data)
+            handwritten = root / "tests/manual.test.ts"
+            handwritten.parent.mkdir(parents=True, exist_ok=True)
+            handwritten.write_bytes(b"manual")
+            updated, replacement = make_case(b"two")
+            p, old = plan(root, [updated], replacement)
+            self.assertEqual(p["entries"][0]["action"], "update")
+            synchronize(root, MANIFEST, p, old, replacement)
+            self.assertEqual((root / updated["path"]).read_bytes(), b"two")
+            self.assertEqual(handwritten.read_bytes(), b"manual")
+
+    def test_unowned_file_and_local_modifications_are_blocked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            case, data = make_case()
+            target = root / case["path"]
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"handwritten")
+            p, old = plan(root, [case], data)
+            self.assertEqual(p["entries"][0]["action"], "blocked")
+            with self.assertRaises(ValueError):
+                synchronize(root, MANIFEST, p, old, data)
+            self.assertEqual(target.read_bytes(), b"handwritten")
+            target.unlink()
+            p, old = plan(root, [case], data)
+            synchronize(root, MANIFEST, p, old, data)
+            target.write_bytes(b"local change")
+            p, old = plan(root, [case], data)
+            self.assertEqual(p["entries"][0]["action"], "blocked")
+
