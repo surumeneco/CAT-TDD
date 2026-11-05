@@ -12,4 +12,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m unittest discover -s tests -p test_suite_plan_control_paths.py -v
+      - name: Run existing and control-path candidate unit regressions
+        run: |
+          python -m unittest discover -s tests -p test_cat_suite_plan_candidate.py -v
+          python -m unittest discover -s tests -p test_suite_plan_identity_collision.py -v
+          python -m unittest discover -s tests -p test_suite_plan_control_paths.py -v
