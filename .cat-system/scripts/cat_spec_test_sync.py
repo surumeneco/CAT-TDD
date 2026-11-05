@@ -90,3 +90,18 @@ def repo_sha(root, expected):
     if p.returncode or p.stdout.strip() != expected:
         raise Blocked('repository HEAD differs from pinned revision')
 
+
+def run_tests(root, argv, timeout):
+    if not isinstance(argv, list) or not argv or any(
+            not isinstance(x, str) or not x for x in argv):
+        raise Blocked("runner must be a nonempty argv list")
+    try:
+        result = subprocess.run(argv, cwd=root, text=True, capture_output=True,
+                                timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"status": "test-execution-not-run", "reason": str(exc)}
+    return {"status": "test-execution-passed" if result.returncode == 0
+            else "test-execution-failed", "exit_code": result.returncode,
+            "stdout_tail": result.stdout[-2000:],
+            "stderr_tail": result.stderr[-2000:]}
+
