@@ -63,7 +63,8 @@
         "specification": "issue-work",
         "analysis": "complete-in-flow",
         "documentation": "complete-in-flow",
-        "verification": "complete-in-flow"
+        "verification": "complete-in-flow",
+        "test-maintenance": "spec-test-sync"
       }
     },
     "code-to-spec": {
@@ -85,6 +86,22 @@
         "refactor-baseline",
         "refactor",
         "regression"
+      ]
+    },
+    "spec-test-sync": {
+      "entries": [
+        "confirmed-spec"
+      ],
+      "stages": [
+        "process-closure",
+        "model",
+        "model-conformance",
+        "vectors",
+        "suite-plan",
+        "suite-sync",
+        "suite-validate",
+        "suite-run",
+        "suite-result"
       ]
     }
   },
@@ -1317,6 +1334,256 @@
       },
       "evidence_policy": {
         "execution_evidence_owner": "authority-decision",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
+      }
+    },
+    "suite-plan": {
+      "executor": {
+        "type": "compiler",
+        "id": "cat_spec_test_sync:plan"
+      },
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "confirmed-spec",
+          "TestModels",
+          "TDD/Vectors",
+          "binding",
+          "TestSuiteManifest",
+          "generated-test-suite",
+          "repo-state"
+        ],
+        "write": [
+          "TestSuitePlan"
+        ],
+        "commands": [
+          "suite:plan"
+        ],
+        "authority": [],
+        "prohibited": [
+          "production-source",
+          "confirmed-spec",
+          "TDD/Queue",
+          "handwritten-test",
+          "queue-state",
+          "TestModels",
+          "test-model",
+          "test-code"
+        ]
+      },
+      "on_result": {
+        "passed": "suite-sync",
+        "failed": "stop",
+        "inconclusive": "stop",
+        "decision-required": "normative-authority"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
+      }
+    },
+    "suite-sync": {
+      "executor": {
+        "type": "script",
+        "id": "cat_spec_test_sync:sync"
+      },
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "confirmed-spec",
+          "TestModels",
+          "TDD/Vectors",
+          "binding",
+          "TestSuiteManifest",
+          "generated-test-suite",
+          "repo-state"
+        ],
+        "write": [
+          "generated-test-suite",
+          "TestSuiteManifest"
+        ],
+        "commands": [
+          "suite:sync"
+        ],
+        "authority": [],
+        "prohibited": [
+          "production-source",
+          "confirmed-spec",
+          "TDD/Queue",
+          "handwritten-test",
+          "queue-state",
+          "TestModels",
+          "test-model"
+        ]
+      },
+      "on_result": {
+        "passed": "suite-validate",
+        "failed": "stop",
+        "inconclusive": "stop",
+        "decision-required": "normative-authority"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
+      }
+    },
+    "suite-validate": {
+      "executor": {
+        "type": "validator",
+        "id": "cat_spec_test_sync:verify"
+      },
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "confirmed-spec",
+          "TestModels",
+          "TDD/Vectors",
+          "binding",
+          "TestSuiteManifest",
+          "generated-test-suite",
+          "repo-state"
+        ],
+        "write": [
+          "Review"
+        ],
+        "commands": [
+          "suite:verify"
+        ],
+        "authority": [],
+        "prohibited": [
+          "production-source",
+          "confirmed-spec",
+          "TDD/Queue",
+          "handwritten-test",
+          "queue-state",
+          "TestModels",
+          "test-model",
+          "test-code"
+        ]
+      },
+      "on_result": {
+        "passed": "suite-run",
+        "failed": "stop",
+        "inconclusive": "stop",
+        "decision-required": "normative-authority"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
+      }
+    },
+    "suite-run": {
+      "executor": {
+        "type": "runner",
+        "id": "cat_spec_test_sync:run"
+      },
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "confirmed-spec",
+          "TestModels",
+          "TDD/Vectors",
+          "binding",
+          "TestSuiteManifest",
+          "generated-test-suite",
+          "repo-state"
+        ],
+        "write": [
+          ".cat-flow/evidence"
+        ],
+        "commands": [
+          "suite:run"
+        ],
+        "authority": [],
+        "prohibited": [
+          "production-source",
+          "confirmed-spec",
+          "TDD/Queue",
+          "handwritten-test",
+          "queue-state",
+          "TestModels",
+          "test-model",
+          "test-code"
+        ]
+      },
+      "on_result": {
+        "passed": "suite-result",
+        "failed": "stop",
+        "inconclusive": "stop",
+        "decision-required": "normative-authority"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
+        "agent_may_edit_execution_evidence": false,
+        "external_facts": "provider-required",
+        "interpretation": "reference-only"
+      }
+    },
+    "suite-result": {
+      "executor": {
+        "type": "script",
+        "id": "cat_spec_test_sync:report"
+      },
+      "skills": [
+        "tdd-execution"
+      ],
+      "include_technology_skills": false,
+      "permissions": {
+        "read": [
+          "confirmed-spec",
+          "TestModels",
+          "TDD/Vectors",
+          "binding",
+          "TestSuiteManifest",
+          "generated-test-suite",
+          "repo-state"
+        ],
+        "write": [
+          ".cat-flow/evidence"
+        ],
+        "commands": [
+          "suite:report"
+        ],
+        "authority": [],
+        "prohibited": [
+          "production-source",
+          "confirmed-spec",
+          "TDD/Queue",
+          "handwritten-test",
+          "queue-state",
+          "TestModels",
+          "test-model",
+          "test-code"
+        ]
+      },
+      "on_result": {
+        "passed": "complete",
+        "failed": "stop",
+        "inconclusive": "stop",
+        "decision-required": "normative-authority"
+      },
+      "evidence_policy": {
+        "execution_evidence_owner": "executor",
         "agent_may_edit_execution_evidence": false,
         "external_facts": "provider-required",
         "interpretation": "reference-only"
