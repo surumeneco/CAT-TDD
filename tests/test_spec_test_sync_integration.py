@@ -85,6 +85,13 @@ class ConfirmedSyncIntegration(unittest.TestCase):
             self.assertFalse((root / "TDD/Queue").exists())
             self.assertTrue(all("isDeepStrictEqual" in p.read_text()
                                 for p in generated))
+            self.assertEqual(sync_main(["run", *args, "--check-id", "suite"]), 0)
+            self.assertEqual(sync_main(["report", *args]), 0)
+            execution = json.loads((root / ".cat-flow/evidence/test-suite-execution.json").read_text())
+            self.assertEqual(execution["test_execution"]["status"], "test-execution-passed")
+            self.assertEqual(
+                set(execution["test_execution"]["observed_targets"]),
+                {case["id"] for case in vectors["cases"]})
             # Mutating the source makes the earlier canonical Gate evidence stale.
             process.write_text(process.read_text() + "\n# changed\n")
             self.assertEqual(sync_main(["verify", *args]), 2)
