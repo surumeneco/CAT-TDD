@@ -30,10 +30,15 @@ def _hash(value: Any, label: str) -> str:
     return value
 
 
+def _contains_control(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
 def _path(value: Any, prefix: str) -> str:
     path = _string(value, "path")
     if (not path.startswith(prefix) or len(path) <= len(prefix) or
             "\\" in path or "\0" in path or "\n" in path or "\r" in path or
+            _contains_control(path) or
             path.startswith("/") or "//" in path or
             any(part in ("", ".", "..") for part in path.split("/"))):
         raise ValueError(f"path is not a normalized generated target: {path!r}")
@@ -63,6 +68,7 @@ def plan_suite(*, source_sha256: str, model_sha256: str,
     }
     prefix = _string(allowed_prefix, "allowed_prefix")
     if (not prefix.endswith("/") or prefix.startswith("/") or
+            _contains_control(prefix) or
             "\\" in prefix or any(x in ("", ".", "..") for x in prefix[:-1].split("/"))):
         raise ValueError("allowed_prefix must be a normalized relative directory")
     if not isinstance(desired, (list, tuple)) or not isinstance(disk_hashes, Mapping) or not isinstance(manifest, Mapping):
