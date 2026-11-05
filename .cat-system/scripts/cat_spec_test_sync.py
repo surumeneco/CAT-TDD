@@ -38,3 +38,22 @@ def source_paths(work_path, work):
               if config.get("domain_rule") else None)
     return paths, tces, domain
 
+
+def render_suite(work_path, work, prefix):
+    paths, tces, domain = source_paths(work_path, work)
+    model = compiler.load(paths["process"], paths["pi"], tces, domain, False)
+    if model.get("status") != "confirmed":
+        raise Blocked("confirmed TestModel required")
+    model_bytes = Path(paths["model"]).read_bytes()
+    if Path(paths["model"]).suffix.lower() == ".md":
+        if model_bytes.decode("utf-8") != compiler.render_model_markdown(model):
+            raise Blocked("stale TestModel Markdown")
+    elif json.loads(model_bytes) != model:
+        raise Blocked("stale TestModel")
+    vector_bytes = Path(paths["vectors"]).read_bytes()
+    vectors = json.loads(vector_bytes)
+    if vectors != compiler.selection_vectors(model, "rule-witness/v1"):
+        raise Blocked("vectors differ from canonical deterministic selection")
+    if not vectors["cases"]:
+        raise Blocked("no selected test vectors")
+    rendered, desired = {}, []
