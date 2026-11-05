@@ -63,6 +63,17 @@ class SpecTestSyncWorkTests(unittest.TestCase):
                 result = cat_flow.route(work, stage)
                 self.assertNotEqual(result["status"], "ready")
 
+
+    def test_vector_handoff_uses_suite_plan_and_never_tdd_queue(self):
+        work = confirmed_test_work()
+        r = cat_flow.route(work, "vectors")
+        self.assertEqual(r["status"], "ready")
+        self.assertEqual(r["on_result"]["passed"], "suite-plan")
+        implementation = dict(work, flow="spec-implementation",
+                              work_kind="implementation")
+        r = cat_flow.route(implementation, "vectors")
+        self.assertEqual(r["on_result"]["passed"], "queue")
+
     def test_unconfirmed_source_cannot_enable_sync(self):
         work = confirmed_test_work()
         work["specification"]["status"] = "candidate"
