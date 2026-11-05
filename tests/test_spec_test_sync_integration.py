@@ -115,6 +115,8 @@ class ConfirmedSyncIntegration(unittest.TestCase):
                     "    },\n"
                     "  };\n"
                     "}\n", encoding="utf-8")
+            (root / ".cat-flow/evidence/suite.json").write_text("{}")
+            self.assertEqual(sync_main(["report", *args]), 2)
             # Mutating the source makes the earlier canonical Gate evidence stale.
             process.write_text(process.read_text() + "\n# changed\n")
             self.assertEqual(sync_main(["verify", *args]), 2)
