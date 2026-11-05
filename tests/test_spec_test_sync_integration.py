@@ -91,6 +91,7 @@ class ConfirmedSyncIntegration(unittest.TestCase):
             self.assertEqual(sync_main(["report", *args]), 0)
             execution = json.loads((root / ".cat-flow/evidence/test-suite-execution.json").read_text())
             self.assertEqual(execution["test_execution"]["status"], "test-execution-passed")
+            self.assertEqual(cat_flow.status_work(workpath, work)["checks"]["suite"]["status"], "passed")
             self.assertEqual(
                 set(execution["test_execution"]["observed_targets"]),
                 {case["id"] for case in vectors["cases"]})
