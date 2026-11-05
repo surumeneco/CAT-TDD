@@ -14,7 +14,7 @@ import hashlib
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from catlib.common import Blocked, json_bytes, read_json, require, sha
 from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
@@ -523,6 +523,12 @@ def _repo_state(wpath,w):
     return result
 
 
+def _guard_relative_name(path):
+    """Portable relative paths; retain literal backslashes on POSIX."""
+    require(isinstance(path, PurePath), 'guard path must be a pathlib value')
+    return path.as_posix()
+
+
 def _workspace_state(wpath, w):
     root = workspace_root(wpath)
     repo_roots = []
@@ -545,7 +551,7 @@ def _workspace_state(wpath, w):
             continue
         if any(under(path, repo_root) for repo_root in repo_roots):
             continue
-        state[str(rel)] = sha(path.read_bytes())
+        state[_guard_relative_name(rel)] = sha(path.read_bytes())
     return state
 
 
@@ -566,7 +572,7 @@ def _workspace_write_patterns(wpath, w, permissions):
     if '.cat-flow/evidence' in permissions.get('write', []):
         ev = (wpath.parent / '.cat-flow' / 'evidence').resolve()
         if under(ev, root):
-            patterns.append(str(ev.relative_to(root)) + '/**')
+            patterns.append(_guard_relative_name(ev.relative_to(root)) + '/**')
     return patterns
 
 
