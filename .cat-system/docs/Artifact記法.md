@@ -390,6 +390,15 @@ TestModelでは次を明確に分ける。
 
 内部IR、TestModel JSON、vectors、binding、execution evidenceは機械用派生物としてJSON等を使用できる。これらを人間向け意味正本へ昇格させない。normative vectorsは`cat_compile_v2.py vectors`のtest-selection ruleから生成される派生物であり、人間やAIが必要ケースを直接追記するTest Listとして扱わない。
 
+
+### Test Suite Manifest（spec-test-sync）
+
+既存実装向けの規範テスト整備は`flow: spec-test-sync`、`work_kind: test-maintenance`のWorkで実施する。WorkのCompilationにはConfirmed Process / PI / TCE / TestModel / Vectors / 技術Bindingを指定し、TDD Queueは指定・作成しない。Process ClosureとModel ConformanceのScript-owned passed evidenceが必要である。TDDの`current=1`制限はspec-implementationにだけ適用する。
+
+`cat-test-suite-manifest/v1`は同期した生成物の管理用Lifecycleメタデータであり、第二の仕様書ではない。`inputs`はsource/model/vectors/renderer/bindingのhashとselection rule・repo revisionを保持する。`entries`は生成相対パスをキーとしてtest ID、generated/handwritten所有者、ファイル内容SHA-256、由来hash群を保持する。TCEのCondition、Oracle、Expected Result等の意味を書き込まない。既存手書きテストとproduction sourceは不変、未選択の旧生成テストは自動削除しない。
+
+同期結果`test-suite-synced`、試験実行結果`test-execution-passed / failed / not-run`、CAT適合性Gateの証拠は相互に代用しない。詳細は[機械的変換](機械的変換.md)を参照する。
+
 ### TDD Execution Queue
 
 QueueはTestModelから導出されたテスト実行順と進捗だけを保持するLifecycle Artifactであり、第二の仕様書ではない。
