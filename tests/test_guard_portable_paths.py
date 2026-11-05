@@ -10,3 +10,8 @@ class PortableGuardPathTest(unittest.TestCase):
     def test_windows_relative_name(self):
         p = PureWindowsPath('Lifecycle', 'CAT', 'Draft', 'demo.md')
         self.assertEqual(flow._guard_relative_name(p), 'Lifecycle/CAT/Draft/demo.md')
+
+    def test_posix_backslash_is_literal(self):
+        p = PurePosixPath('Lifecycle'+chr(92)+'CAT'+chr(92)+'Draft'+chr(92)+'demo.md')
+        name = flow._guard_relative_name(p)
+        self.assertFalse(fnmatch.fnmatchcase(name, 'Lifecycle/CAT/Draft/**'))
