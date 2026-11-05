@@ -2,6 +2,8 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from cat_suite_plan_candidate import plan_suite
 
@@ -69,3 +71,19 @@ def verify_plan(plan, recorded):
     if not recorded or any(r['action'] not in ('unchanged','retain') for r in plan['entries']):
         raise ValueError('suite out of sync')
     return {'status':'test-suite-verified','manifest_sha256':digest(encoded(recorded))}
+
+def atomic_write(target, data):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        raise ValueError("output became a symlink")
+    fd, temp = tempfile.mkstemp(prefix=".cat-sync-", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, target)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
