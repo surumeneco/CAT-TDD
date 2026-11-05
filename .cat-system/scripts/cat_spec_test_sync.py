@@ -142,3 +142,28 @@ def execute(args):
         raise Blocked("stale test execution evidence")
     return record
 
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("phase", choices=("plan", "sync", "verify", "run", "report"))
+    parser.add_argument("--work", required=True)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--repo-revision", required=True)
+    parser.add_argument("--prefix", default="tests/generated/")
+    parser.add_argument("--manifest", default=".cat-flow/test-suite-manifest.json")
+    parser.add_argument("--runner-argv-json")
+    parser.add_argument("--report-path",
+                        default=".cat-flow/evidence/test-suite-execution.json")
+    parser.add_argument("--timeout", type=int, default=300)
+    args = parser.parse_args(argv)
+    try:
+        result = execute(args)
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 2 if result.get("status") == "blocked" else 0
+    except (Blocked, compiler.Blocked, ValueError, KeyError, TypeError, OSError) as exc:
+        print(json.dumps({"status": "blocked", "reason": str(exc)},
+                         ensure_ascii=False), file=sys.stderr)
+        return 2
+
+if __name__ == "__main__":
+    raise SystemExit(main())
