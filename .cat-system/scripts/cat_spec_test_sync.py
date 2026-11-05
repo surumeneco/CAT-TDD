@@ -190,6 +190,9 @@ def execute(args):
     check_id = record.get("test_execution", {}).get("check_id")
     if not check_id:
         raise Blocked("run report requires declared suite-run evidence")
+    expected = work_path.parent / ".cat-flow" / "evidence" / (check_id + ".json")
+    if not expected.is_file() or digest(expected.read_bytes()) != record["test_execution"].get("work_evidence_sha256"):
+        raise Blocked("declared JUnit evidence was replaced or removed")
     return record
 
 
