@@ -68,6 +68,8 @@ def create_plan(root, manifest_path, prefix, desired, rendered, inputs, revision
 
 
 def verify_plan(plan, recorded):
+    if recorded.get('inputs') != plan['inputs']:
+        raise ValueError('Manifest inputs or pinned repository revision are stale')
     if not recorded or any(r['action'] not in ('unchanged','retain') for r in plan['entries']):
         raise ValueError('suite out of sync')
     return {'status':'test-suite-verified','manifest_sha256':digest(encoded(recorded))}
