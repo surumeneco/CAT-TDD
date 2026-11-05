@@ -1,5 +1,7 @@
 """End-to-end confirmed CAT source -> independent suite sync, no TDD Queue."""
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -92,6 +94,26 @@ class ConfirmedSyncIntegration(unittest.TestCase):
             self.assertEqual(
                 set(execution["test_execution"]["observed_targets"]),
                 {case["id"] for case in vectors["cases"]})
+            # For the CI-only real Vitest smoke, export the already verified test
+            # sources into a disposable project after the canonical gates pass.
+            if os.environ.get("CAT_SYNC_VITEST_SMOKE_DIR"):
+                target = Path(os.environ["CAT_SYNC_VITEST_SMOKE_DIR"])
+                target.mkdir(parents=True, exist_ok=True)
+                for source in generated:
+                    shutil.copyfile(source, target / source.name)
+                (target / "driver.ts").write_text(
+                    "export function createDriver() {\n"
+                    "  let state: Record<string, unknown> = {};\n"
+                    "  return {\n"
+                    "    async prepare(before: Record<string, unknown>) { state = { ...before }; },\n"
+                    "    async observeState() { return { ...state }; },\n"
+                    "    async trigger(_trigger: string, input: Record<string, unknown>) {\n"
+                    "      const enabled = input['input.enabled'] === true;\n"
+                    "      if (enabled) state['state.ready'] = true;\n"
+                    "      return { 'output.accepted': enabled };\n"
+                    "    },\n"
+                    "  };\n"
+                    "}\n", encoding="utf-8")
             # Mutating the source makes the earlier canonical Gate evidence stale.
             process.write_text(process.read_text() + "\n# changed\n")
             self.assertEqual(sync_main(["verify", *args]), 2)
