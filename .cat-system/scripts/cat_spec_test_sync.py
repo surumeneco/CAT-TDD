@@ -159,7 +159,7 @@ def main(argv=None):
     try:
         result = execute(args)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-        return 2 if result.get("status") == "blocked" else 0
+        return 2 if result.get("status") == "blocked" or result.get("test_execution", {}).get("status") in ("test-execution-failed", "test-execution-not-run") else 0
     except (Blocked, compiler.Blocked, ValueError, KeyError, TypeError, OSError) as exc:
         print(json.dumps({"status": "blocked", "reason": str(exc)},
                          ensure_ascii=False), file=sys.stderr)
