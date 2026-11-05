@@ -158,6 +158,9 @@ def execute(args):
         raise Blocked("generated outputs outside declared Work allowed_paths")
     plan, prior = create_plan(root, args.manifest, args.prefix,
                               desired, rendered, inputs, args.repo_revision)
+    if any(not any(fnmatch.fnmatchcase(row["path"], pattern) for pattern in allowed)
+           for row in plan["entries"]):
+        raise Blocked("Manifest includes files outside Work allowed_paths")
     if args.phase == "plan":
         return {"status": "blocked" if any(
             x["action"] == "blocked" for x in plan["entries"]) else "planned",
