@@ -110,6 +110,22 @@ class SyncEngineTests(unittest.TestCase):
                 with self.subTest(path=path), self.assertRaises(ValueError):
                     checked_path(root, path)
 
+
+    def test_new_commit_requires_new_manifest_provenance(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            case, body = make_case()
+            p, old = plan(root, [case], body)
+            synchronize(root, MANIFEST, p, old, body)
+            newer, old = create_plan(root, MANIFEST, "tests/generated/",
+                                     [case], body, HASHES, "new-head")
+            with self.assertRaisesRegex(ValueError, "revision"):
+                verify_plan(newer, old)
+            synchronize(root, MANIFEST, newer, old, body)
+            again, old = create_plan(root, MANIFEST, "tests/generated/",
+                                     [case], body, HASHES, "new-head")
+            self.assertEqual(verify_plan(again, old)["status"], "test-suite-verified")
+
     def test_runner_outcomes_are_separate_from_suite_sync(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
