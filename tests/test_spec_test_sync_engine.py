@@ -15,7 +15,7 @@ HASHES = {
     "vectors_sha256": "c" * 64, "selection_rule": "rule-witness/v1",
     "renderer_version": "vitest/v1", "binding_version": "binding/v1",
 }
-MANIFEST = ".cat-flow/manifest.json"
+MANIFEST = ".cat-flow/test-suite-manifest.json"
 
 def make_case(value=b"one", id="v1", path="tests/generated/a.test.ts"):
     return ({"test_id": id, "model_ref": "rule.1", "vector_ref": id,
