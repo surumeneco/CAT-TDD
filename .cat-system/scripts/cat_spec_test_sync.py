@@ -105,3 +105,22 @@ def run_tests(root, argv, timeout):
             "stdout_tail": result.stdout[-2000:],
             "stderr_tail": result.stderr[-2000:]}
 
+
+def execute(args):
+    root = Path(args.repo).resolve(strict=True)
+    if not root.is_dir() or not 1 <= args.timeout <= 3600:
+        raise Blocked("invalid repo or timeout")
+    repo_sha(root, args.repo_revision)
+    work_path, work = cat_flow.work_file(args.work)
+    desired, rendered, inputs = render_suite(work_path, work, args.prefix)
+    plan, prior = create_plan(root, args.manifest, args.prefix,
+                              desired, rendered, inputs, args.repo_revision)
+    if args.phase == "plan":
+        return {"status": "blocked" if any(
+            x["action"] == "blocked" for x in plan["entries"]) else "planned",
+            "plan": plan}
+    if args.phase == "sync":
+        return synchronize(root, args.manifest, plan, prior, rendered)
+    verified = verify_plan(plan, prior)
+    if args.phase == "verify":
+        return verified
