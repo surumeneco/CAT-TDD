@@ -141,7 +141,7 @@ class ConformanceRuntimeTest(unittest.TestCase):
             path = self.write_work(root, work)
             with self.assertRaisesRegex(flow.Blocked, 'tce not found'):
                 flow.conformance_work(path, work, 'process-closure')
-            with self.assertRaisesRegex(flow.Blocked, 'tce not found'):
+            with self.assertRaisesRegex(flow.Blocked, 'process not found'):
                 flow.compile_work(path, work, 'model', False)
 
 
