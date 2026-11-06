@@ -130,6 +130,49 @@ class CompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(composer.CompositionError,'duplicate connection link'):
                 composer.compose([a,b],bindings)
 
+    def test_narrow_integer_domain_is_accepted_by_wider_consumer(self):
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            consumer=model('p.two','p.one','receive')
+            producer['fields'][0]['domain']={'type':'integer','min':1,'max':5}
+            consumer['fields'][0]['domain']={'type':'integer','min':0,'max':10}
+            a,b,links=self.write(Path(td),first=producer,second=consumer)
+            result=composer.compose([a,b],links)
+            self.assertEqual(result['bindings'][0]['status'],'structurally-matched')
+            self.assertEqual(result['unresolved_connections'],[])
+
+    def test_wider_integer_domain_is_not_a_valid_narrow_consumer(self):
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            consumer=model('p.two','p.one','receive')
+            producer['fields'][0]['domain']={'type':'integer','min':0,'max':10}
+            consumer['fields'][0]['domain']={'type':'integer','min':1,'max':5}
+            a,b,links=self.write(Path(td),first=producer,second=consumer)
+            with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
+                composer.compose([a,b],links)
+
+    def test_unknown_record_shape_does_not_get_structural_proof(self):
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            consumer=model('p.two','p.one','receive')
+            nominal={'type':'record','name':'User','resolved':False}
+            producer['fields'][0]['domain']=nominal
+            consumer['fields'][0]['domain']=nominal
+            a,b,links=self.write(Path(td),first=producer,second=consumer)
+            result=composer.compose([a,b],links)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertEqual(result['bindings'][0]['status'],'inconclusive')
+            self.assertEqual(result['bindings'][0]['field_links'][0]['status'],'inconclusive')
+            self.assertTrue(result['unresolved_connections'])
+
+    def test_nullable_source_does_not_satisfy_nonnullable_consumer(self):
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            producer['fields'][0]['domain']={'type':'nullable','of':{'type':'integer'}}
+            a,b,links=self.write(Path(td),first=producer)
+            with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
+                composer.compose([a,b],links)
+
     def test_unmapped_external_peer_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as td:
             incoming=model('p.two','p.external','receive')
