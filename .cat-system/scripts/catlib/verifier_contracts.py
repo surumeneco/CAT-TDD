@@ -86,6 +86,10 @@ def verify_evidence(contract,evidence):
     if cap not in ('source-structure','type-projection','filesystem') and not evidence.get('external_attestation'):
         return {'rule_id':rule_id,'status':'inconclusive','evidence_sha256':digest(canonical(evidence)),
                 'reason':'external verifier attestation is absent'}
+    if evidence['result'] in ('not-run','inconclusive'):
+        return {'rule_id':rule_id,'status':evidence['result'],
+                'evidence_sha256':digest(canonical(evidence)),
+                'reason':'verifier did not assert a completed passing result'}
     _require(evidence['result']=='passed','verified assertions do not match claimed result')
     return {'rule_id':rule_id,'status':'passed','evidence_sha256':digest(canonical(evidence)),
             'verifier_id':evidence['verifier_id'],'capability':cap}
