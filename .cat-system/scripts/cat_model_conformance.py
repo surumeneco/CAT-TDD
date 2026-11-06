@@ -180,6 +180,8 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
             item['id']: (item['direction'], item.get('trigger')) for _,_,a in pi_docs
             for item in a.get('operations', [])
         },
+        'operation_owners': {item['id']:fm['id'] for _,fm,artifact in pi_docs
+                             for item in artifact.get('operations', [])},
         'triggers': {item['id']: item['origin'] for item in p['triggers']},
         'fields': fields, 'domains':domains, 'presence':presence,
         'normative_rule_inputs': {d['id']:(d['kind'],d['sha256']) for d in rule_docs},
@@ -308,6 +310,7 @@ def json_model(path):
         'boundary': model.get('pi_boundary'),
         'pi_boundaries':model.get('pi_boundaries',[]),
         'operations': operations,
+        'operation_owners': {item['id']:item.get('source_pi') for item in model.get('pi_operations', [])},
         'triggers': {item['id']: item['origin'] for item in model.get('triggers', [])},
         'fields': fields, 'domains':domains,'presence':presence,
         'normative_rule_inputs':{d['id']:(d['kind'],d['sha256']) for d in model.get('normative_rule_inputs',[])},
@@ -328,7 +331,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('pi_boundaries','normative_rule_inputs','rule_obligations','domains','presence')
+        checks += ('pi_boundaries','operation_owners','normative_rule_inputs','rule_obligations','domains','presence')
     for key in checks:
         if actual.get(key) != expected.get(key):
             mismatches.append(key)
