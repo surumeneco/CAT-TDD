@@ -191,8 +191,11 @@ class ReadableArtifactTests(unittest.TestCase):
             process,pi,tce=write_v2(Path(d),False)
             pi.write_text(pi.read_text().replace('input.enabled | receive | boolean | required',
                                                  'input.enabled | receive | boolean | optional'),encoding='utf-8')
-            with self.assertRaisesRegex(Blocked,'supports required PI presence only'):
-                load(process,pi,tce,allow_draft=True)
+            model=load(process,pi,tce,allow_draft=True)
+            field=next(f for f in model['fields'] if f['id']=='input.enabled')
+            self.assertEqual(field['presence'],'optional')
+            self.assertEqual(field['domain'],{'type':'boolean'})
+            self.assertEqual(model['status'],'draft')
 
     def test_undeclared_observation_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
