@@ -179,6 +179,11 @@ def read_work_markdown(path):
         for humans, key in mapping.items():
             value = _cell(row, *humans, key, required=False)
             if not _none(value): compilation[key] = value
+        if compilation.get('pi'):
+            pis=_items(compilation['pi'])
+            require(pis, 'Compilation PI requires at least one path')
+            compilation['pi']=pis[0]
+            compilation['pis']=pis
         if compilation.get('tce'):
             tces = _items(compilation['tce'])
             require(tces, 'Compilation TCE requires at least one path')
@@ -430,6 +435,9 @@ def validate(w):
             for key in ('process', 'pi', 'tce', 'model'):
                 if not isinstance(compilation.get(key), str) or not compilation[key]:
                     errs.append(f'compilation.{key} required')
+            pis = compilation.get('pis', [compilation.get('pi')] if compilation.get('pi') else [])
+            if not isinstance(pis,list) or not pis or not all(isinstance(v,str) and v for v in pis) or pis[0]!=compilation.get('pi'):
+                errs.append('compilation.pis must be a nonempty string array matching compilation.pi')
             tces = compilation.get('tces', [compilation.get('tce')] if compilation.get('tce') else [])
             if not isinstance(tces, list) or not tces or not all(isinstance(v, str) and v for v in tces):
                 errs.append('compilation.tces must be a nonempty string array')
