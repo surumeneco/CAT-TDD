@@ -124,7 +124,7 @@ class ConformanceRuntimeTest(unittest.TestCase):
             self.assertEqual(result['status'], 'inconclusive')
             self.assertIn('partial', result['reason'])
 
-    def test_unmapped_common_rule_or_domain_spec_blocks_normative_path(self):
+    def test_missing_compilation_inputs_cannot_be_silently_accepted(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             work = base_work()
@@ -139,9 +139,9 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 'allow_draft': False,
             }
             path = self.write_work(root, work)
-            result = flow.conformance_work(path, work, 'process-closure')
-            self.assertEqual(result['status'], 'blocked')
-            with self.assertRaisesRegex(flow.Blocked, 'CommonRule/DomainSpec'):
+            with self.assertRaisesRegex(flow.Blocked, 'tce not found'):
+                flow.conformance_work(path, work, 'process-closure')
+            with self.assertRaisesRegex(flow.Blocked, 'tce not found'):
                 flow.compile_work(path, work, 'model', False)
 
 
