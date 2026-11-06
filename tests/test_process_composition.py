@@ -44,7 +44,8 @@ class CompositionTests(unittest.TestCase):
             result=composer.compose([a,b],links)
             self.assertEqual(result['status'],'inconclusive')
             self.assertEqual(result['bindings'][0]['status'],'structurally-matched')
-            self.assertEqual(len(result['unresolved_connections']),1)
+            self.assertEqual(len(result['unresolved_connections']),0)
+            self.assertFalse(result['bindings'][0]['external_effects_verified'])
 
     def test_type_mismatch_blocks_binding(self):
         with tempfile.TemporaryDirectory() as td:
@@ -59,6 +60,36 @@ class CompositionTests(unittest.TestCase):
             outgoing=model('p.one','p.two','send')
             outgoing['fields'][0]['presence']='optional'
             a,b,links=self.write(Path(td),first=outgoing)
+            with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
+                composer.compose([a,b],links)
+
+    def test_required_value_cannot_satisfy_absent_only_consumer(self):
+        with tempfile.TemporaryDirectory() as td:
+            receiving=model('p.two','p.one','receive')
+            receiving['fields'][0]['presence']='absent'
+            a,b,links=self.write(Path(td),second=receiving)
+            with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
+                composer.compose([a,b],links)
+
+    def test_absent_producer_can_satisfy_optional_consumer(self):
+        with tempfile.TemporaryDirectory() as td:
+            outgoing=model('p.one','p.two','send')
+            outgoing['fields'][0]['presence']='absent'
+            receiving=model('p.two','p.one','receive')
+            receiving['fields'][0]['presence']='optional'
+            a,b,links=self.write(Path(td),first=outgoing,second=receiving)
+            result=composer.compose([a,b],links)
+            self.assertEqual(result['bindings'][0]['status'],'structurally-matched')
+            self.assertEqual(result['unresolved_connections'],[])
+            self.assertEqual(result['status'],'inconclusive')
+
+    def test_undefined_state_is_not_optional_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            outgoing=model('p.one','p.two','send')
+            outgoing['fields'][0]['presence']='undefined'
+            receiving=model('p.two','p.one','receive')
+            receiving['fields'][0]['presence']='optional'
+            a,b,links=self.write(Path(td),first=outgoing,second=receiving)
             with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
                 composer.compose([a,b],links)
 
