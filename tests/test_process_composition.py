@@ -93,6 +93,43 @@ class CompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
                 composer.compose([a,b],links)
 
+    def test_bidirectional_pi_needs_reverse_direction_binding(self):
+        with tempfile.TemporaryDirectory() as td:
+            first=model('p.one','p.two','send')
+            second=model('p.two','p.one','receive')
+            first['pi_boundaries'][0]['direction']='bidirectional'
+            second['pi_boundaries'][0]['direction']='bidirectional'
+            a,b,links=self.write(Path(td),first=first,second=second)
+            result=composer.compose([a,b],links)
+            missing={(e['source_process'],e['direction']) for e in result['unresolved_connections']}
+            self.assertEqual(missing,{('p.one','receive'),('p.two','send')})
+            self.assertEqual(result['status'],'inconclusive')
+
+    def test_multiple_operations_on_same_pi_can_be_independently_bound(self):
+        with tempfile.TemporaryDirectory() as td:
+            first=model('p.one','p.two','send')
+            second=model('p.two','p.one','receive')
+            first['pi_operations'].append(dict(first['pi_operations'][0],id='p.one.other'))
+            second['pi_operations'].append(dict(second['pi_operations'][0],id='p.two.other'))
+            links=binding()
+            second_link=json.loads(json.dumps(links['links'][0]))
+            second_link['source_operation']='p.one.other'
+            second_link['target_operation']='p.two.other'
+            links['links'].append(second_link)
+            a,b,bindings=self.write(Path(td),first=first,second=second,links=links)
+            result=composer.compose([a,b],bindings)
+            self.assertEqual(len(result['bindings']),2)
+            self.assertEqual(result['unresolved_connections'],[])
+            self.assertEqual(result['status'],'inconclusive')
+
+    def test_exact_duplicate_operation_link_is_blocked(self):
+        with tempfile.TemporaryDirectory() as td:
+            links=binding()
+            links['links'].append(dict(links['links'][0]))
+            a,b,bindings=self.write(Path(td),links=links)
+            with self.assertRaisesRegex(composer.CompositionError,'duplicate connection link'):
+                composer.compose([a,b],bindings)
+
     def test_unmapped_external_peer_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as td:
             incoming=model('p.two','p.external','receive')
