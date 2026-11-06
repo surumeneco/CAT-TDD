@@ -604,7 +604,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
             key=ref[6:]
             require(key in params, 'unbound function parameter '+ref)
             return params[key] if isinstance(params,dict) else 'parameter'
-        require(ref in fields and fields[ref]['role'] in ('input','state','observation'), 'unknown or non-readable ref '+ref)
+        require(ref in fields and fields[ref]['role'] in ('input','state','observation','output'), 'unknown or non-readable ref '+ref)
         return fields[ref]['domain']['type']
     check_keys(expr,['op','args'],['name'],where='operator expression')
     op=expr['op']; require(op in OPS,'unsupported operator '+str(op))
@@ -640,7 +640,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     if op=='length':types_are({'string','set','sequence','bytes'});return 'integer'
     if op=='concat':types_are({'string'});return 'string'
     if op in ('set-add','set-remove'):
-        require(types[0] in ('set','parameter') and types[1] in ('string','integer','parameter'),
+        require(types[0] in ('set','parameter') and types[1] in ('string','integer','record','parameter'),
                 f'{op}: expected set and element, got {types}')
         return 'set'
     if op=='to-int':
@@ -686,10 +686,10 @@ def eval_expr(expr, env, definitions, params=None):
         if op=='concat':return ''.join(xs)
         if op=='set-add':
             require(isinstance(xs[0],list),'set-add expects list')
-            return sorted(set(xs[0])|{xs[1]})
+            return typed.set_add(xs[0],xs[1])
         if op=='set-remove':
             require(isinstance(xs[0],list),'set-remove expects list')
-            return sorted(set(xs[0])-{xs[1]})
+            return typed.set_remove(xs[0],xs[1])
     except (TypeError,ValueError,ZeroDivisionError,OverflowError) as ex:
         raise Blocked(f'undefined expression {op}: {ex}') from ex
     raise Blocked('unsupported operator '+op)
@@ -865,7 +865,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
                     require(e['target'] in fields and fields[e['target']]['role'] in ('state','output','action'),'Effect target not declared/actuable '+str(e['target']))
                     produced=inspect_expr(e['expr'],fields,definitions)
                     expected=fields[e['target']]['domain']['type']
-                    require(produced==expected or (expected=='enum' and produced in ('string','boolean','integer')),
+                    require(produced==expected or (expected=='enum' and produced in ('string','boolean','integer'))
+                            or (expected=='nullable' and (
+                                'literal' in e['expr'] and (e['expr']['literal'] is None
+                                    or typed.contains(fields[e['target']]['domain'],e['expr']['literal']))
+                                or 'ref' in e['expr'] and e['expr']['ref'] in fields
+                                 and (fields[e['expr']['ref']]['domain']==fields[e['target']]['domain']
+                                    or fields[e['expr']['ref']]['domain']==fields[e['target']]['domain']['of']))),
                             f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
                     if expected=='enum':
                         expr=e['expr']
@@ -903,11 +909,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             if not hit:gaps.append(env)
             if len(hit)>1:overlaps.append({'state':env,'rules':hit})
             unreachable-=set(hit)
-        require(not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
-        per_trigger[trigger]={'result':'proved' if not gaps else 'uncovered','guard_refs':sorted(relevant),
+        require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
+        per_trigger[trigger]={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered','guard_refs':sorted(relevant),
+                              'overlap_count':len(overlaps),'overlaps':overlaps[:16],
                               'uncovered':gaps[:64],'uncovered_count':len(gaps),'unreachable_rules':sorted(unreachable),
                               'excluded_by_pi_constraints':True if constraints else False}
-        require(not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
+        require(allow_draft or not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
     presence_unproven=sorted(f['id'] for f in pi_fields.values() if f.get('presence','required')!='required')
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
                        and all(v=='closed' for v in local_coverage_requirements.values())
