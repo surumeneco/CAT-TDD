@@ -80,7 +80,13 @@ def _link(binding,models):
         # An optional producer cannot guarantee a required consumer input.
         f_presence=f.get('presence','required')
         t_presence=t.get('presence','required')
-        presences_ok= f_presence=='required' or t_presence in ('optional','absent')
+        # Presence is independent of type/nullability: a producer's possible
+        # states must be accepted by the consumer, including missing/undefined.
+        states={'required':{'value'},'optional':{'missing','value'},
+                'absent':{'missing'},'undefined':{'undefined'}}
+        if f_presence not in states or t_presence not in states:
+            raise CompositionError('unsupported boundary presence')
+        presences_ok=states[f_presence].issubset(states[t_presence])
         if not matched or not presences_ok:
             raise CompositionError('typed/presence mismatch on '+pair[0]+' -> '+pair[1])
         checks.append({'source_field':f['id'],'target_field':t['id'],
@@ -110,7 +116,6 @@ def compose(model_paths,binding_path=None):
         raise CompositionError('composition model hash mismatch')
     edges=[]
     for model in models.values():edges.extend(_bounds(model))
-    edge_keys={(e['source_process'],e['source_pi'],e['target_process']) for e in edges}
     unresolved=[];proven=[];seen=set()
     for link in binding['links']:
         if not isinstance(link,dict):
@@ -119,7 +124,12 @@ def compose(model_paths,binding_path=None):
         if key in seen:raise CompositionError('duplicate connection link')
         seen.add(key)
         proven.append(_link(link,models))
-    bound_pairs={(x['source_process'],x['source_pi'],x['target_process']) for x in proven}
+    # Each validated link discharges both the sender's outgoing declaration
+    # and the receiver's incoming declaration; neither proves external effects.
+    bound_pairs=set()
+    for x in proven:
+        bound_pairs.add((x['source_process'],x['source_pi'],x['target_process']))
+        bound_pairs.add((x['target_process'],x['target_pi'],x['source_process']))
     for edge in edges:
         key=edge['source_process'],edge['source_pi'],edge['target_process']
         if edge['target_process'] not in models:
