@@ -218,20 +218,44 @@ def compilation_tce_paths(wpath, w, conf, check):
     return result
 
 
+def compilation_paths(wpath, w, conf, plural, singular, check):
+    refs=conf.get(plural) or ([conf[singular]] if conf.get(singular) else [])
+    require(isinstance(refs,list) and all(isinstance(x,str) and x for x in refs),
+            'compilation.'+plural+' must contain paths')
+    result=[]
+    for ref in refs:
+        entry=dict(conf);entry[singular]=ref
+        result.append(compilation_path(wpath,w,entry,singular,check))
+    return result
+
+
+def compilation_pi_paths(wpath,w,conf,check):
+    paths=compilation_paths(wpath,w,conf,'pis','pi',check)
+    require(paths,'at least one compilation PI required')
+    return paths
+
+
+def rule_cli_args(wpath,w,conf,check):
+    args=[]
+    for plural,singular,option in (('common_rules','common_rule','--common-rule'),
+                                   ('domain_specs','domain_spec','--domain-spec')):
+        for path in compilation_paths(wpath,w,conf,plural,singular,check):args.extend([option,path])
+    return args
+
+
 def compile_work(wpath, w, kind, check):
     conf = w.get('compilation')
     require(conf is not None, 'no machine-readable compilation declared')
     require(kind in ('model', 'vectors', 'queue', 'tests'), 'kind must be model, vectors, queue or tests')
-    unsupported = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
-    require(not unsupported, 'normative compiler does not map declared CommonRule/DomainSpec inputs: ' + ', '.join(unsupported))
     def loc(key):
         return compilation_path(wpath, w, conf, key, check)
     argv = [sys.executable, str(ROOT / 'scripts/cat_compile_v2.py'), kind]
     if kind == 'model':
         process = loc('process')
-        pi = loc('pi')
+        pis = compilation_pi_paths(wpath, w, conf, check)
         tces = compilation_tce_paths(wpath, w, conf, check)
-        argv += [process, pi, *tces]
+        argv += [process, pis[0], *tces]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
     else:
         require(conf.get('model'), 'compilation.model missing')
         if kind == 'vectors':
@@ -244,13 +268,16 @@ def compile_work(wpath, w, kind, check):
                     require(conf.get(key), f'compilation.{key} missing')
                 argv += [loc('binding'), '--queue', loc('queue')]
         process = loc('process')
-        pi = loc('pi')
+        pis = compilation_pi_paths(wpath, w, conf, check)
         tces = compilation_tce_paths(wpath, w, conf, check)
-        argv += ['--process', process, '--pi', pi]
+        argv += ['--process', process, '--pi', pis[0]]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
         for tce in tces:
             argv += ['--tce', tce]
     if conf.get('domain_rule'):
         argv += ['--domain-rule', loc('domain_rule')]
+    argv += rule_cli_args(wpath,w,conf,check)
+    if conf.get('allow_partial',True):argv.append('--allow-partial')
     output_key = {'model':'model','vectors':'vectors','queue':'queue','tests':'tests_output'}[kind]
     argv += ['-o', loc(output_key)]
     if conf['allow_draft']:
@@ -354,6 +381,10 @@ def conformance_input_hashes(wpath, w, kind):
             continue
         path = Path(compilation_path(wpath, w, conf, key, True))
         result[key] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    for plural,singular in (('pis','pi'),('common_rules','common_rule'),('domain_specs','domain_spec')):
+        for index, raw in enumerate(compilation_paths(wpath, w, conf, plural, singular, True), 1):
+            path=Path(raw)
+            result[singular+':'+str(index)]={'path':str(path),'sha256':sha(path.read_bytes())}
     for index, raw in enumerate(compilation_tce_paths(wpath, w, conf, True), 1):
         path = Path(raw)
         result['tce:' + str(index)] = {'path': str(path), 'sha256': sha(path.read_bytes())}
@@ -410,10 +441,6 @@ def conformance_work(wpath, w, kind):
     require(kind in CONFORMANCE_GATES, 'unknown conformance gate')
     conf = w.get('compilation')
     require(conf is not None, 'conformance requires Compilation inputs')
-    unmapped = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
-    if unmapped:
-        return {'gate': kind, 'status': 'blocked',
-                'reason': 'declared CommonRule/DomainSpec semantics are not mapped by the normative compiler: ' + ', '.join(unmapped)}
     if kind == 'process-closure':
         if len(w['scope']['process_ids']) != 1:
             return {'gate':kind,'status':'inconclusive',
@@ -422,12 +449,19 @@ def conformance_work(wpath, w, kind):
         runtime.mkdir(parents=True, exist_ok=True)
         def loc(key): return compilation_path(wpath, w, conf, key, False)
         tces = compilation_tce_paths(wpath, w, conf, True)
-        argv=[sys.executable,str(ROOT/'scripts/cat_compile_v2.py'),'model',loc('process'),loc('pi'),*tces]
+        pis=compilation_pi_paths(wpath,w,conf,True)
+        argv=[sys.executable,str(ROOT/'scripts/cat_compile_v2.py'),'model',loc('process'),pis[0],*tces]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
+        argv+=rule_cli_args(wpath,w,conf,True)
+        argv+=['--allow-partial']
         if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
         argv += ['-o',str(runtime/'process-closure.model.json')]
         p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
         if p.returncode == 0:
             model = read_json(runtime/'process-closure.model.json')
+            if model.get('status')!='confirmed' or model.get('unverified_rule_ids') or model.get('unresolved_domains') or model.get('presence_unproven') or model.get('unresolved_interfaces'):
+                return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
+                        'reason':'model has partial, unverified, unresolved or non-confirmed normative inputs'}
             if model.get('coverage_requirement') != 'closed':
                 return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
                         'reason':'local TCE coverage is partial; assembled Process closure requires additional deterministic or review evidence'}
@@ -443,7 +477,10 @@ def conformance_work(wpath, w, kind):
     if kind == 'model-conformance':
         require(conf.get('model'), 'model-conformance requires Compilation Model')
         def loc(key): return compilation_path(wpath, w, conf, key, True)
-        argv=[sys.executable,str(ROOT/'scripts/cat_model_conformance.py'),loc('process'),loc('pi'),loc('model')]
+        pis=compilation_pi_paths(wpath,w,conf,True)
+        argv=[sys.executable,str(ROOT/'scripts/cat_model_conformance.py'),loc('process'),pis[0],loc('model')]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
+        argv+=rule_cli_args(wpath,w,conf,True)
         for tce in compilation_tce_paths(wpath, w, conf, True):
             argv += ['--tce', tce]
         if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
