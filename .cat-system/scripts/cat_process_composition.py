@@ -28,14 +28,15 @@ def _bounds(model):
         if not isinstance(peers,list) or any(not isinstance(x,str) or not x for x in peers):
             raise CompositionError('invalid PI peer specification')
         for peer in peers:
-            out.append({'source_process':model['process'],'source_pi':bound['artifact'],
-                        'target_process':peer,'direction':bound['direction']})
+            directions=('send','receive') if bound['direction']=='bidirectional' else (bound['direction'],)
+            for direction in directions:
+                out.append({'source_process':model['process'],'source_pi':bound['artifact'],
+                            'target_process':peer,'direction':direction})
     return out
 
 def _bound(model,pi,peer,direction):
     return any(x['source_pi']==pi and x['target_process']==peer and
-               x['direction'] in ('bidirectional',direction)
-               for x in _bounds(model))
+               x['direction']==direction for x in _bounds(model))
 
 def _field(model,id_,role):
     entries=[f for f in model.get('fields',[]) if f.get('id')==id_ and f.get('role')==role]
@@ -120,7 +121,8 @@ def compose(model_paths,binding_path=None):
     for link in binding['links']:
         if not isinstance(link,dict):
             raise CompositionError('link record required')
-        key=(link.get('source_process'),link.get('source_pi'),link.get('target_process'))
+        key=(link.get('source_process'),link.get('source_pi'),link.get('target_process'),
+             link.get('target_pi'),link.get('source_operation'),link.get('target_operation'))
         if key in seen:raise CompositionError('duplicate connection link')
         seen.add(key)
         proven.append(_link(link,models))
@@ -128,10 +130,10 @@ def compose(model_paths,binding_path=None):
     # and the receiver's incoming declaration; neither proves external effects.
     bound_pairs=set()
     for x in proven:
-        bound_pairs.add((x['source_process'],x['source_pi'],x['target_process']))
-        bound_pairs.add((x['target_process'],x['target_pi'],x['source_process']))
+        bound_pairs.add((x['source_process'],x['source_pi'],x['target_process'],'send'))
+        bound_pairs.add((x['target_process'],x['target_pi'],x['source_process'],'receive'))
     for edge in edges:
-        key=edge['source_process'],edge['source_pi'],edge['target_process']
+        key=edge['source_process'],edge['source_pi'],edge['target_process'],edge['direction']
         if edge['target_process'] not in models:
             unresolved.append({**edge,'reason':'peer outside assembled Process set'})
         elif key not in bound_pairs:
