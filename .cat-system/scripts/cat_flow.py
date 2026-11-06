@@ -448,11 +448,15 @@ def conformance_work(wpath, w, kind):
         runtime = wpath.parent / '.cat-flow' / 'cache'
         runtime.mkdir(parents=True, exist_ok=True)
         def loc(key): return compilation_path(wpath, w, conf, key, False)
-        tces = compilation_tce_paths(wpath, w, conf, True)
-        pis=compilation_pi_paths(wpath,w,conf,True)
+        try:
+            tces = compilation_tce_paths(wpath, w, conf, True)
+            pis=compilation_pi_paths(wpath,w,conf,True)
+            rules=rule_cli_args(wpath,w,conf,True)
+        except Blocked as exc:
+            return {'gate':kind,'status':'blocked','reason':str(exc)}
         argv=[sys.executable,str(ROOT/'scripts/cat_compile_v2.py'),'model',loc('process'),pis[0],*tces]
         for pi in pis[1:]:argv+=['--pi-extra',pi]
-        argv+=rule_cli_args(wpath,w,conf,True)
+        argv+=rules
         argv+=['--allow-partial']
         if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
         argv += ['-o',str(runtime/'process-closure.model.json')]
