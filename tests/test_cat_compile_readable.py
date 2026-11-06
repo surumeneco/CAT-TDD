@@ -176,6 +176,21 @@ class ReadableArtifactTests(unittest.TestCase):
             self.assertEqual(failed['status'],'blocked')
             self.assertIn('operation_owners',failed['mismatches'])
 
+    def test_model_conformance_rejects_interface_field_owned_by_wrong_pi(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            process,pi,tce=write_v2(root,False)
+            model=load(process,pi,tce,allow_draft=True)
+            model_path=root/'TestModel.json'
+            model_path.write_text(json.dumps(model),encoding='utf-8')
+            self.assertEqual(conformance.validate(process,pi,[tce],model_path,allow_draft=True)['status'],'passed')
+            field=next(f for f in model['fields'] if f['role']=='input')
+            field['source_pi']='unrelated.pi'
+            model_path.write_text(json.dumps(model),encoding='utf-8')
+            result=conformance.validate(process,pi,[tce],model_path,allow_draft=True)
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('field_owners',result['mismatches'])
+
     def test_model_conformance_rejects_duplicate_json_inventories(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)
