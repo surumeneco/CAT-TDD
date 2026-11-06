@@ -886,7 +886,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,
 
 
 
-    strict_closure=p['closed_world'] and all(x=='closed' for x in local_coverage_requirements.values())
+    strict_closure=bool(p['closed_world'])
     if verifier_contracts_path:
         try:plan=vc.inspect_contracts(verifier_contracts_path,{x['id'] for x in normative_rules},strict=False)
         except (vc.ContractError,ValueError) as exc:raise Blocked('verifier contracts: '+str(exc)) from exc
@@ -943,7 +943,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,
         hashes[key]=digest
     authority={'markdown-v2':'cat-markdown/v2','markdown-v1':'cat-markdown/v1','machine-only':'cat-machine/v2'}[contract]
     normative_model = (all(fm['status']=='confirmed' for _,fm in files) and coverage_proved
-                       and p['closed_world'] and all(v=='closed' for v in local_coverage_requirements.values())
+                       and p['closed_world']
                        and not normative_rules and not normative_sections and not relational_constraints
                        and all(st.is_fully_interpreted(f['domain']) for f in fields.values()))
     result={'schema':M,'process':p['process'],'status':('confirmed' if normative_model else 'draft'),
@@ -952,7 +952,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,
             'source_records':source_records,
             'source_sha256':hashes,'triggers':p['triggers'],'fields':list(fields.values()),'pi_constraints':constraints,
             **({'relational_constraints':relational_constraints} if relational_constraints else {}),
-            'definitions':list(definitions.values()),'coverage_requirement':('closed' if p['closed_world'] and all(v=='closed' for v in local_coverage_requirements.values()) else 'partial'),
+            'definitions':list(definitions.values()),'coverage_requirement':('closed' if p['closed_world'] else 'partial'),
             'local_coverage_requirements':local_coverage_requirements,
             'coverage_checks':per_trigger,'rules':rules,
             'model_type':'symbolic-relation','limits':['finite-guard-closure-only','no-general-reachability-proof','no-process-composition']}
