@@ -169,10 +169,10 @@ def evaluate(model_file,registry_file):
             raise VerifierError('duplicate assertion ID')
         if 'runner' in e:
             observed,state,reason=_run(e,root,path,fixture['sha256'])
-        elif subject in ('static','structural'):
-            observed,state,reason=json.loads(fixture_bytes),'passed','deterministic structural fixture check'
         else:
-            observed,state,reason=None,'not-run','external verifier requires a bound runner'
+            # A fixture is authored input, not independently observed evidence.
+            # Even static/structural rules need an executable, pinned verifier.
+            observed,state,reason=None,'not-run','verifier requires an executable, hash-bound runner'
         checks=[assertion(a,observed) for a in assertions] if state=='passed' else []
         if state=='passed' and any(c['status']=='failed' for c in checks):
             state,reason='failed','one or more deterministic assertions failed'
