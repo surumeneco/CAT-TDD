@@ -22,28 +22,26 @@ def item(identifier, category, source_ref, method):
     }
 
 
-def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()):
-    model = load(process_path, pi_path, tce_paths, domain_path, allow_draft=False)
-    pf, process = read_artifact(process_path, 'process', False)
-    pif, pi = read_artifact(pi_path, 'pi', False)
+def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=(),
+             common_rules=(), domain_specs=(), allow_draft=False, verifier_contracts=None):
+    pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
+    model = load(process_path, pi_paths, tce_paths, domain_path, allow_draft=allow_draft,
+                 common_rule_paths=common_rules,domain_spec_paths=domain_specs,
+                 verifier_contracts_path=verifier_contracts)
+    pf, process = read_artifact(process_path, 'process', allow_draft)
+    pis=[read_artifact(path,'pi',allow_draft) for path in pi_paths]
+    pif,pi=pis[0]
     obligations = []
 
-    operations = pi.get('operations', [])
-    if operations:
-        for op in operations:
-            obligations.append(item(
-                'interface.' + op['id'],
-                'interface',
-                pif['id'] + '#' + op['id'],
-                'technology-inspector:public-interface',
-            ))
-    else:
-        obligations.append(item(
-            'interface.boundary',
-            'interface',
-            pif['id'],
-            'technology-inspector:public-interface',
-        ))
+    for fm,pispec in pis:
+        operations=pispec.get('operations',[])
+        if operations:
+            for op in operations:
+                obligations.append(item('interface.'+op['id'],'interface',
+                                        fm['id']+'#'+op['id'],'technology-inspector:public-interface'))
+        else:
+            obligations.append(item('interface.'+fm['id'],'interface',fm['id'],
+                                    'technology-inspector:public-interface'))
 
     capabilities = list(process.get('observations', [])) + list(process.get('actions', []))
     for cap in capabilities:
@@ -76,13 +74,12 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
                 'generated-test-frame',
             ))
 
-    boundary = pi.get('boundary')
-    obligations.append(item(
-        'cross-process.boundary',
-        'cross-process',
-        pif['id'] + (('#' + boundary['peer']) if boundary else ''),
-        'integration-contract',
-    ))
+    for fm,pispec in pis:
+        for boundary in pispec.get('boundaries',[pispec.get('boundary')]):
+            if boundary is None:continue
+            obligations.append(item('cross-process.'+fm['id']+'.'+boundary['peer'],
+                                    'cross-process',fm['id']+'#'+boundary['peer'],
+                                    'integration-contract'))
 
     if model.get('definitions'):
         for definition in model['definitions']:
@@ -100,6 +97,30 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
             'model-conformance',
         ))
 
+    # Do not turn an authored normative rule, opaque type or external effect
+    # into a passing implementation obligation without a bound verifier result.
+    for rule in model.get('normative_rules',[]):
+        ob=item('domain.rule.'+rule['id'],'domain',
+                rule['source_artifact']+'#'+rule['id'],'verifier-contract:'+rule['id'])
+        ob['requirement']=rule['requirement']
+        ob['verifier_hint']=rule['verifier_hint']
+        ob['limitation']='authored rule mapping is not independent execution evidence'
+        obligations.append(ob)
+    for sec in model.get('normative_sections',[]):
+        ob=item('domain.section.'+sec['source_artifact']+'.'+sec['sha256'][:16],'domain',
+                sec['source_artifact']+'#'+sec['sha256'],'normative-section-verifier')
+        ob['limitation']='uninterpreted normative clause; no verified semantic translation'
+        obligations.append(ob)
+    for typ in model.get('type_obligations',[]):
+        ob=item('domain.type.'+typ['field'],'domain',pf['id']+'#'+typ['field'],'type-schema-verifier')
+        ob['limitation']='opaque type requires a concrete semantic schema'
+        obligations.append(ob)
+    if model.get('rule_conflicts'):
+        for issue in model['rule_conflicts']:
+            ob=item('domain.conflict.'+issue['rule_id'],'domain',
+                    ','.join(issue['sources']),'conflict-resolution-authority')
+            ob['limitation']='normative conflict is not resolved by an AI/compiler default'
+            obligations.append(ob)
     techs = sorted(set(technologies))
     if techs:
         for tech in techs:
@@ -124,6 +145,9 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
         'process': model['process'],
         'source_sha256': {x['id']: x['sha256'] for x in source_records},
         'model_semantic_authority': model.get('semantic_authority'),
+        'model_status':model.get('status'),
+        'coverage_requirement':model.get('coverage_requirement'),
+        'nonartifact_source_sha256':model.get('nonartifact_source_sha256',{}),
         'items': obligations,
     }
 
@@ -210,12 +234,18 @@ def main(argv=None):
     ap.add_argument('pi')
     ap.add_argument('tce', nargs='+')
     ap.add_argument('--domain-rule')
+    ap.add_argument('--pi',dest='extra_pi',action='append',default=[])
+    ap.add_argument('--common-rule',action='append',default=[])
+    ap.add_argument('--domain-spec',action='append',default=[])
+    ap.add_argument('--verifier-contracts')
+    ap.add_argument('--allow-draft',action='store_true')
     ap.add_argument('--technology', action='append', default=[])
     ap.add_argument('-o', '--output', required=True)
     ap.add_argument('--check', action='store_true')
     args = ap.parse_args(argv)
     try:
-        result = generate(args.process, args.pi, args.tce, args.domain_rule, args.technology)
+        result = generate(args.process, [args.pi,*args.extra_pi], args.tce, args.domain_rule, args.technology,
+                          args.common_rule,args.domain_spec,args.allow_draft,args.verifier_contracts)
         content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + '\n'
         path = Path(args.output)
         if args.check:
