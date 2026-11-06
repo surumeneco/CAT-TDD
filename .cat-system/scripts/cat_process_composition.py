@@ -38,10 +38,12 @@ def _bound(model,pi,peer,direction):
     return any(x['source_pi']==pi and x['target_process']==peer and
                x['direction']==direction for x in _bounds(model))
 
-def _field(model,id_,role):
-    entries=[f for f in model.get('fields',[]) if f.get('id')==id_ and f.get('role')==role]
+def _field(model,id_,role,pi):
+    entries=[f for f in model.get('fields',[])
+             if f.get('id')==id_ and f.get('role')==role and f.get('source_pi')==pi]
     if len(entries)!=1:
-        raise CompositionError('missing/ambiguous '+role+' field '+id_+' in '+model['process'])
+        raise CompositionError('missing/ambiguous '+role+' field '+id_+
+                               ' owned by PI '+pi+' in '+model['process'])
     return entries[0]
 
 def _operation(model,id_,source_pi,role):
@@ -142,8 +144,8 @@ def _link(binding,models):
         pair=(mapping['source_field'],mapping['target_field'])
         if pair in seen:raise CompositionError('duplicate field binding')
         seen.add(pair)
-        f=_field(source,pair[0],'output')
-        t=_field(target,pair[1],'input')
+        f=_field(source,pair[0],'output',a)
+        t=_field(target,pair[1],'input',b)
         inclusion=_type_subset(f['domain'],t['domain'])
         f_presence=f.get('presence','required')
         t_presence=t.get('presence','required')
