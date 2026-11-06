@@ -705,6 +705,15 @@ def used_refs(expr, definitions, result=None, stack=()):
             used_refs(definitions[n]['body'],definitions,result,stack+(n,))
     return result
 
+def _unresolved_domain(d):
+    t=d['type']
+    if t=='record':
+        return not d.get('resolved',False) or any(_unresolved_domain(f['domain']) for f in d.get('fields',[]))
+    if t in ('set','sequence'):return isinstance(d['element'],dict) and _unresolved_domain(d['element'])
+    if t=='nullable':return _unresolved_domain(d['of'])
+    if t=='union':return any(_unresolved_domain(x) for x in d['variants'])
+    return False
+
 def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
     pf,p=read_artifact(process_path,'process',allow_draft)
     pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
@@ -747,51 +756,61 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
         check_keys(t,['id','origin'],where='Trigger');semantic_ident(t['id'],'Trigger');require(isinstance(t['origin'],str) and t['origin'],'Trigger origin required')
     unique([t['id'] for t in p['triggers']],'Triggers')
 
-    if contract=='markdown-v2':
-        require(pif['id'] in p.get('interfaces',[]),'Process Interfaces/境界 must reference loaded PI artifact')
-        require(len(p.get('interfaces',[]))==len(set(p.get('interfaces',[]))),'duplicate Process Interface reference')
-        check_keys(pi,['schema','kind','process','boundary','fields','operations'],['constraints'],where='PI')
-        check_keys(pi['boundary'],['peer','direction'],where='PI boundary')
-        require(ID.fullmatch(pi['boundary']['peer']) is not None,'PI peer process must use stable Process ID')
-        require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
-        require(isinstance(pi['operations'],list),'PI operations must be array')
-        for op in pi['operations']:
-            check_keys(op,['id','direction','trigger'],where='PI operation')
-            semantic_ident(op['id'],'PI operation ID')
-            require(op['direction'] in ('accept','provide'),'PI operation direction invalid')
-            if op['direction']=='accept':
-                require(op['trigger'] in {t['id'] for t in p['triggers']},'accepted PI operation must reference declared Process trigger')
-            elif op['trigger'] is not None:
-                require(op['trigger'] in {t['id'] for t in p['triggers']},'PI operation trigger undeclared')
-    else:
-        check_keys(pi,['schema','kind','process','fields'],['constraints'],where='PI')
-
-    require(isinstance(pi['fields'],list) and pi['fields'],'PI fields required')
     fields={}
-    for field in pi['fields']:
+    pi_fields={}
+    constraints=[]
+    pi_operations=[]
+    for _,pif,pi in pi_docs:
         if contract=='markdown-v2':
-            check_keys(field,['id','role','direction','presence','domain'],where='PI field')
-            require(field['role'] in ('input','output'),'markdown-v2 PI field role must be boundary input/output')
-            require(field['direction'] in ('receive','send'),'PI field direction invalid')
-            require(field['presence'] in ('required','optional','absent','undefined'),'PI field presence invalid')
-            # Non-required presence is retained; closure proof remains conditional until
-            # operation-specific fixtures cover missing, null, and undefined distinctly.
-            semantic_ident(field['id'],'PI field')
+            require(pif['id'] in p.get('interfaces',[]),'Process Interfaces must reference loaded PI '+pif['id'])
+            check_keys(pi,['schema','kind','process','boundary','fields','operations'],['constraints'],where='PI')
+            check_keys(pi['boundary'],['peer','direction'],['peers'],where='PI boundary')
+            require(all(ID.fullmatch(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
+                    'PI peer process must use stable Process IDs')
+            require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
+            require(isinstance(pi['operations'],list),'PI operations must be array')
+            for op in pi['operations']:
+                check_keys(op,['id','direction','trigger'],where='PI operation')
+                semantic_ident(op['id'],'PI operation ID')
+                require(op['direction'] in ('accept','provide'),'PI operation direction invalid')
+                if op['direction']=='accept':
+                    require(op['trigger'] in {t['id'] for t in p['triggers']},'accepted PI operation must reference Process trigger')
+                elif op['trigger'] is not None:
+                    require(op['trigger'] in {t['id'] for t in p['triggers']},'PI operation trigger undeclared')
+            pi_operations.extend(dict(op, source_pi=pif['id']) for op in pi['operations'])
         else:
-            check_keys(field,['id','role','domain'],where='PI field')
-            ident(field['id'],'PI field');require(field['role'] in ('input','state','output'),'PI field role invalid')
-            require(field['id'].startswith(field['role']+'.'),'markdown-v1 PI field ID must start with role')
-        require(field['id'] not in fields,'duplicate PI field')
-        validate_domain(field['domain']);fields[field['id']]=field
-
-    pi_fields=dict(fields)
-
+            check_keys(pi,['schema','kind','process','fields'],['constraints'],where='PI')
+        require(isinstance(pi['fields'],list) and pi['fields'],'PI fields required')
+        for field in pi['fields']:
+            if contract=='markdown-v2':
+                check_keys(field,['id','role','direction','presence','domain'],where='PI field')
+                require(field['role'] in ('input','output'),'PI field role invalid')
+                require(field['direction'] in ('receive','send'),'PI field direction invalid')
+                require(field['presence'] in ('required','optional','absent','undefined'),'PI field presence invalid')
+                semantic_ident(field['id'],'PI field')
+            else:
+                check_keys(field,['id','role','domain'],where='PI field')
+                ident(field['id'],'PI field');require(field['role'] in ('input','state','output'),'PI field role invalid')
+                require(field['id'].startswith(field['role']+'.'),'PI field ID must start with role')
+            require(field['id'] not in fields,'duplicate PI field '+field['id'])
+            validate_domain(field['domain'])
+            fields[field['id']]=field
+            pi_fields[field['id']]=field
+        if contract=='markdown-v2':
+            dirs={f['direction'] for f in pi['fields']}
+            if pi['boundary']['direction']=='receive':
+                require(dirs <= {'receive'},'receive-only PI boundary cannot contain send fields')
+            elif pi['boundary']['direction']=='send':
+                require(dirs <= {'send'},'send-only PI boundary cannot contain receive fields')
+        cs=pi.get('constraints',[])
+        require(isinstance(cs,list),'PI constraints must be array')
+        constraints.extend(cs)
     if contract=='markdown-v2':
-        dirs={f['direction'] for f in pi['fields']}
-        if pi['boundary']['direction']=='receive':
-            require(dirs <= {'receive'},'receive-only PI boundary cannot contain send fields')
-        elif pi['boundary']['direction']=='send':
-            require(dirs <= {'send'},'send-only PI boundary cannot contain receive fields')
+        require(len(p.get('interfaces',[]))==len(set(p.get('interfaces',[]))),'duplicate Process Interface reference')
+        require({fm['id'] for _,fm,_ in pi_docs} <= set(p.get('interfaces',[])),
+                'compiled PI not declared in Process interfaces')
+        unresolved_interfaces=sorted(set(p.get('interfaces',[]))-{fm['id'] for _,fm,_ in pi_docs})
+        unique([op['id'] for op in pi_operations], 'assembled PI operations')
 
     if contract=='markdown-v2':
         for name,items,role,extra in (
@@ -806,8 +825,6 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
                 require(field['id'] not in fields,f'duplicate specification field {field["id"]}')
                 validate_domain(field['domain']);fields[field['id']]=field
 
-    constraints=pi.get('constraints',[])
-    require(isinstance(constraints,list),'PI constraints must be array')
     definitions={}
     if domain:
         check_keys(domain,['schema','kind','process','definitions'],where='DomainRule')
@@ -891,10 +908,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
                               'uncovered':gaps[:64],'uncovered_count':len(gaps),'unreachable_rules':sorted(unreachable),
                               'excluded_by_pi_constraints':True if constraints else False}
         require(not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
-    presence_unproven=sorted(f['id'] for f in pi['fields'] if f.get('presence','required')!='required')
+    presence_unproven=sorted(f['id'] for f in pi_fields.values() if f.get('presence','required')!='required')
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
                        and all(v=='closed' for v in local_coverage_requirements.values())
-                       and not presence_unproven)
+                       and not presence_unproven and not (unresolved_interfaces if contract=='markdown-v2' else []))
     if not coverage_proved:
         require(allow_draft,
                 'assembled Process closed-world coverage requirement not proved: '+json.dumps({'closed_world':p['closed_world'],'tce':local_coverage_requirements,'presence':presence_unproven,'triggers':per_trigger},ensure_ascii=False)[:700])
@@ -907,7 +924,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
         key=fm['kind'] if fm['kind'] not in hashes else fm['kind']+':'+fm['id']
         hashes[key]=digest
     authority={'markdown-v2':'cat-markdown/v2','markdown-v1':'cat-markdown/v1','machine-only':'cat-machine/v2'}[contract]
-    normative_model = all(fm['status']=='confirmed' for _,fm in files) and coverage_proved
+    unresolved_domains=sorted(x['id'] for x in fields.values() if _unresolved_domain(x['domain']))
+    normative_model = all(fm['status']=='confirmed' for _,fm in files) and coverage_proved and not unresolved_domains
     result={'schema':M,'process':p['process'],'status':('confirmed' if normative_model else 'draft'),
             'semantic_authority':authority,'language':tf.get('language','en') if contract=='markdown-v2' else 'en',
             'source_artifacts':[fm['id'] for _,fm in files],
@@ -919,6 +937,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             'model_type':'symbolic-relation','limits':['finite-guard-closure-only','no-general-reachability-proof','no-process-composition']}
     result['coverage_claim']='closed' if coverage_proved else 'partial'
     result['presence_unproven']=presence_unproven
+    result['unresolved_domains']=unresolved_domains
+    result['unresolved_interfaces']=unresolved_interfaces if contract=='markdown-v2' else []
+    result['pi_artifacts']=[fm['id'] for _,fm,_ in pi_docs]
     tce_map=[]
     for _,tce_fm,_ in tce_docs:
         owned=[x for x in rules if x.get('source_artifact')==tce_fm['id']]
@@ -934,16 +955,19 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             'observations':[x['id'] for x in p.get('observations',[])],
             'actions':[x['id'] for x in p.get('actions',[])]},
         'pi':{
-            'artifact':pif['id'],
-            'fields':[x['id'] for x in pi['fields']],
-            'operations':[x['id'] for x in pi.get('operations',[])],
+            'artifact':pif['id'] if len(pi_docs)==1 else None,
+            'artifacts':[fm['id'] for _,fm,_ in pi_docs],
+            'fields':list(pi_fields),
+            'operations':[x['id'] for x in pi_operations],
             'constraint_count':len(constraints)},
         'tce':tce_map,
         'domain_rule':{
             'artifact':dfile['id'] if dfile else None,
             'definitions':sorted(definitions)}}
     if contract=='markdown-v2':
-        result['pi_boundary']=pi['boundary'];result['pi_operations']=pi['operations'];result['process_interfaces']=p.get('interfaces',[])
+        result['pi_boundary']=pi_docs[0][2]['boundary'] if len(pi_docs)==1 else None
+        result['pi_boundaries']=[{'artifact':fm['id'],**spec['boundary']} for _,fm,spec in pi_docs]
+        result['pi_operations']=pi_operations;result['process_interfaces']=p.get('interfaces',[])
     if contract in ('markdown-v1','markdown-v2'):result['normalized_ir']='cat-machine/v2'
     return result
 
@@ -1226,14 +1250,14 @@ def write(path,content,check):
 def main(argv=None):
     cli=argparse.ArgumentParser(description=__doc__)
     sub=cli.add_subparsers(dest='command',required=True)
-    m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
-    v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',required=True);v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
-    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
-    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
+    m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('--pi-extra',action='append',default=[]);m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
+    v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',required=True);v.add_argument('--pi-extra',action='append',default=[]);v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
+    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--pi-extra',action='append',default=[]);q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
+    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--pi-extra',action='append',default=[]);t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
     args=cli.parse_args(argv)
     try:
         if args.command=='model':
-            result=load(args.process,args.pi,args.tce,args.domain_rule,args.allow_draft)
+            result=load(args.process,[args.pi,*getattr(args,'pi_extra',[])],args.tce,args.domain_rule,args.allow_draft)
             write(args.output,_model_content(result,args.output),args.check)
         else:
             fresh=load(args.process,args.pi,args.tce,args.domain_rule,args.allow_draft)
