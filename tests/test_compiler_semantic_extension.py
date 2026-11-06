@@ -9,6 +9,7 @@ from catlib import semantic_types as types
 from catlib import verifier_contracts as v
 import cat_compile_v2 as compiler
 import cat_compose
+import cat_verifier_gate
 
 
 class RecursiveDomainTests(unittest.TestCase):
@@ -160,6 +161,59 @@ class CompositionTests(unittest.TestCase):
             result=cat_compose.compose([a,b])
             self.assertEqual(result['status'],'blocked')
             self.assertGreater(len(result['conflicts']),0)
+
+
+class VerifierGateTests(unittest.TestCase):
+    def test_static_fixture_pass_is_bound_to_rule_source_and_capability(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            fixture=root/'fixture.json';fixture.write_text('{"count":2}')
+            source_sha='c'*64
+            model={'schema':'cat-test-model/v2','process':'sample',
+                   'status':'confirmed','coverage_requirement':'closed',
+                   'source_records':[{'id':'rule.artifact','sha256':source_sha}],
+                   'normative_rules':[{'id':'rule.one','source_artifact':'rule.artifact'}],
+                   'normative_sections':[],'rule_conflicts':[],'type_obligations':[]}
+            registry={'schema':'cat-verifier-registry/v1','entries':[
+                {'rule_id':'rule.one','capability':'source-structure','requirement':'count=2',
+                 'execution':{'adapter':'json-equals','fixture':'fixture.json','expected':{'count':2}}}]}
+            mp=root/'model.json';rp=root/'registry.json'
+            mp.write_text(json.dumps(model));rp.write_text(json.dumps(registry))
+            result=cat_verifier_gate.evaluate(mp,rp,fixture_root=root)
+            self.assertEqual(result['status'],'passed')
+            self.assertEqual(result['outcomes'][0]['source_sha256'],source_sha)
+            self.assertEqual(result['outcomes'][0]['fixture_sha256'],hashlib.sha256(fixture.read_bytes()).hexdigest())
+            registry['entries'][0]['capability']='discord-delivery'
+            rp.write_text(json.dumps(registry))
+            result=cat_verifier_gate.evaluate(mp,rp,fixture_root=root)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertNotEqual(result['outcomes'][0]['status'],'passed')
+
+    def test_partial_model_cannot_upgrade_even_with_static_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);fixture=root/'hello.txt';fixture.write_text('hello')
+            model={'schema':'cat-test-model/v2','process':'p','status':'draft',
+                   'coverage_requirement':'partial','source_records':[{'id':'a','sha256':'a'*64}],
+                   'normative_rules':[{'id':'r','source_artifact':'a'}],
+                   'normative_sections':[],'rule_conflicts':[],'type_obligations':[]}
+            reg={'schema':'cat-verifier-registry/v1','entries':[
+                 {'rule_id':'r','capability':'source-structure','requirement':'contains hello',
+                  'execution':{'adapter':'text-contains','fixture':'hello.txt','expected':'hello'}}]}
+            mp=root/'model.json';rp=root/'reg.json';mp.write_text(json.dumps(model));rp.write_text(json.dumps(reg))
+            self.assertEqual(cat_verifier_gate.evaluate(mp,rp,fixture_root=root)['status'],'inconclusive')
+            reg['entries'][0]['execution']['fixture']='../outside.txt';rp.write_text(json.dumps(reg))
+            outcome=cat_verifier_gate.evaluate(mp,rp,fixture_root=root)['outcomes'][0]
+            self.assertEqual(outcome['status'],'failed')
+
+    def test_missing_registry_cannot_erase_rules(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'model.json';p.write_text(json.dumps({'schema':'cat-test-model/v2',
+              'process':'p','status':'confirmed','coverage_requirement':'closed',
+              'source_records':[{'id':'a','sha256':'a'*64}],
+              'normative_rules':[{'id':'r','source_artifact':'a'}]}))
+            result=cat_verifier_gate.evaluate(p)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertEqual(result['outcomes'][0]['status'],'not-run')
 
 
 if __name__=='__main__':unittest.main()
