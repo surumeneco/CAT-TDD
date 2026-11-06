@@ -28,7 +28,7 @@ class RuleVerifierTests(unittest.TestCase):
                'fixture':{'path':'fixture.json','sha256':sha(fixture_data)},
                'assertions':[{'id':'delivery','path':'message.delivered','op':'eq','expected':True}]}
         if runner:
-            code="import json,sys,hashlib\np=sys.argv[1]\na=open(p,'rb').read()\nprint(json.dumps({'schema':'cat-verifier-observation/v1','rule_id':'demo.rule','subject':'discord','fixture_sha256':hashlib.sha256(a).hexdigest(),'observed':json.loads(a)}))\n"
+            code="import json,sys,hashlib\np=sys.argv[1]\na=open(p,'rb').read()\nprint(json.dumps({'schema':'cat-verifier-observation/v1','rule_id':'demo.rule','subject':"+repr(subject)+",'fixture_sha256':hashlib.sha256(a).hexdigest(),'observed':json.loads(a)}))\n"
             (root/'runner.py').write_text(code,encoding='utf-8')
             entry['runner']={'type':'python-json-v1','path':'runner.py',
                              'sha256':sha(code.encode())}
@@ -40,11 +40,19 @@ class RuleVerifierTests(unittest.TestCase):
     def test_static_fixture_run_produces_traceable_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            model,registry=self.prepare(root)
+            model,registry=self.prepare(root,runner=True)
             result=verifier.evaluate(model,registry)
             self.assertEqual(result['status'],'passed')
             self.assertEqual(result['results'][0]['checks'][0]['status'],'passed')
             self.assertEqual(result['model_sha256'],sha(model.read_bytes()))
+
+    def test_static_fixture_without_runner_is_not_execution_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            model,registry=self.prepare(Path(temp),'static')
+            result=verifier.evaluate(model,registry)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertEqual(result['results'][0]['status'],'not-run')
+            self.assertEqual(result['results'][0]['checks'],[])
 
     def test_external_verifier_without_runner_is_never_passed(self):
         with tempfile.TemporaryDirectory() as temp:
