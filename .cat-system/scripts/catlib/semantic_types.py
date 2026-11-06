@@ -160,8 +160,10 @@ def contains(d,value):
         if not isinstance(value,list) or not all(contains(d['element'],v) for v in value):return False
         return t=='sequence' or len({_signature(v) for v in value})==len(value)
     if t=='record':
-        if not d.get('resolved'):raise DomainError('unresolved record shape')
+        # Record shape is irrelevant for values that cannot be records.
+        # Unknown field schemas are inconclusive only for record-shaped values.
         if type(value) is not dict:return False
+        if not d.get('resolved'):raise DomainError('unresolved record shape')
         if set(value)-{f['id'] for f in d['fields']}:return False
         return all(check_presence(f['domain'],f['presence'],value.get(f['id'],MISSING))[1] for f in d['fields'])
     raise DomainError('cannot validate type '+repr(t))
