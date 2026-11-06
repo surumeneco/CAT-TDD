@@ -1162,7 +1162,7 @@ def format_domain(d, language='en'):
         return names['string']+'<'+fmt+'>'
     if t in ('set','sequence'):
         element=d['element']
-        return f"{names[t]}<{format_domain(element,language) if isinstance(element,dict) else names[element}>"
+        return f"{names[t]}<{format_domain(element,language) if isinstance(element,dict) else names[element]}>"
     if t=='enum':return names['enum']+'{' + ', '.join(_format_literal(v,language) for v in d['values']) + '}'
     if t=='bytes':return 'バイト列' if language=='ja' else 'bytes'
     if t=='real':return ('実数' if language=='ja' else 'real')+('['+str(d.get('min',''))+'..'+str(d.get('max',''))+']' if 'min' in d or 'max' in d else '')
