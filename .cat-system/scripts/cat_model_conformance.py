@@ -330,8 +330,6 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     if Path(model).suffix.lower()=='.json':
         checks += ('pi_boundaries','normative_rule_inputs','rule_obligations','domains','presence')
     for key in checks:
-        # 
-                'constraints', 'definitions', 'rules', 'effects', 'frames'):
         if actual.get(key) != expected.get(key):
             mismatches.append(key)
     return {
