@@ -802,8 +802,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 require(field['id'].startswith(field['role']+'.'),'PI field ID must start with role')
             require(field['id'] not in fields,'duplicate PI field '+field['id'])
             validate_domain(field['domain'])
-            fields[field['id']]=field
-            pi_fields[field['id']]=field
+            # Preserve PI ownership in the compiled TestModel, not just the
+            # flat field name. Cross-Process bindings must not borrow a field
+            # belonging to another PI of the same Process.
+            owned={**field,'source_pi':pif['id']}
+            fields[field['id']]=owned
+            pi_fields[field['id']]=owned
         if contract=='markdown-v2':
             dirs={f['direction'] for f in pi['fields']}
             if pi['boundary']['direction']=='receive':
