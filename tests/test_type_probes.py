@@ -31,6 +31,16 @@ class TypeProbeTests(unittest.TestCase):
         self.assertIn('input.user',d['unresolved_fields'])
         self.assertEqual(d['status'],'candidate')
 
+    def test_unresolved_record_rejects_nonrecords_but_keeps_shape_unknown(self):
+        from catlib import semantic_types as types
+        d={'type':'record','name':'User','resolved':False}
+        self.assertFalse(types.contains(d,None))
+        self.assertFalse(types.contains(d,42))
+        self.assertFalse(types.contains(d,[]))
+        with self.assertRaisesRegex(types.DomainError,'unresolved record shape'):
+            types.contains(d,{'id':1})
+        self.assertTrue(types.contains({'type':'nullable','of':d},None))
+
     def test_sequence_duplicates_differ_from_set_duplicates(self):
         item={'type':'integer'}
         model=self.document([
