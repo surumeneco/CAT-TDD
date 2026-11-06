@@ -68,12 +68,17 @@ def load_many(paths, process, allow_draft=False):
     result=[];ids=set();seen={}
     for path in paths:
         doc=load(path,process,allow_draft)
+        if not doc['scope_verified'] and not allow_draft:
+            raise RuleError('normative rule input outside Process scope: '+doc['id'])
         if doc['id'] in ids:raise RuleError('duplicate rule input '+doc['id'])
         ids.add(doc['id'])
         for rule in doc['rules']:
             prior=seen.get(rule['id'])
-            if prior and (prior['condition'],prior['requirement'])!=(rule['condition'],rule['requirement']):
-                raise RuleError('conflicting rule '+rule['id']+' from '+prior['source_artifact']+' / '+rule['source_artifact'])
+            if prior:
+                keys=('condition','requirement','verification_contract')
+                if any(prior[k]!=rule[k] for k in keys):
+                    raise RuleError('conflicting rule '+rule['id']+' from '+prior['source_artifact']+' / '+rule['source_artifact'])
+                raise RuleError('duplicate normative rule ID '+rule['id']+' in '+prior['source_artifact']+' / '+rule['source_artifact'])
             seen[rule['id']]=rule
         result.append(doc)
     return result
