@@ -21,6 +21,8 @@ from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES
 import cat_queue
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
+import cat_verifier_contracts as verifier_runtime
+import cat_process_composition as composition_runtime
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / 'config' / 'routing.json'
@@ -388,6 +390,25 @@ def conformance_input_hashes(wpath, w, kind):
     for index, raw in enumerate(compilation_tce_paths(wpath, w, conf, True), 1):
         path = Path(raw)
         result['tce:' + str(index)] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    if kind=='process-closure':
+        for key in ('verifier_registry','composition_binding'):
+            if conf.get(key):
+                path=Path(compilation_path(wpath,w,conf,key,True))
+                result[key]={'path':str(path),'sha256':sha(path.read_bytes())}
+        for i,rel in enumerate(conf.get('composition_models',[]),1):
+            entry={**conf,'model':rel}
+            path=Path(compilation_path(wpath,w,entry,'model',True))
+            result['composition_model:'+str(i)]={'path':str(path),'sha256':sha(path.read_bytes())}
+        if conf.get('verifier_registry'):
+            path=Path(compilation_path(wpath,w,conf,'verifier_registry',True))
+            manifest=read_json(path)
+            for i,entry in enumerate(manifest.get('entries',[]),1):
+                for label in ('fixture','runner'):
+                    if not entry.get(label):continue
+                    try:dep=verifier_runtime.resolve(path.parent,entry[label]['path'])
+                    except (verifier_runtime.VerifierError,KeyError,OSError) as exc:
+                        raise Blocked('invalid verifier dependency: '+str(exc)) from exc
+                    result['verifier:'+str(i)+':'+label]={'path':str(dep),'sha256':sha(dep.read_bytes())}
     return result
 
 
@@ -404,6 +425,8 @@ def record_conformance_evidence(wpath, w, kind, result):
         'verdict': result['status'],
         'reason': result.get('reason', ''),
         'supporting_evidence': supporting,
+        'verifier_evidence':result.get('verifier_evidence'),
+        'composition_evidence':result.get('composition_evidence'),
     }
     if kind == 'implementation-conformance':
         payload['repo_state_sha256'] = sha(json_bytes(_repo_state(wpath, w)))
@@ -443,8 +466,24 @@ def conformance_work(wpath, w, kind):
     require(conf is not None, 'conformance requires Compilation inputs')
     if kind == 'process-closure':
         if len(w['scope']['process_ids']) != 1:
-            return {'gate':kind,'status':'inconclusive',
-                    'reason':'current deterministic compiler proves one Process at a time; assembled multi-Process closure requires explicit composition evidence'}
+            if not conf.get('composition_models'):
+                return {'gate':kind,'status':'inconclusive',
+                        'reason':'cross-Process closure requires explicit model collection and typed bindings'}
+            try:
+                paths=[]
+                for rel in conf['composition_models']:
+                    entry={**conf,'model':rel}
+                    paths.append(compilation_path(wpath,w,entry,'model',True))
+                binding=compilation_path(wpath,w,conf,'composition_binding',True) if conf.get('composition_binding') else None
+                composed=composition_runtime.compose(paths,binding)
+            except (composition_runtime.CompositionError,Blocked,ValueError,OSError,KeyError,TypeError) as exc:
+                return {'gate':kind,'status':'blocked','reason':str(exc)}
+            path=wpath.parent/'.cat-flow'/'cache'/'process-composition.json'
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(json_bytes(composed))
+            return {'gate':kind,'status':'inconclusive' if composed['status']=='passed' else composed['status'],
+                    'composition_evidence':str(path),
+                    'reason':'typed composition evidence recorded; independent local Model Conformance and interleaving/effect proofs remain required'}
         runtime = wpath.parent / '.cat-flow' / 'cache'
         runtime.mkdir(parents=True, exist_ok=True)
         def loc(key): return compilation_path(wpath, w, conf, key, False)
@@ -463,8 +502,27 @@ def conformance_work(wpath, w, kind):
         p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
         if p.returncode == 0:
             model = read_json(runtime/'process-closure.model.json')
-            if model.get('status')!='confirmed' or model.get('unverified_rule_ids') or model.get('unresolved_domains') or model.get('presence_unproven') or model.get('unresolved_interfaces'):
+            rule_status='passed'
+            verifier_evidence=None
+            if model.get('unverified_rule_ids'):
+                if not conf.get('verifier_registry'):
+                    rule_status='inconclusive'
+                else:
+                    try:
+                        registry_path=compilation_path(wpath,w,conf,'verifier_registry',True)
+                        verified=verifier_runtime.evaluate(runtime/'process-closure.model.json',registry_path)
+                        verifier_path=runtime/'process-closure-verifiers.json'
+                        verifier_path.write_bytes(json_bytes(verified))
+                        verifier_evidence=str(verifier_path)
+                        rule_status=verified['status']
+                    except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
+                        return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
+            if rule_status=='failed':
+                return {'gate':kind,'status':'blocked','verifier_evidence':verifier_evidence,
+                        'reason':'one or more deterministic normative rule checks failed'}
+            if model.get('status')!='confirmed' or rule_status!='passed' or model.get('unresolved_domains') or model.get('presence_unproven') or model.get('unresolved_interfaces'):
                 return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
+                        'verifier_evidence':verifier_evidence,
                         'reason':'model has partial, unverified, unresolved or non-confirmed normative inputs'}
             if model.get('coverage_requirement') != 'closed':
                 return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
@@ -473,7 +531,8 @@ def conformance_work(wpath, w, kind):
                 return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
                         'reason':'closed-world declaration exists but closure proof is incomplete'}
             return {'gate':kind,'status':'passed','evidence':str(runtime/'process-closure.model.json'),
-                    'reason':'supported finite closed-world coverage compiled and proved from confirmed sources'}
+                    'verifier_evidence':verifier_evidence,
+                    'reason':'supported finite closed-world coverage compiled from confirmed sources and executed rule verifiers'}
         msg=(p.stderr or p.stdout).strip()
         inconclusive_markers=('currently supports','unproven','non-finite','requires a technology','unsupported')
         status='inconclusive' if any(x in msg for x in inconclusive_markers) else 'blocked'
