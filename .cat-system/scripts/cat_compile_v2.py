@@ -19,6 +19,7 @@ import sys
 import tokenize
 
 from catlib.markdown import parse_frontmatter
+from catlib import semantic_types as typed
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -214,7 +215,8 @@ def parse_domain_text(text):
     if m:return {'type':m.group(1),'element':m.group(2)}
     m=re.fullmatch(r'enum\{(.*)\}',text)
     if m:return {'type':'enum','values':[_scalar_token(x) for x in _split_items(m.group(1))]}
-    raise Blocked('unsupported readable domain '+repr(text))
+    try:return typed.parse(text)
+    except typed.DomainError as exc:raise Blocked(str(exc)) from exc
 
 
 def _normalize_expr_language(text):
@@ -242,7 +244,7 @@ def parse_expr_text(text, params=()):
     binary={ast.Add:'add',ast.Sub:'sub',ast.Mult:'mul',ast.Div:'div'}
     def cv(n):
         if isinstance(n,ast.Constant):
-            require(type(n.value) in (str,int,bool,type(None)),'unsupported literal in CAT expression')
+            require(type(n.value) in (str,int,float,bool,type(None)),'unsupported literal in CAT expression')
             return {'literal':n.value}
         if isinstance(n,ast.List):
             vals=[]
@@ -261,7 +263,7 @@ def parse_expr_text(text, params=()):
         if isinstance(n,ast.BoolOp):return {'op':'and' if isinstance(n.op,ast.And) else 'or','args':[cv(x) for x in n.values]}
         if isinstance(n,ast.UnaryOp) and isinstance(n.op,ast.Not):return {'op':'not','args':[cv(n.operand)]}
         if isinstance(n,ast.UnaryOp) and isinstance(n.op,(ast.USub,ast.UAdd)):
-            require(isinstance(n.operand,ast.Constant) and type(n.operand.value) is int,'unary +/- only supported for integer literals')
+            require(isinstance(n.operand,ast.Constant) and type(n.operand.value) in (int,float),'unary +/- requires numeric literal')
             return {'literal':(-n.operand.value if isinstance(n.op,ast.USub) else n.operand.value)}
         if isinstance(n,ast.BinOp):
             op=binary.get(type(n.op));require(op is not None,'unsupported binary CAT operator')
@@ -524,8 +526,11 @@ def read_artifact(path, kind, allow_draft):
     return fm,spec
 
 def validate_domain(d):
+    t=d.get('type')
+    if t not in {'enum','boolean','integer','string','set','sequence'} or (t in ('set','sequence') and isinstance(d.get('element'),dict)):
+        try:return typed.validate(d)
+        except typed.DomainError as exc:raise Blocked(str(exc)) from exc
     check_keys(d,['type'],['values','min','max','format','element'],'domain')
-    t=d['type']; require(t in {'enum','boolean','integer','string','set','sequence'},'unsupported domain type')
     if t=='enum':
         check_keys(d,['type','values'],where='enum domain')
         require(isinstance(d['values'],list) and bool(d['values']), 'enum nonempty values required')
@@ -551,8 +556,7 @@ def safe_integer_text(value):
 
 def same_value(a,b):
     if type(a) is not type(b):return False
-    if isinstance(a,list):return len(a)==len(b) and all(same_value(x,y) for x,y in zip(a,b))
-    return a==b
+    return typed.same(a,b)
 
 def in_domain(d, value):
     t=d['type']
@@ -562,11 +566,14 @@ def in_domain(d, value):
     if t=='string':return isinstance(value,str) and (d.get('format','any')=='any' or safe_integer_text(value))
     if t in ('set','sequence'):
         return isinstance(value,list) and all(type(v) is (str if d['element']=='string' else int) for v in value) and (t!='set' or len(set(value))==len(value))
-    raise Blocked('unknown domain')
+    try:return typed.contains(d,value)
+    except typed.DomainError as exc:raise Blocked(str(exc)) from exc
 
 def literal_type(v):
     if type(v) is bool:return 'boolean'
     if type(v) is int:return 'integer'
+    if type(v) is float:return 'real'
+    if type(v) is dict:return 'record'
     if isinstance(v,str):return 'string'
     if isinstance(v,list):return 'sequence'
     return 'null'
@@ -576,7 +583,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     require(isinstance(expr,dict),'expression must be AST object')
     if 'literal' in expr:
         check_keys(expr,['literal'],where='literal expression')
-        require(type(expr['literal']) in (str,int,bool,list,type(None)), 'unsupported literal type')
+        require(type(expr['literal']) in (str,int,float,bool,list,dict,type(None)), 'unsupported literal type')
         return literal_type(expr['literal'])
     if 'ref' in expr:
         check_keys(expr,['ref'],where='reference expression')
@@ -609,15 +616,16 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     if op in ('eq','ne'):return 'boolean'
     if op in ('lt','le','gt','ge'):types_are({'integer','real'});return 'boolean'
     if op in ('and','or','not'):types_are({'boolean'});return 'boolean'
-    if op in ('add','sub','mul'):types_are({'integer'});return 'integer'
+    if op in ('add','sub','mul'):
+        types_are({'integer','real'});return 'real' if 'real' in types else 'integer'
     if op=='div':
-        types_are({'integer'})
-        require('literal' in args[1] and type(args[1]['literal']) is int and args[1]['literal']!=0,
+        types_are({'integer','real'})
+        require('literal' in args[1] and type(args[1]['literal']) in (int,float) and args[1]['literal']!=0,
                 'div denominator must be a declared nonzero integer literal; dynamic totality is unproved')
         return 'real'
     if op=='floor':types_are({'integer','real'});return 'integer'
-    if op=='abs':types_are({'integer'});return 'integer'
-    if op=='length':types_are({'string','set','sequence'});return 'integer'
+    if op=='abs':types_are({'integer','real'});return types[0]
+    if op=='length':types_are({'string','set','sequence','bytes'});return 'integer'
     if op=='concat':types_are({'string'});return 'string'
     if op in ('set-add','set-remove'):
         require(types[0] in ('set','parameter') and types[1] in ('string','integer','parameter'),
@@ -649,14 +657,14 @@ def eval_expr(expr, env, definitions, params=None):
         if op=='and':return all(type(x) is bool and x for x in xs)
         if op=='or':return any(type(x) is bool and x for x in xs)
         if op=='not':require(type(xs[0]) is bool,'not requires boolean');return not xs[0]
-        if op=='add':require(all(type(x) is int for x in xs),'add requires integer');return sum(xs)
-        if op=='sub':require(type(xs[0]) is int and type(xs[1]) is int,'sub requires integer');return xs[0]-xs[1]
+        if op=='add':require(all(type(x) in (int,float) for x in xs),'add requires number');return sum(xs)
+        if op=='sub':require(all(type(x) in (int,float) for x in xs),'sub requires number');return xs[0]-xs[1]
         if op=='mul':
-            require(all(type(x) is int for x in xs),'mul requires integer')
+            require(all(type(x) in (int,float) for x in xs),'mul requires number')
             a=1
             for x in xs:a*=x
             return a
-        if op=='div':require(type(xs[0]) is int and type(xs[1]) is int and xs[1]!=0,'div requires integers and nonzero divisor');return xs[0]/xs[1]
+        if op=='div':require(all(type(x) in (int,float) for x in xs) and xs[1]!=0,'div requires numbers and nonzero divisor');return xs[0]/xs[1]
         if op=='floor':import math;return math.floor(xs[0])
         if op=='abs':return abs(xs[0])
         if op=='length':return len(xs[0])
@@ -712,7 +720,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
 
     process_optional=['interfaces','state_fields','observations','actions'] if contract=='markdown-v2' else []
     check_keys(p,['schema','kind','process','triggers','closed_world'],process_optional,where='Process')
-    require(p['closed_world'] is True,'Process must declare explicit closed-world contract')
+    require(type(p['closed_world']) is bool,'Process closed_world must be boolean')
     require(isinstance(p['triggers'],list) and p['triggers'],'Process triggers required')
     for t in p['triggers']:
         check_keys(t,['id','origin'],where='Trigger');semantic_ident(t['id'],'Trigger');require(isinstance(t['origin'],str) and t['origin'],'Trigger origin required')
@@ -745,7 +753,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             require(field['role'] in ('input','output'),'markdown-v2 PI field role must be boundary input/output')
             require(field['direction'] in ('receive','send'),'PI field direction invalid')
             require(field['presence'] in ('required','optional','absent','undefined'),'PI field presence invalid')
-            require(field['presence']=='required','deterministic compiler currently supports required PI presence only; preserve other presence in CAT review instead of shrinking it')
+            # Non-required presence is retained; closure proof remains conditional until
+            # operation-specific fixtures cover missing, null, and undefined distinctly.
             semantic_ident(field['id'],'PI field')
         else:
             check_keys(field,['id','role','domain'],where='PI field')
@@ -861,10 +870,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
                               'uncovered':gaps[:64],'uncovered_count':len(gaps),'unreachable_rules':sorted(unreachable),
                               'excluded_by_pi_constraints':True if constraints else False}
         require(not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
-    coverage_proved = all(x['result']=='proved' for x in per_trigger.values())
+    presence_unproven=sorted(f['id'] for f in pi['fields'] if f.get('presence','required')!='required')
+    coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
+                       and all(v=='closed' for v in local_coverage_requirements.values())
+                       and not presence_unproven)
     if not coverage_proved:
         require(allow_draft,
-                'assembled Process closed-world coverage requirement not proved: '+json.dumps(per_trigger,ensure_ascii=False)[:700])
+                'assembled Process closed-world coverage requirement not proved: '+json.dumps({'closed_world':p['closed_world'],'tce':local_coverage_requirements,'presence':presence_unproven,'triggers':per_trigger},ensure_ascii=False)[:700])
 
     source_records=[]
     hashes={}
@@ -880,11 +892,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             'source_artifacts':[fm['id'] for _,fm in files],
             'source_records':source_records,
             'source_sha256':hashes,'triggers':p['triggers'],'fields':list(fields.values()),'pi_constraints':constraints,
-            'definitions':list(definitions.values()),'coverage_requirement':'closed',
+            'definitions':list(definitions.values()),'coverage_requirement':'closed' if p['closed_world'] and all(v=='closed' for v in local_coverage_requirements.values()) else 'partial',
             'local_coverage_requirements':local_coverage_requirements,
             'coverage_checks':per_trigger,'rules':rules,
             'model_type':'symbolic-relation','limits':['finite-guard-closure-only','no-general-reachability-proof','no-process-composition']}
-    result['coverage_claim']='closed'
+    result['coverage_claim']='closed' if coverage_proved else 'partial'
+    result['presence_unproven']=presence_unproven
     tce_map=[]
     for _,tce_fm,_ in tce_docs:
         owned=[x for x in rules if x.get('source_artifact')==tce_fm['id']]
