@@ -268,6 +268,26 @@ def markdown_model(path):
 
 def json_model(path):
     model = json.loads(Path(path).read_text(encoding='utf-8'))
+    require(isinstance(model,dict),'TestModel JSON must be an object')
+    # Inventory comparisons use dictionaries; reject duplicates before their
+    # last-wins normalization can conceal a corrupted or forged source entry.
+    for name in ('source_records','triggers','fields','pi_operations','rules',
+                 'definitions','normative_rule_inputs','rule_obligations'):
+        if name not in model:
+            continue
+        items=model[name]
+        require(isinstance(items,list),name+' inventory must be an array')
+        identifiers=[]
+        for item in items:
+            require(isinstance(item,dict) and isinstance(item.get('id'),str) and bool(item['id']),
+                    name+' inventory item requires an ID')
+            identifiers.append(item['id'])
+        require(len(identifiers)==len(set(identifiers)),'duplicate '+name+' inventory ID')
+    boundaries=model.get('pi_boundaries',[])
+    require(isinstance(boundaries,list),'PI boundaries must be an array')
+    boundary_ids=[x.get('artifact') if isinstance(x,dict) else None for x in boundaries]
+    require(all(isinstance(x,str) and x for x in boundary_ids),'PI boundary requires artifact ID')
+    require(len(boundary_ids)==len(set(boundary_ids)),'duplicate PI boundary artifact')
     sources = {}
     if model.get('source_records'):
         for item in model['source_records']:
