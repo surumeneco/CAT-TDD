@@ -135,6 +135,33 @@ class RuleInventoryTests(unittest.TestCase):
             with self.assertRaises(semantic_rules.RuleError):
                 semantic_rules.load_many([a,b],'demo.parent.child',True)
 
+    def test_duplicate_identical_rule_ids_are_not_merged_across_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp)
+            a=_rule_file(base,'a.md','demo.parent.one','A')
+            b=_rule_file(base,'b.md','demo.parent.two','A')
+            with self.assertRaisesRegex(semantic_rules.RuleError,'duplicate normative rule ID'):
+                semantic_rules.load_many([a,b],'demo.parent.child',True)
+
+    def test_same_rule_id_with_different_verification_is_conflicting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp)
+            a=_rule_file(base,'a.md','demo.parent.one','A')
+            b=_rule_file(base,'b.md','demo.parent.two','A')
+            b.write_text(b.read_text(encoding='utf-8').replace('static contract','external delivery contract'),encoding='utf-8')
+            with self.assertRaisesRegex(semantic_rules.RuleError,'conflicting rule'):
+                semantic_rules.load_many([a,b],'demo.parent.child',True)
+
+    def test_confirmed_rule_cannot_be_imported_outside_process_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp)
+            path=_rule_file(base,'a.md','demo.parent.rule','A')
+            text=path.read_text(encoding='utf-8').replace('status: candidate','status: confirmed')
+            text=text.replace("decision_ref: ''","decision_ref: https://example.org/approval")
+            path.write_text(text,encoding='utf-8')
+            with self.assertRaisesRegex(semantic_rules.RuleError,'outside Process scope'):
+                semantic_rules.load_many([path],'unrelated.process',False)
+
     def test_aggregate_scope_is_not_automatically_verified(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=_rule_file(Path(tmp),'a.md','demo.parent.rule','保持')
