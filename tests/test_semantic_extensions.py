@@ -77,6 +77,34 @@ class SemanticTypesTests(unittest.TestCase):
         with self.assertRaises(types.DomainError):
             types.contains(d,{'edition':'JE','username':'alice'})
 
+    def test_union_known_witness_outweighs_unresolved_branch(self):
+        nominal=types.parse('レコード<User>')
+        domain={'type':'union','variants':[nominal,{'type':'string'}]}
+        self.assertTrue(types.contains(domain,'accepted'))
+        self.assertFalse(types.contains(domain,42))
+        with self.assertRaisesRegex(types.DomainError,'unresolved record shape'):
+            types.contains(domain,{'id':1})
+
+    def test_recursive_collections_check_definite_rejection_before_unknown(self):
+        nominal=types.parse('レコード<User>')
+        domain={'type':'union','variants':[nominal,{'type':'string'}]}
+        seq={'type':'sequence','element':domain}
+        self.assertTrue(types.contains(seq,['ok']))
+        self.assertFalse(types.contains(seq,[{'id':1},42]))
+        with self.assertRaises(types.DomainError):
+            types.contains(seq,[{'id':1},'ok'])
+        set_domain={'type':'set','element':domain}
+        self.assertFalse(types.contains(set_domain,[{'id':1},{'id':1}]))
+
+    def test_recursive_record_preserves_definite_failure_with_unknown_field(self):
+        unknown=types.parse('レコード<User>')
+        record={'type':'record','resolved':True,'fields':[
+            {'id':'user','domain':unknown,'presence':'required'},
+            {'id':'enabled','domain':{'type':'boolean'},'presence':'required'}]}
+        self.assertFalse(types.contains(record,{'user':{'id':1},'enabled':'not-a-boolean'}))
+        with self.assertRaises(types.DomainError):
+            types.contains(record,{'user':{'id':1},'enabled':True})
+
     def test_reject_invalid_type_schema(self):
         for d in ({'type':'real','min':float('nan')},
                   {'type':'sequence','element':{'type':'unknown'}},
