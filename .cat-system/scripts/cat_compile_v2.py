@@ -19,6 +19,8 @@ import sys
 import tokenize
 
 from catlib.markdown import parse_frontmatter
+from catlib import semantic_types as st
+from catlib import verifier_contracts as vc
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -143,7 +145,7 @@ def _bool_text(value, where):
 def semantic_ident(s, where, dotted=True):
     require(isinstance(s,str) and s.strip(), f'{where}: identifier required')
     parts=s.strip().split('.') if dotted else [s.strip()]
-    require(all(x.isidentifier() for x in parts), f'{where}: invalid Unicode identifier {s!r}')
+    require(all(x and all(seg.isidentifier() for seg in x.split('-')) for x in parts), f'{where}: invalid Unicode identifier {s!r}')
     return s.strip()
 
 
@@ -196,25 +198,14 @@ def _scalar_token(token):
 
 
 def parse_domain_text(text):
-    text=_unquote_code(text).strip()
-    aliases={'真偽':'boolean','整数':'integer','文字列':'string','安全符号付き整数':'safe-signed-integer'}
-    for ja,en in aliases.items():text=text.replace(ja,en)
-    text=text.replace('集合<','set<').replace('列<','sequence<').replace('列挙{','enum{')
-    if text=='boolean':return {'type':'boolean'}
-    if text=='integer':return {'type':'integer'}
-    m=re.fullmatch(r'integer\[\s*([+-]?\d*)\s*\.\.\s*([+-]?\d*)\s*\]',text)
-    if m:
-        d={'type':'integer'}
-        if m.group(1):d['min']=int(m.group(1))
-        if m.group(2):d['max']=int(m.group(2))
-        return d
-    if text=='string':return {'type':'string'}
-    if text=='string<safe-signed-integer>':return {'type':'string','format':'safe-signed-integer'}
-    m=re.fullmatch(r'(set|sequence)<(string|integer)>',text)
-    if m:return {'type':m.group(1),'element':m.group(2)}
-    m=re.fullmatch(r'enum\{(.*)\}',text)
-    if m:return {'type':'enum','values':[_scalar_token(x) for x in _split_items(m.group(1))]}
-    raise Blocked('unsupported readable domain '+repr(text))
+    try:
+        domain=st.parse_domain(text)
+        if domain['type'] in ('set','sequence') and domain['element']['type'] in ('string','integer') and len(domain['element'])==1:
+            domain['element']=domain['element']['type']  # preserve original v2 JSON wire format
+        st.validate_domain(domain)
+        return domain
+    except st.DomainError as exc:
+        raise Blocked(str(exc)) from exc
 
 
 def _normalize_expr_language(text):
@@ -381,7 +372,7 @@ def _readable_spec_v2(path, kind, fm):
                 'observations':observations,'actions':actions}
     if kind=='pi':
         boundary_rows=_table_any(body,('Boundary','境界'))
-        require(len(boundary_rows)==1,'PI Boundary/境界 requires exactly one row')
+        require(boundary_rows,'PI Boundary/境界 requires at least one row')
         br=boundary_rows[0]
         peer=_cell(br,'Peer process','Peer Process','peer','相手Process','相手プロセス')
         direction=_canon(_cell(br,'Direction','direction','方向'),
@@ -404,7 +395,12 @@ def _readable_spec_v2(path, kind, fm):
         constraints=[]
         for row in _table_any(body,('Constraints','制約'),required=False):
             constraints.append(parse_expr_text(_cell(row,'Expression','Condition','expression','condition','式','条件')))
-        return {'schema':S,'kind':kind,'process':process,'boundary':{'peer':peer,'direction':direction},
+        boundaries=[{'peer':_cell(x,'Peer process','Peer Process','peer','相手Process','相手プロセス'),
+                     'direction':_canon(_cell(x,'Direction','direction','方向'),
+                                        {'receive':{'受信'},'send':{'送信'},'bidirectional':{'双方向'}},'PI boundary direction')}
+                    for x in boundary_rows]
+        return {'schema':S,'kind':kind,'process':process,'boundary':boundaries[0],
+                **({'boundaries':boundaries} if len(boundaries)>1 else {}),
                 'fields':fields,'operations':operations,'constraints':constraints}
     if kind=='tce':
         require(_section_any(body,'Rules','Effects') is None,
@@ -430,6 +426,31 @@ def _readable_spec_v2(path, kind, fm):
             require(nums and nums==list(range(1,max(nums)+1)),f'{rid}: Outcomes must start at 1 and be contiguous')
             r['allowed']=[outcomes[(rid,n)] for n in nums];rules.append(r)
         return {'schema':S,'kind':kind,'process':process,'coverage':coverage,'rules':rules}
+    if kind in ('domain-spec','common-rule'):
+        # DomainSpec/CommonRule are normative, not comments. Preserve every
+        # section and rule until a capable deterministic verifier proves it.
+        rows=_table_any(body,('Rules','規則'),required=False)
+        rules=[]
+        for row in rows:
+            rid=_cell(row,'ID','Id','id','規則ID')
+            semantic_ident(rid,kind+' rule ID')
+            condition=_cell(row,'Condition','When','適用対象','条件',required=False)
+            requirement=_cell(row,'Requirement','要求',required=False)
+            verifier=_cell(row,'Verifier','Verification','検証',required=False)
+            require(requirement,kind+' rule '+rid+' has empty requirement')
+            rules.append({'id':rid,'condition':condition,'requirement':requirement,
+                          'verifier_hint':verifier})
+        unique([x['id'] for x in rules],kind+' rule IDs')
+        scope=[dict(row) for row in _table_any(body,('Scope','対象'),required=False)]
+        sections=[]
+        headings=list(re.finditer(r'(?m)^## (.+?)\s*$',body))
+        for i,match in enumerate(headings):
+            name=match.group(1).strip()
+            fragment=body[match.end():headings[i+1].start() if i+1<len(headings) else len(body)].strip()
+            if name not in ('規則','Rules') and fragment:
+                sections.append({'heading':name,'text':fragment,'sha256':hashlib.sha256(fragment.encode('utf-8')).hexdigest()})
+        require(bool(rules) or bool(sections),kind+' must contain normative content')
+        return {'schema':S,'kind':kind,'process':process,'scope':scope,'rules':rules,'sections':sections}
     if kind=='domain-rule':
         definitions=[]
         for row in _table_any(body,('Definitions','定義')):
@@ -500,7 +521,7 @@ def read_artifact(path, kind, allow_draft):
     require(fm.get('kind')==kind, f'{path}: expected kind {kind}')
     contract=fm.get('semantic_contract')
     require(contract in ('machine-only','markdown-v1','markdown-v2'),f'{path}: semantic_contract must be markdown-v2 (preferred), markdown-v1 or machine-only (legacy)')
-    require(fm.get('status')=='confirmed' or (allow_draft and fm.get('status')=='draft'),
+    require(fm.get('status')=='confirmed' or (allow_draft and fm.get('status') in ('draft','candidate')),
             f'{path}: only confirmed inputs are normative; --allow-draft for evidence examples')
     if fm.get('status')=='confirmed':
         require(bool(fm.get('decision_ref')), f'{path}: confirmed requires decision_ref')
@@ -517,52 +538,27 @@ def read_artifact(path, kind, allow_draft):
         except json.JSONDecodeError as e: raise Blocked(f'{path}: {e}') from e
     check_keys(spec,['schema','kind','process'],
                ['triggers','fields','rules','definitions','closed_world','coverage','constraints',
-                'interfaces','state_fields','observations','actions','boundary','operations'],str(path))
+                'interfaces','state_fields','observations','actions','boundary','boundaries','operations','scope','sections'],str(path))
     require(spec['schema']==S and spec['kind']==kind and spec['process']==fm.get('process'),
             f'{path}: frontmatter/semantic body mismatch')
     ident(fm.get('id'),'artifact id'); ident(spec['process'],'process id')
     return fm,spec
 
 def validate_domain(d):
-    check_keys(d,['type'],['values','min','max','format','element'],'domain')
-    t=d['type']; require(t in {'enum','boolean','integer','string','set','sequence'},'unsupported domain type')
-    if t=='enum':
-        check_keys(d,['type','values'],where='enum domain')
-        require(isinstance(d['values'],list) and bool(d['values']), 'enum nonempty values required')
-        require(all(isinstance(v,(str,int,bool)) for v in d['values']), 'enum only str/int/bool')
-        require(len({json.dumps(x,sort_keys=True) for x in d['values']})==len(d['values']), 'enum duplicate')
-    if t=='boolean':check_keys(d,['type'],where='boolean domain')
-    if t=='integer':
-        check_keys(d,['type'],['min','max'],where='integer domain')
-        for v in (d.get('min'),d.get('max')):
-            require(v is None or type(v) is int,'integer domain bounds must be integer/null')
-        if d.get('min') is not None and d.get('max') is not None:
-            require(d['min']<=d['max'], 'empty integer domain')
-    if t=='string':
-        check_keys(d,['type'],['format'],where='string domain')
-        require(d.get('format','any') in ('any','safe-signed-integer'),'unsupported string format')
-    if t in ('set','sequence'):
-        check_keys(d,['type','element'],where='collection domain')
-        require(d['element'] in ('string','integer'),'collection element must be string/integer')
-    return d
+    try:return st.validate_domain(d)
+    except st.DomainError as exc:raise Blocked(str(exc)) from exc
+
 
 def safe_integer_text(value):
     return isinstance(value,str) and bool(INT.fullmatch(value)) and len(value.lstrip('+-'))<=16 and abs(int(value))<=SAFE_INT
 
 def same_value(a,b):
-    if type(a) is not type(b):return False
-    if isinstance(a,list):return len(a)==len(b) and all(same_value(x,y) for x,y in zip(a,b))
-    return a==b
+    return st.same_value(a,b)
 
-def in_domain(d, value):
-    t=d['type']
-    if t=='enum':return any(type(v)==type(value) and v==value for v in d['values'])
-    if t=='boolean':return type(value) is bool
-    if t=='integer':return type(value) is int and (d.get('min') is None or value>=d['min']) and (d.get('max') is None or value<=d['max'])
-    if t=='string':return isinstance(value,str) and (d.get('format','any')=='any' or safe_integer_text(value))
-    if t in ('set','sequence'):
-        return isinstance(value,list) and all(type(v) is (str if d['element']=='string' else int) for v in value) and (t!='set' or len(set(value))==len(value))
-    raise Blocked('unknown domain')
+def in_domain(d,value):
+    try:return st.in_domain(d,value)
+    except st.DomainError as exc:raise Blocked(str(exc)) from exc
+
 
 def literal_type(v):
     if type(v) is bool:return 'boolean'
@@ -571,7 +567,7 @@ def literal_type(v):
     if isinstance(v,list):return 'sequence'
     return 'null'
 
-def inspect_expr(expr, fields, definitions, params=(), stack=()):
+def inspect_expr(expr, fields, definitions, params=(), stack=(), allow_output=False):
     """Conservative AST type checker; unsupported conversions fail, never coerce."""
     require(isinstance(expr,dict),'expression must be AST object')
     if 'literal' in expr:
@@ -585,7 +581,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
             key=ref[6:]
             require(key in params, 'unbound function parameter '+ref)
             return params[key] if isinstance(params,dict) else 'parameter'
-        require(ref in fields and fields[ref]['role'] in ('input','state','observation'), 'unknown or non-readable ref '+ref)
+        require(ref in fields and (fields[ref]['role'] in ('input','state','observation') or (allow_output and fields[ref]['role']=='output')), 'unknown or non-readable ref '+ref)
         return fields[ref]['domain']['type']
     check_keys(expr,['op','args'],['name'],where='operator expression')
     op=expr['op']; require(op in OPS,'unsupported operator '+str(op))
@@ -595,32 +591,33 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
         name=expr['name']; require(name in definitions,'unknown DomainRule '+str(name))
         require(name not in stack,'recursive DomainRule invocation '+str(name))
         defi=definitions[name];require(len(args)==len(defi['params']), 'DomainRule arity mismatch '+name)
-        types=[inspect_expr(a,fields,definitions,params,stack) for a in args]
-        return inspect_expr(defi['body'],fields,definitions,dict(zip(defi['params'],types)),stack+(name,))
+        types=[inspect_expr(a,fields,definitions,params,stack,allow_output) for a in args]
+        return inspect_expr(defi['body'],fields,definitions,dict(zip(defi['params'],types)),stack+(name,),allow_output)
     check_keys(expr,['op','args'],where='operator expression')
     arity={'not':1,'floor':1,'abs':1,'length':1,'to-int':1,'set-add':2,'set-remove':2}
     if op in arity:require(len(args)==arity[op],f'{op} needs {arity[op]} args')
     elif op in ('and','or','concat','add','mul'):require(len(args)>=2,op+' needs >=2 args')
     else:require(len(args)==2,op+' needs exactly 2 args')
-    types=[inspect_expr(a,fields,definitions,params,stack) for a in args]
+    types=[inspect_expr(a,fields,definitions,params,stack,allow_output) for a in args]
     def types_are(permitted):
         require(all(t in permitted or t=='parameter' for t in types),
                 f'{op}: invalid operand types {types}; expected {sorted(permitted)}')
     if op in ('eq','ne'):return 'boolean'
     if op in ('lt','le','gt','ge'):types_are({'integer','real'});return 'boolean'
     if op in ('and','or','not'):types_are({'boolean'});return 'boolean'
-    if op in ('add','sub','mul'):types_are({'integer'});return 'integer'
+    if op in ('add','sub','mul'):
+        types_are({'integer','real'});return 'real' if 'real' in types else 'integer'
     if op=='div':
         types_are({'integer'})
         require('literal' in args[1] and type(args[1]['literal']) is int and args[1]['literal']!=0,
                 'div denominator must be a declared nonzero integer literal; dynamic totality is unproved')
         return 'real'
     if op=='floor':types_are({'integer','real'});return 'integer'
-    if op=='abs':types_are({'integer'});return 'integer'
+    if op=='abs':types_are({'integer','real'});return 'real' if 'real' in types else 'integer'
     if op=='length':types_are({'string','set','sequence'});return 'integer'
     if op=='concat':types_are({'string'});return 'string'
     if op in ('set-add','set-remove'):
-        require(types[0] in ('set','parameter') and types[1] in ('string','integer','parameter'),
+        require(types[0] in ('set','parameter') and types[1] in ('string','integer','boolean','record','enum','parameter'),
                 f'{op}: expected set and element, got {types}')
         return 'set'
     if op=='to-int':
@@ -666,10 +663,13 @@ def eval_expr(expr, env, definitions, params=None):
         if op=='concat':return ''.join(xs)
         if op=='set-add':
             require(isinstance(xs[0],list),'set-add expects list')
-            return sorted(set(xs[0])|{xs[1]})
+            values=list(xs[0]);value=xs[1]
+            if not any(same_value(x,value) for x in values):values.append(value)
+            return sorted(values) if all(type(x) in (str,int) and type(x) is type(values[0]) for x in values) else values
         if op=='set-remove':
             require(isinstance(xs[0],list),'set-remove expects list')
-            return sorted(set(xs[0])-{xs[1]})
+            values=[x for x in xs[0] if not same_value(x,xs[1])]
+            return sorted(values) if values and all(type(x) in (str,int) and type(x) is type(values[0]) for x in values) else values
     except (TypeError,ValueError,ZeroDivisionError,OverflowError) as ex:
         raise Blocked(f'undefined expression {op}: {ex}') from ex
     raise Blocked('unsupported operator '+op)
@@ -685,9 +685,13 @@ def used_refs(expr, definitions, result=None, stack=()):
             used_refs(definitions[n]['body'],definitions,result,stack+(n,))
     return result
 
-def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
+def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,
+         common_rule_paths=(),domain_spec_paths=(),verifier_contracts_path=None):
     pf,p=read_artifact(process_path,'process',allow_draft)
-    pif,pi=read_artifact(pi_path,'pi',allow_draft)
+    pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
+    require(pi_paths,'at least one PI artifact required')
+    pi_docs=[(path,*read_artifact(path,'pi',allow_draft)) for path in pi_paths]
+    pif,pi=pi_docs[0][1:]
     tce_paths=list(tce_path) if isinstance(tce_path,(list,tuple)) else [tce_path]
     require(tce_paths,'at least one TCE artifact required')
     tce_docs=[]
@@ -696,72 +700,81 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
         tce_docs.append((path,tf,tce))
     tf=tce_docs[0][1]
     dfile,domain=(read_artifact(domain_path,'domain-rule',allow_draft) if domain_path else (None,None))
-    files=[(process_path,pf),(pi_path,pif),*[(path,fm) for path,fm,_ in tce_docs]]
+    norm_docs=[]
+    for kind,paths in (('common-rule',common_rule_paths),('domain-spec',domain_spec_paths)):
+        for path in paths:
+            norm_docs.append((path,*read_artifact(path,kind,allow_draft)))
+    files=[(process_path,pf),*[(path,fm) for path,fm,_ in pi_docs],
+           *[(path,fm) for path,fm,_ in tce_docs],
+           *[(path,fm) for path,fm,_ in norm_docs]]
     if dfile:files.append((domain_path,dfile))
     contracts={fm.get('semantic_contract') for _,fm in files}
     require(len(contracts)==1,'all compiled CAT artifacts must use the same semantic_contract')
     contract=next(iter(contracts))
-    semantics=[p,pi,*[tce for _,_,tce in tce_docs],*([domain] if domain else [])]
+    semantics=[p,*[pi for _,_,pi in pi_docs],*[tce for _,_,tce in tce_docs],*([domain] if domain else [])]
     require(len({a['process'] for a in semantics})==1,'different Process IDs in artifacts')
-    require(pf['id'] in pif['refs'],'missing Process→PI reference')
+    pi_ids={fm['id'] for _,fm,_ in pi_docs}
+    unique([fm['id'] for _,fm,_ in pi_docs], 'PI artifact IDs')
+    for _,pfm,_ in pi_docs:
+        require(pf['id'] in pfm['refs'] or pfm['id'] in p.get('interfaces',[]),'missing Process→PI reference')
     for _,tce_fm,_ in tce_docs:
-        require(pif['id'] in tce_fm['refs'],'missing PI→TCE reference')
+        require(pi_ids.intersection(tce_fm['refs']),'missing PI→TCE reference')
     if domain:
         require(any(dfile['id'] in tce_fm['refs'] for _,tce_fm,_ in tce_docs),
                 'DomainRule artifact not referenced by any TCE')
 
     process_optional=['interfaces','state_fields','observations','actions'] if contract=='markdown-v2' else []
     check_keys(p,['schema','kind','process','triggers','closed_world'],process_optional,where='Process')
-    require(p['closed_world'] is True,'Process must declare explicit closed-world contract')
+    require(type(p['closed_world']) is bool,'Process closed_world must be boolean')
     require(isinstance(p['triggers'],list) and p['triggers'],'Process triggers required')
     for t in p['triggers']:
         check_keys(t,['id','origin'],where='Trigger');semantic_ident(t['id'],'Trigger');require(isinstance(t['origin'],str) and t['origin'],'Trigger origin required')
     unique([t['id'] for t in p['triggers']],'Triggers')
 
     if contract=='markdown-v2':
-        require(pif['id'] in p.get('interfaces',[]),'Process Interfaces/境界 must reference loaded PI artifact')
         require(len(p.get('interfaces',[]))==len(set(p.get('interfaces',[]))),'duplicate Process Interface reference')
-        check_keys(pi,['schema','kind','process','boundary','fields','operations'],['constraints'],where='PI')
-        check_keys(pi['boundary'],['peer','direction'],where='PI boundary')
-        require(ID.fullmatch(pi['boundary']['peer']) is not None,'PI peer process must use stable Process ID')
-        require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
-        require(isinstance(pi['operations'],list),'PI operations must be array')
-        for op in pi['operations']:
-            check_keys(op,['id','direction','trigger'],where='PI operation')
-            semantic_ident(op['id'],'PI operation ID')
-            require(op['direction'] in ('accept','provide'),'PI operation direction invalid')
-            if op['direction']=='accept':
-                require(op['trigger'] in {t['id'] for t in p['triggers']},'accepted PI operation must reference declared Process trigger')
-            elif op['trigger'] is not None:
-                require(op['trigger'] in {t['id'] for t in p['triggers']},'PI operation trigger undeclared')
+        for _,pfm,pi_item in pi_docs:
+            require(pfm['id'] in p.get('interfaces',[]),'Process Interfaces/境界 must reference loaded PI artifact '+pfm['id'])
+            check_keys(pi_item,['schema','kind','process','boundary','fields','operations'],['constraints','boundaries'],where='PI')
+            for boundary in pi_item.get('boundaries',[pi_item['boundary']]):
+                check_keys(boundary,['peer','direction'],where='PI boundary')
+                require(ID.fullmatch(boundary['peer']) is not None,'PI peer process must use stable Process ID')
+                require(boundary['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
+            require(isinstance(pi_item['operations'],list),'PI operations must be array')
+            for op in pi_item['operations']:
+                check_keys(op,['id','direction','trigger'],where='PI operation')
+                semantic_ident(op['id'],'PI operation ID')
+                require(op['direction'] in ('accept','provide'),'PI operation direction invalid')
+                if op['direction']=='accept' or op['trigger'] is not None:
+                    require(op['trigger'] in {t['id'] for t in p['triggers']},'PI operation trigger undeclared')
     else:
-        check_keys(pi,['schema','kind','process','fields'],['constraints'],where='PI')
+        for _,_,pi_item in pi_docs:
+            check_keys(pi_item,['schema','kind','process','fields'],['constraints'],where='PI')
 
-    require(isinstance(pi['fields'],list) and pi['fields'],'PI fields required')
     fields={}
-    for field in pi['fields']:
+    pi_fields={}
+    for _,_,pi_item in pi_docs:
+        require(isinstance(pi_item['fields'],list) and pi_item['fields'],'PI fields required')
+        for field in pi_item['fields']:
+            if contract=='markdown-v2':
+                check_keys(field,['id','role','direction','presence','domain'],where='PI field')
+                require(field['role'] in ('input','output'),'markdown-v2 PI field role must be boundary input/output')
+                require(field['direction'] in ('receive','send'),'PI field direction invalid')
+                require(field['presence'] in ('required','optional','absent','undefined'),'PI field presence invalid')
+                semantic_ident(field['id'],'PI field')
+            else:
+                check_keys(field,['id','role','domain'],where='PI field')
+                ident(field['id'],'PI field');require(field['role'] in ('input','state','output'),'PI field role invalid')
+                require(field['id'].startswith(field['role']+'.'),'markdown-v1 PI field ID must start with role')
+            require(field['id'] not in fields,'duplicate PI field '+field['id'])
+            validate_domain(field['domain']);fields[field['id']]=field
+            pi_fields[field['id']]=field
         if contract=='markdown-v2':
-            check_keys(field,['id','role','direction','presence','domain'],where='PI field')
-            require(field['role'] in ('input','output'),'markdown-v2 PI field role must be boundary input/output')
-            require(field['direction'] in ('receive','send'),'PI field direction invalid')
-            require(field['presence'] in ('required','optional','absent','undefined'),'PI field presence invalid')
-            require(field['presence']=='required','deterministic compiler currently supports required PI presence only; preserve other presence in CAT review instead of shrinking it')
-            semantic_ident(field['id'],'PI field')
-        else:
-            check_keys(field,['id','role','domain'],where='PI field')
-            ident(field['id'],'PI field');require(field['role'] in ('input','state','output'),'PI field role invalid')
-            require(field['id'].startswith(field['role']+'.'),'markdown-v1 PI field ID must start with role')
-        require(field['id'] not in fields,'duplicate PI field')
-        validate_domain(field['domain']);fields[field['id']]=field
-
-    pi_fields=dict(fields)
-
-    if contract=='markdown-v2':
-        dirs={f['direction'] for f in pi['fields']}
-        if pi['boundary']['direction']=='receive':
-            require(dirs <= {'receive'},'receive-only PI boundary cannot contain send fields')
-        elif pi['boundary']['direction']=='send':
-            require(dirs <= {'send'},'send-only PI boundary cannot contain receive fields')
+            dirs={f['direction'] for f in pi_item['fields']}
+            if all(b['direction']=='receive' for b in pi_item.get('boundaries',[pi_item['boundary']])):
+                require(dirs <= {'receive'},'receive-only PI boundary cannot contain send fields')
+            elif all(b['direction']=='send' for b in pi_item.get('boundaries',[pi_item['boundary']])):
+                require(dirs <= {'send'},'send-only PI boundary cannot contain receive fields')
 
     if contract=='markdown-v2':
         for name,items,role,extra in (
@@ -776,7 +789,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
                 require(field['id'] not in fields,f'duplicate specification field {field["id"]}')
                 validate_domain(field['domain']);fields[field['id']]=field
 
-    constraints=pi.get('constraints',[])
+    constraints=[expr for _,_,pi_item in pi_docs for expr in pi_item.get('constraints',[])]
     require(isinstance(constraints,list),'PI constraints must be array')
     definitions={}
     if domain:
@@ -793,7 +806,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             unique(d['params'],'DomainRule params');definitions[d['id']]=d
         for d in definitions.values():inspect_expr(d['body'],fields,definitions,d['params'])
     for predicate in constraints:
-        require(inspect_expr(predicate,pi_fields,definitions)=='boolean','PI constraint must be boolean')
+        require(inspect_expr(predicate,pi_fields,definitions,allow_output=True)=='boolean','PI constraint must be boolean')
+    preconditions=[c for c in constraints if not any(
+        pi_fields[x]['role'] == 'output' for x in used_refs(c,definitions) if x in pi_fields)]
+    relational_constraints=[c for c in constraints if c not in preconditions]
 
     rules=[]
     local_coverage_requirements={}
@@ -818,8 +834,14 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
                     require(e['target'] in fields and fields[e['target']]['role'] in ('state','output','action'),'Effect target not declared/actuable '+str(e['target']))
                     produced=inspect_expr(e['expr'],fields,definitions)
                     expected=fields[e['target']]['domain']['type']
-                    require(produced==expected or (expected=='enum' and produced in ('string','boolean','integer')),
-                            f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    write_domain=fields[e['target']]['domain']
+                    can_assign=produced==expected or (expected=='enum' and produced in ('string','boolean','integer'))
+                    if 'literal' in e['expr'] and in_domain(write_domain,e['expr']['literal']):can_assign=True
+                    if 'ref' in e['expr'] and e['expr']['ref'] in fields:
+                        source_domain=fields[e['expr']['ref']]['domain']
+                        if source_domain==write_domain:can_assign=True
+                        if expected=='union' and source_domain in write_domain['variants']:can_assign=True
+                    require(can_assign, f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
                     if expected=='enum':
                         expr=e['expr']
                         if 'literal' in expr:
@@ -837,32 +859,78 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
                           'source_artifact':tce_fm['id']})
     unique([r['id'] for r in rules],'TCE behaviors')
 
+    # Rule text is retained as an explicit proof obligation; natural language
+    # never becomes a vacuous true predicate. Duplicate IDs are candidate
+    # conflicts until a real semantic equivalence / precedence proof exists.
+    normative_rules=[];seen_rules={};rule_conflicts=[];normative_sections=[]
+    for source,source_fm,spec in norm_docs:
+        scope=spec['process']
+        scoped=(scope==p['process'] or p['process'].startswith(scope+'.')
+                or p['process'] in source_fm.get('refs',[]))
+        for item in spec['rules']:
+            row={'id':item['id'],'source_artifact':source_fm['id'],'kind':source_fm['kind'],
+                 'condition':item['condition'],'requirement':item['requirement'],
+                 'applicability':'declared' if scoped else 'unresolved-cross-process',
+                 'verifier_hint':item['verifier_hint'],'verdict':'not-run',
+                 'reason':'normative requirement not translated to a proved predicate or verified external effect'}
+            previous=seen_rules.get(item['id'])
+            if previous and (previous['condition'],previous['requirement'])!=(row['condition'],row['requirement']):
+                rule_conflicts.append({'rule_id':item['id'],'sources':[previous['source_artifact'],row['source_artifact']],
+                                       'status':'unresolved','reason':'same rule ID carries distinct clauses; check refinement or contradiction'})
+            seen_rules.setdefault(item['id'],row)
+            normative_rules.append(row)
+        for item in spec['sections']:
+            normative_sections.append({'source_artifact':source_fm['id'],'heading':item['heading'],
+                                       'sha256':item['sha256'],'content':item['text'],
+                                       'verdict':'not-run'})
+
+
+
+    strict_closure=p['closed_world'] and all(x=='closed' for x in local_coverage_requirements.values())
+    if verifier_contracts_path:
+        try:plan=vc.inspect_contracts(verifier_contracts_path,{x['id'] for x in normative_rules},strict=False)
+        except (vc.ContractError,ValueError) as exc:raise Blocked('verifier contracts: '+str(exc)) from exc
+        # External verification is not inferred from a contract's authored status.
+        local_contracts={x['rule_id']:x for x in plan['contracts']}
+        for rule in normative_rules:
+            if rule['id'] in local_contracts:
+                rule['verifier_contract']=local_contracts[rule['id']]
+    else:
+        plan=None
+
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     for trigger in triggers:
         rr=[r for r in rules if r['trigger']==trigger]
-        relevant=set().union(*(used_refs(r['when'],definitions) for r in rr),*(used_refs(c,definitions) for c in constraints)) if rr or constraints else set()
+        relevant=set().union(*(used_refs(r['when'],definitions) for r in rr),*(used_refs(c,definitions) for c in preconditions)) if rr or preconditions else set()
         finite=all(fields[f]['domain']['type'] in ('enum','boolean') for f in relevant)
         if not finite:
             per_trigger[trigger]={'result':'unproven','reason':'guard reads non-finite-domain field','guard_refs':sorted(relevant)}
             continue
         domainvalues=[fields[f]['domain'].get('values',[False,True]) for f in sorted(relevant)]
+        if __import__('math').prod(len(x) for x in domainvalues)>65536 and not strict_closure:
+            per_trigger[trigger]={'result':'unproven','reason':'finite guard space exceeds 65536; partial-contract exploration not exhaustive','guard_refs':sorted(relevant)}
+            continue
         require(__import__('math').prod(len(x) for x in domainvalues)<=65536,'finite closure exceeds configured 65536 combinations')
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr)
         for values in itertools.product(*domainvalues):
             env=dict(zip(sorted(relevant),values))
-            if not all(eval_expr(c,env,definitions) for c in constraints):
+            if not all(eval_expr(c,env,definitions) for c in preconditions):
                 continue
             hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
             if not hit:gaps.append(env)
             if len(hit)>1:overlaps.append({'state':env,'rules':hit})
             unreachable-=set(hit)
-        require(not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
-        per_trigger[trigger]={'result':'proved' if not gaps else 'uncovered','guard_refs':sorted(relevant),
+        if strict_closure:
+            require(not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
+        per_trigger[trigger]={'result':('proved' if not gaps else 'uncovered') if strict_closure else 'unproven',
+                              'guard_refs':sorted(relevant),
                               'uncovered':gaps[:64],'uncovered_count':len(gaps),'unreachable_rules':sorted(unreachable),
-                              'excluded_by_pi_constraints':True if constraints else False}
-        require(not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
+                              'overlap_examples':overlaps[:8],'overlap_count':len(overlaps),
+                              'excluded_by_pi_constraints':True if preconditions else False,
+                              **({'reason':'partial contract: guard intersections and gaps need application constraints and independent verification'} if not strict_closure else {})}
+        if strict_closure:require(not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
     coverage_proved = all(x['result']=='proved' for x in per_trigger.values())
-    if not coverage_proved:
+    if not coverage_proved and strict_closure:
         require(allow_draft,
                 'assembled Process closed-world coverage requirement not proved: '+json.dumps(per_trigger,ensure_ascii=False)[:700])
 
@@ -874,17 +942,21 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
         key=fm['kind'] if fm['kind'] not in hashes else fm['kind']+':'+fm['id']
         hashes[key]=digest
     authority={'markdown-v2':'cat-markdown/v2','markdown-v1':'cat-markdown/v1','machine-only':'cat-machine/v2'}[contract]
-    normative_model = all(fm['status']=='confirmed' for _,fm in files) and coverage_proved
+    normative_model = (all(fm['status']=='confirmed' for _,fm in files) and coverage_proved
+                       and p['closed_world'] and all(v=='closed' for v in local_coverage_requirements.values())
+                       and not normative_rules and not normative_sections and not relational_constraints
+                       and all(st.is_fully_interpreted(f['domain']) for f in fields.values()))
     result={'schema':M,'process':p['process'],'status':('confirmed' if normative_model else 'draft'),
             'semantic_authority':authority,'language':tf.get('language','en') if contract=='markdown-v2' else 'en',
             'source_artifacts':[fm['id'] for _,fm in files],
             'source_records':source_records,
             'source_sha256':hashes,'triggers':p['triggers'],'fields':list(fields.values()),'pi_constraints':constraints,
-            'definitions':list(definitions.values()),'coverage_requirement':'closed',
+            **({'relational_constraints':relational_constraints} if relational_constraints else {}),
+            'definitions':list(definitions.values()),'coverage_requirement':('closed' if p['closed_world'] and all(v=='closed' for v in local_coverage_requirements.values()) else 'partial'),
             'local_coverage_requirements':local_coverage_requirements,
             'coverage_checks':per_trigger,'rules':rules,
             'model_type':'symbolic-relation','limits':['finite-guard-closure-only','no-general-reachability-proof','no-process-composition']}
-    result['coverage_claim']='closed'
+    result['coverage_claim']=result['coverage_requirement']
     tce_map=[]
     for _,tce_fm,_ in tce_docs:
         owned=[x for x in rules if x.get('source_artifact')==tce_fm['id']]
@@ -908,8 +980,34 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
         'domain_rule':{
             'artifact':dfile['id'] if dfile else None,
             'definitions':sorted(definitions)}}
+    if plan:
+        result['verifier_plan']=plan
+        result['nonartifact_source_sha256']={'verifier_contracts':plan['registry_sha256']}
+        result['limits'].append('verifier-contracts-are-not-execution-evidence')
+    if norm_docs:
+        result['normative_rules']=normative_rules
+        result['normative_sections']=normative_sections
+        result['rule_conflicts']=rule_conflicts
+        result['source_semantic_map']['normative']=[{
+            'artifact':fm['id'],'kind':fm['kind'],
+            'rules':[x['id'] for x in spec['rules']],
+            'sections':[x['heading'] for x in spec['sections']]} for _,fm,spec in norm_docs]
+        result['limits'].append('external-rule-verifier-evidence-required')
+    if any(not st.is_fully_interpreted(f['domain']) for f in fields.values()):
+        result['type_obligations']=[{'field':f['id'],'domain':f['domain'],'status':'inconclusive',
+                                   'reason':'opaque named record requires schema and semantic verifier'}
+                                  for f in fields.values() if not st.is_fully_interpreted(f['domain'])]
+        result['limits'].append('opaque-record-schema-required')
+    if len(pi_docs)>1:
+        result['source_semantic_map']['pis']=[{
+            'artifact':fm['id'],
+            'boundary':sp.get('boundary'),
+            'fields':[x['id'] for x in sp['fields']],
+            'operations':[x['id'] for x in sp.get('operations',[])],
+            'constraint_count':len(sp.get('constraints',[]))} for _,fm,sp in pi_docs]
     if contract=='markdown-v2':
-        result['pi_boundary']=pi['boundary'];result['pi_operations']=pi['operations'];result['process_interfaces']=p.get('interfaces',[])
+        result['pi_boundary']=pi['boundary'];result['pi_operations']=[op for _,_,sp in pi_docs for op in sp['operations']];result['process_interfaces']=p.get('interfaces',[])
+        if len(pi_docs)>1 or any(sp.get('boundaries') for _,_,sp in pi_docs):result['pi_boundaries']=[{'artifact':fm['id'],**b} for _,fm,sp in pi_docs for b in sp.get('boundaries',[sp['boundary']])]
     if contract in ('markdown-v1','markdown-v2'):result['normalized_ir']='cat-machine/v2'
     return result
 
@@ -918,6 +1016,55 @@ def match_rules(model, trigger, env):
     matched=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
     require(len(matched)==1,f'test vector has {len(matched)} matching TCE rules at {trigger}')
     return matched[0]
+
+def _decode_vector_value(domain, value, *, presence='required'):
+    """Decode a typed JSON witness without confusing missing, undefined and null."""
+    if isinstance(value,dict) and set(value)=={'$cat'} and value['$cat']=='undefined':
+        require(presence=='undefined','undefined is only valid for an undefined Presence field')
+        return st.UNDEFINED
+    typ=domain['type']
+    if typ=='bytes':
+        require(isinstance(value,dict) and set(value)=={'$cat','base64'} and value['$cat']=='bytes',
+                'bytes vectors require an explicit $cat:bytes base64 witness')
+        import base64
+        try:
+            raw=base64.b64decode(value['base64'],validate=True)
+        except (ValueError,TypeError) as exc:
+            raise Blocked('invalid byte vector base64') from exc
+        return raw
+    if typ=='nullable':
+        return None if value is None else _decode_vector_value(domain['of'],value,presence=presence)
+    if typ=='union':
+        resolved=[]
+        for member in domain['variants']:
+            try:
+                candidate=_decode_vector_value(member,value,presence=presence)
+            except (Blocked,KeyError,TypeError):continue
+            if st.in_domain(member,candidate):resolved.append(candidate)
+        require(resolved,'union vector has no valid member type')
+        # Reject ambiguous representations whose members disagree semantically.
+        require(all(st.same_value(resolved[0],x) for x in resolved[1:]),'ambiguous union vector member')
+        return resolved[0]
+    if typ in ('set','sequence'):
+        require(isinstance(value,list),'collection vector must be a JSON array')
+        elem=domain['element'];elem=elem if isinstance(elem,dict) else {'type':elem}
+        return [_decode_vector_value(elem,x) for x in value]
+    if typ=='record' and 'fields' in domain:
+        require(isinstance(value,dict),'record vector must be a JSON object')
+        return {key:_decode_vector_value(domain['fields'][key]['domain'],v,presence=domain['fields'][key]['presence'])
+                for key,v in value.items() if key in domain['fields']}
+    return value
+
+
+def _encode_vector_value(value):
+    if value is st.UNDEFINED:return {'$cat':'undefined'}
+    if isinstance(value,bytes):
+        import base64
+        return {'$cat':'bytes','base64':base64.b64encode(value).decode('ascii')}
+    if isinstance(value,list):return [_encode_vector_value(v) for v in value]
+    if isinstance(value,dict):return {k:_encode_vector_value(v) for k,v in value.items()}
+    return value
+
 
 def expand_cases(model, vectors):
     check_keys(vectors,['schema','process','cases'],optional=('selection_rule',),where='vectors')
@@ -929,21 +1076,34 @@ def expand_cases(model, vectors):
     for test in vectors['cases']:
         check_keys(test,['id','trigger','input','state'],where='test vector')
         ident(test['id'],'test ID');require(test['trigger'] in {t['id'] for t in model['triggers']},'unknown vector trigger')
-        env={**test['input'],**test['state']}
-        require(set(test['input'])==inputs and set(test['state'])==states,'vector must supply each declared input/state exactly once')
-        for name,val in env.items():require(in_domain(fields[name]['domain'],val),f'{test["id"]}: {name} out of declared domain')
+        require(isinstance(test['input'],dict) and isinstance(test['state'],dict),'vector input and state must be objects')
+        require(set(test['input'])<=inputs and set(test['state'])<=states,'vector includes undeclared input/state field')
+        env={}
+        for name in sorted(inputs|states):
+            payload=test['input'] if name in inputs else test['state']
+            field=fields[name];presence=field.get('presence','required')
+            raw=payload.get(name,st.MISSING)
+            decoded=st.MISSING if raw is st.MISSING else _decode_vector_value(field['domain'],raw,presence=presence)
+            require(st.check_presence(presence,decoded,field['domain']),
+                    f'{test["id"]}: {name} violates declared type/Presence')
+            if decoded is not st.MISSING:env[name]=decoded
         defs={d['id']:d for d in model['definitions']}
-        require(all(eval_expr(c,env,defs) for c in model['pi_constraints']),f'{test["id"]}: violates PI combination constraint')
-        rule=match_rules(model,test['trigger'],env)
-        defs={d['id']:d for d in model['definitions']}
+        try:
+            require(all(eval_expr(c,env,defs) for c in model['pi_constraints']),f'{test["id"]}: violates PI combination constraint')
+            rule=match_rules(model,test['trigger'],env)
+        except (KeyError,TypeError,ValueError) as exc:
+            raise Blocked(f'{test["id"]}: TCE/PI expression cannot evaluate the supplied optional/undefined witness: {exc}') from exc
         allowed=[]
         for out in rule['allowed']:
-            after=deepcopy(test['state']); emitted={}
+            after={k:_encode_vector_value(v) for k,v in env.items() if k in states};emitted={}
             for write in out['write']:
-                target=write['target'];val=eval_expr(write['expr'],env,defs)
+                target=write['target']
+                try:val=eval_expr(write['expr'],env,defs)
+                except (KeyError,TypeError,ValueError) as exc:
+                    raise Blocked(f'{test["id"]}: effect cannot evaluate: {exc}') from exc
                 require(in_domain(fields[target]['domain'],val),f'{test["id"]}: output {target} out of declared domain')
-                if fields[target]['role']=='state':after[target]=val
-                else:emitted[target]=val
+                if fields[target]['role']=='state':after[target]=_encode_vector_value(val)
+                else:emitted[target]=_encode_vector_value(val)
             allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs']})
         cases.append({'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                       'input':test['input'],'initial_state':test['state'],'allowed':allowed})
@@ -958,6 +1118,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
     domains=[]
     for field_id in variable_ids:
         domain=fields[field_id]['domain']
+        require(fields[field_id].get('presence','required')=='required',
+                'rule-witness/v1 cannot silently omit or normalize optional/absent/undefined field '+field_id)
         if domain['type']=='boolean':
             values=[False,True]
         elif domain['type']=='enum':
@@ -1071,20 +1233,31 @@ def current_vectors(model, vectors, queue, model_bytes, vector_bytes):
 
 def format_domain(d, language='en'):
     t=d['type']
-    names={'ja':{'boolean':'真偽','integer':'整数','string':'文字列','set':'集合','sequence':'列','enum':'列挙'},
-           'en':{'boolean':'boolean','integer':'integer','string':'string','set':'set','sequence':'sequence','enum':'enum'}}[language]
-    if t=='boolean':return names['boolean']
-    if t=='integer':
-        if d.get('min') is None and d.get('max') is None:return names['integer']
-        return f"{names['integer']}[{'' if d.get('min') is None else d['min']}..{'' if d.get('max') is None else d['max']}]"
+    names={'ja':{'boolean':'真偽','integer':'整数','real':'実数','string':'文字列',
+                 'set':'集合','sequence':'列','enum':'列挙','bytes':'バイト列','record':'レコード',
+                 'null':'null','nullable':'可空','union':'直和'},
+           'en':{'boolean':'boolean','integer':'integer','real':'real','string':'string',
+                 'set':'set','sequence':'sequence','enum':'enum','bytes':'bytes','record':'record',
+                 'null':'null','nullable':'nullable','union':'union'}}[language]
+    if t in ('boolean','null','bytes'):return names[t]
+    if t in ('integer','real'):
+        if d.get('min') is None and d.get('max') is None:return names[t]
+        def n(x):return '' if x is None else str(int(x) if type(x)==float and x.is_integer() else x)
+        return f"{names[t]}[{n(d.get('min'))}..{n(d.get('max'))}]"
     if t=='string':
         if d.get('format','any')=='any':return names['string']
         fmt='安全符号付き整数' if language=='ja' and d['format']=='safe-signed-integer' else d['format']
         return names['string']+'<'+fmt+'>'
     if t in ('set','sequence'):
-        element={'string':names['string'],'integer':names['integer']}[d['element']]
-        return f"{names[t]}<{element}>"
+        element=d['element'] if isinstance(d['element'],dict) else {'type':d['element']}
+        return names[t]+'<'+format_domain(element,language)+'>'
     if t=='enum':return names['enum']+'{' + ', '.join(_format_literal(v,language) for v in d['values']) + '}'
+    if t=='nullable':return names['nullable']+'<'+format_domain(d['of'],language)+'>'
+    if t=='union':return names['union']+'<'+', '.join(format_domain(x,language) for x in d['variants'])+'>'
+    if t=='record':
+        if 'symbol' in d:return names['record']+'<'+d['symbol']+'>'
+        items=[k+('?' if v['presence']=='optional' else '')+':'+format_domain(v['domain'],language) for k,v in d['fields'].items()]
+        return names['record']+'<'+','.join(items)+'>'
     raise Blocked('unknown domain for rendering')
 
 
@@ -1150,6 +1323,32 @@ def render_model_markdown(model):
     lines += ['',('## 仕様要素' if ja else '## Fields'),'',('| ID | 役割 | Domain |' if ja else '| ID | Role | Domain |'),'| --- | --- | --- |']
     role_ja={'input':'受信','output':'送信','state':'状態','observation':'観測','action':'作用'}
     for f in model['fields']:lines.append(f"| {_md(f['id'])} | {_md(role_ja.get(f['role'],f['role']) if ja else f['role'])} | `{_md(format_domain(f['domain'],lang))}` |")
+    # Canonical data-domain signatures are separate from human-readable labels.
+    # Presence and nested type structure cannot be inferred from the display table.
+    lines += ['',('## フィールド署名' if ja else '## Field signatures'),'',
+              ('| ID | 役割 | 型JSON | Presence |' if ja else '| ID | Role | Type JSON | Presence |'),
+              '| --- | --- | --- | --- |']
+    for f in model['fields']:
+        canonical=json.dumps(f['domain'],ensure_ascii=False,sort_keys=True,separators=(',',':'))
+        lines.append(f"| {_md(f['id'])} | {f['role']} | `{_md(canonical)}` | {f.get('presence','required')} |")
+    if model.get('pi_boundaries'):
+        lines += ['',('## PI境界集合' if ja else '## PI boundaries'),'',
+                  ('| Artifact | 相手Process | 方向 |' if ja else '| Artifact | Peer process | Direction |'),
+                  '| --- | --- | --- |']
+        for b in model['pi_boundaries']:
+            lines.append(f"| {_md(b['artifact'])} | {_md(b['peer'])} | {_md(b['direction'])} |")
+    if model.get('normative_rules'):
+        lines += ['',('## 規範規則集合' if ja else '## Normative rules'),'',
+                  ('| 出典 | ID | 条件 | 要求 | Verifier |' if ja else '| Source | ID | Condition | Requirement | Verifier |'),
+                  '| --- | --- | --- | --- | --- |']
+        for r in model['normative_rules']:
+            lines.append(f"| {_md(r['source_artifact'])} | {_md(r['id'])} | {_md(r['condition'])} | {_md(r['requirement'])} | {_md(r['verifier_hint'])} |")
+    if model.get('normative_sections'):
+        lines += ['',('## 規範節ハッシュ' if ja else '## Normative section hashes'),'',
+                  ('| 出典 | 見出し | SHA-256 |' if ja else '| Source | Heading | SHA-256 |'),
+                  '| --- | --- | --- |']
+        for sec in model['normative_sections']:
+            lines.append(f"| {_md(sec['source_artifact'])} | {_md(sec['heading'])} | `{sec['sha256']}` |")
     if model['pi_constraints']:
         lines += ['',('## PI制約' if ja else '## PI constraints'),'',('| 式 |' if ja else '| Expression |'),'| --- |']
         for c in model['pi_constraints']:lines.append(f'| `{_md(format_expr(c,language=lang))}` |')
@@ -1192,17 +1391,17 @@ def write(path,content,check):
 def main(argv=None):
     cli=argparse.ArgumentParser(description=__doc__)
     sub=cli.add_subparsers(dest='command',required=True)
-    m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
-    v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',required=True);v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
-    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
-    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
+    m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--pi',dest='extra_pi',action='append',default=[]);m.add_argument('--common-rule',action='append',default=[]);m.add_argument('--domain-spec',action='append',default=[]);m.add_argument('--verifier-contracts');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
+    v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',action='append',required=True);v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--common-rule',action='append',default=[]);v.add_argument('--domain-spec',action='append',default=[]);v.add_argument('--verifier-contracts');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
+    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',action='append',required=True);q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--common-rule',action='append',default=[]);q.add_argument('--domain-spec',action='append',default=[]);q.add_argument('--verifier-contracts');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
+    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',action='append',required=True);t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--common-rule',action='append',default=[]);t.add_argument('--domain-spec',action='append',default=[]);t.add_argument('--verifier-contracts');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
     args=cli.parse_args(argv)
     try:
         if args.command=='model':
-            result=load(args.process,args.pi,args.tce,args.domain_rule,args.allow_draft)
+            result=load(args.process,[args.pi,*args.extra_pi],args.tce,args.domain_rule,args.allow_draft,args.common_rule,args.domain_spec,args.verifier_contracts)
             write(args.output,_model_content(result,args.output),args.check)
         else:
-            fresh=load(args.process,args.pi,args.tce,args.domain_rule,args.allow_draft)
+            fresh=load(args.process,args.pi,args.tce,args.domain_rule,args.allow_draft,args.common_rule,args.domain_spec,args.verifier_contracts)
             model_bytes=Path(args.model).read_bytes()
             if Path(args.model).suffix.lower()=='.md':
                 require(model_bytes.decode('utf-8')==render_model_markdown(fresh),
