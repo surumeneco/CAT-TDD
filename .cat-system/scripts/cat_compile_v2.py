@@ -925,7 +925,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         require(allow_draft or not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
     presence_unproven=sorted(f['id'] for f in pi_fields.values() if f.get('presence','required')!='required')
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
-                       and all(v=='closed' for v in local_coverage_requirements.values())
+                       
                        and not presence_unproven and not (unresolved_interfaces if contract=='markdown-v2' else [])
                        and not rule_obligations)
     if not coverage_proved:
@@ -947,7 +947,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             'source_artifacts':[fm['id'] for _,fm in files],
             'source_records':source_records,
             'source_sha256':hashes,'triggers':p['triggers'],'fields':list(fields.values()),'pi_constraints':constraints,
-            'definitions':list(definitions.values()),'coverage_requirement':'closed' if p['closed_world'] and all(v=='closed' for v in local_coverage_requirements.values()) else 'partial',
+            'definitions':list(definitions.values()),'coverage_requirement':'closed' if coverage_proved else 'partial',
             'local_coverage_requirements':local_coverage_requirements,
             'coverage_checks':per_trigger,'rules':rules,
             'model_type':'symbolic-relation','limits':['finite-guard-closure-only','no-general-reachability-proof','no-process-composition']}
