@@ -104,9 +104,16 @@ def _table_from_section(sec, label, required=True):
     sep=_split_md_row(lines[1])
     require(all(re.fullmatch(r':?-{3,}:?',x.strip()) for x in sep),'invalid Markdown table separator')
     rows=[]
-    for line in lines[2:]:
+    for i,line in enumerate(lines[2:],2):
         cells=_split_md_row(line)
         require(len(cells)==len(header),f'## {label}: row width differs from header')
+        if cells==header:
+            require(i+1<len(lines) and all(re.fullmatch(r':?-{3,}:?',x.strip()) for x in _split_md_row(lines[i+1])),
+                    f'## {label}: repeated header without separator')
+            continue
+        if all(re.fullmatch(r':?-{3,}:?',x.strip()) for x in cells):
+            require(_split_md_row(lines[i-1])==header,f'## {label}: stray separator')
+            continue
         rows.append(dict(zip(header,cells)))
     return rows
 
@@ -144,7 +151,7 @@ def _bool_text(value, where):
 def semantic_ident(s, where, dotted=True):
     require(isinstance(s,str) and s.strip(), f'{where}: identifier required')
     parts=s.strip().split('.') if dotted else [s.strip()]
-    require(all(x.isidentifier() for x in parts), f'{where}: invalid Unicode identifier {s!r}')
+    require(all(all(part.isidentifier() for part in x.split('-')) for x in parts), f'{where}: invalid Unicode identifier {s!r}')
     return s.strip()
 
 
@@ -383,7 +390,7 @@ def _readable_spec_v2(path, kind, fm):
                 'observations':observations,'actions':actions}
     if kind=='pi':
         boundary_rows=_table_any(body,('Boundary','境界'))
-        require(len(boundary_rows)==1,'PI Boundary/境界 requires exactly one row')
+        require(bool(boundary_rows),'PI Boundary/境界 requires at least one row')
         br=boundary_rows[0]
         peer=_cell(br,'Peer process','Peer Process','peer','相手Process','相手プロセス')
         direction=_canon(_cell(br,'Direction','direction','方向'),
@@ -406,7 +413,12 @@ def _readable_spec_v2(path, kind, fm):
         constraints=[]
         for row in _table_any(body,('Constraints','制約'),required=False):
             constraints.append(parse_expr_text(_cell(row,'Expression','Condition','expression','condition','式','条件')))
-        return {'schema':S,'kind':kind,'process':process,'boundary':{'peer':peer,'direction':direction},
+        extra_peers=[_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス') for row in boundary_rows]
+        for row in boundary_rows:
+            require(_canon(_cell(row,'Direction','direction','方向'),
+                           {'receive':{'受信'},'send':{'送信'},'bidirectional':{'双方向'}},'PI boundary direction') == direction,
+                    'PI boundary mixed direction requires explicit per-peer operation semantics')
+        return {'schema':S,'kind':kind,'process':process,'boundary':{'peer':peer,'direction':direction,**({'peers':extra_peers} if len(extra_peers)>1 else {})},
                 'fields':fields,'operations':operations,'constraints':constraints}
     if kind=='tce':
         require(_section_any(body,'Rules','Effects') is None,
@@ -502,7 +514,7 @@ def read_artifact(path, kind, allow_draft):
     require(fm.get('kind')==kind, f'{path}: expected kind {kind}')
     contract=fm.get('semantic_contract')
     require(contract in ('machine-only','markdown-v1','markdown-v2'),f'{path}: semantic_contract must be markdown-v2 (preferred), markdown-v1 or machine-only (legacy)')
-    require(fm.get('status')=='confirmed' or (allow_draft and fm.get('status')=='draft'),
+    require(fm.get('status')=='confirmed' or (allow_draft and fm.get('status') in ('draft','candidate')),
             f'{path}: only confirmed inputs are normative; --allow-draft for evidence examples')
     if fm.get('status')=='confirmed':
         require(bool(fm.get('decision_ref')), f'{path}: confirmed requires decision_ref')
@@ -695,7 +707,13 @@ def used_refs(expr, definitions, result=None, stack=()):
 
 def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
     pf,p=read_artifact(process_path,'process',allow_draft)
-    pif,pi=read_artifact(pi_path,'pi',allow_draft)
+    pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
+    require(bool(pi_paths),'at least one PI required')
+    pi_docs=[]
+    for path in pi_paths:
+        pif,pi_item=read_artifact(path,'pi',allow_draft)
+        pi_docs.append((path,pif,pi_item))
+    pif,pi=pi_docs[0][1:]
     tce_paths=list(tce_path) if isinstance(tce_path,(list,tuple)) else [tce_path]
     require(tce_paths,'at least one TCE artifact required')
     tce_docs=[]
@@ -704,16 +722,19 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
         tce_docs.append((path,tf,tce))
     tf=tce_docs[0][1]
     dfile,domain=(read_artifact(domain_path,'domain-rule',allow_draft) if domain_path else (None,None))
-    files=[(process_path,pf),(pi_path,pif),*[(path,fm) for path,fm,_ in tce_docs]]
+    files=[(process_path,pf),*[(path,fm) for path,fm,_ in pi_docs],*[(path,fm) for path,fm,_ in tce_docs]]
     if dfile:files.append((domain_path,dfile))
     contracts={fm.get('semantic_contract') for _,fm in files}
     require(len(contracts)==1,'all compiled CAT artifacts must use the same semantic_contract')
     contract=next(iter(contracts))
-    semantics=[p,pi,*[tce for _,_,tce in tce_docs],*([domain] if domain else [])]
+    semantics=[p,*[a for _,_,a in pi_docs],*[tce for _,_,tce in tce_docs],*([domain] if domain else [])]
     require(len({a['process'] for a in semantics})==1,'different Process IDs in artifacts')
-    require(pf['id'] in pif['refs'],'missing Process→PI reference')
+    for _,item_fm,_ in pi_docs:
+        require(pf['id'] in item_fm['refs'] or item_fm['id'] in p.get('interfaces',[]),
+                'missing Process→PI reference: '+item_fm['id'])
     for _,tce_fm,_ in tce_docs:
-        require(pif['id'] in tce_fm['refs'],'missing PI→TCE reference')
+        require(any(pi_fm['id'] in tce_fm['refs'] for _,pi_fm,_ in pi_docs),
+                'missing assembled PI→TCE reference: '+tce_fm['id'])
     if domain:
         require(any(dfile['id'] in tce_fm['refs'] for _,tce_fm,_ in tce_docs),
                 'DomainRule artifact not referenced by any TCE')
