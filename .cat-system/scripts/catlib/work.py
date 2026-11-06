@@ -175,10 +175,15 @@ def read_work_markdown(path):
         mapping = {('Process','プロセス'):'process',('PI',):'pi',('TCE',):'tce',('Domain rule','DomainRule','ドメイン規則'):'domain_rule',
                    ('Model','モデル'):'model',('Vectors','具体値'):'vectors',('Queue','キュー'):'queue',
                    ('Binding','接続'):'binding',('Tests','テスト'):'tests_output',
-                   ('Obligations','適合義務'):'obligations',('Conformance binding','適合接続'):'conformance_binding'}
+                   ('Obligations','適合義務'):'obligations',('Verifier contracts','検証契約'):'verifier_contracts',('Conformance binding','適合接続'):'conformance_binding'}
         for humans, key in mapping.items():
             value = _cell(row, *humans, key, required=False)
             if not _none(value): compilation[key] = value
+        if compilation.get('pi'):
+            pis=_items(compilation['pi'])
+            require(pis,'Compilation PI requires at least one path')
+            compilation['pi']=pis[0]
+            compilation['pis']=pis
         if compilation.get('tce'):
             tces = _items(compilation['tce'])
             require(tces, 'Compilation TCE requires at least one path')
@@ -281,10 +286,10 @@ External/semantic gates are reported evidence. `passed` or `not-applicable` requ
 
 ## Compilation
 
-Remove this section when deterministic compilation is not used. Multiple TCE paths in the `TCE` cell are separated by `;` and are assembled before closure/model validation.
+Remove this section when deterministic compilation is not used. Multiple PI or TCE paths in their respective cells are separated by `;` and are assembled before closure/model validation.
 
-| Process | PI | TCE | Domain rule | Common rules | Domain specs | Model | Vectors | Queue | Binding | Tests | Obligations | Conformance binding | Allow draft |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Process | PI | TCE | Domain rule | Common rules | Domain specs | Model | Vectors | Queue | Binding | Tests | Obligations | Conformance binding | Allow draft | Verifier contracts |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 """
 
 
@@ -430,6 +435,11 @@ def validate(w):
             for key in ('process', 'pi', 'tce', 'model'):
                 if not isinstance(compilation.get(key), str) or not compilation[key]:
                     errs.append(f'compilation.{key} required')
+            pis = compilation.get('pis',[compilation.get('pi')] if compilation.get('pi') else [])
+            if not isinstance(pis,list) or not pis or not all(isinstance(v,str) and v for v in pis):
+                errs.append('compilation.pis must be a nonempty string array')
+            elif compilation.get('pi')!=pis[0]:
+                errs.append('compilation.pi must equal first compilation.pis item')
             tces = compilation.get('tces', [compilation.get('tce')] if compilation.get('tce') else [])
             if not isinstance(tces, list) or not tces or not all(isinstance(v, str) and v for v in tces):
                 errs.append('compilation.tces must be a nonempty string array')
@@ -439,9 +449,10 @@ def validate(w):
                 vals = compilation.get(list_key, [])
                 if not isinstance(vals, list) or not all(isinstance(v, str) and v for v in vals):
                     errs.append('compilation.' + list_key + ' invalid')
+            if compilation.get('verifier_contracts') is not None and (not isinstance(compilation['verifier_contracts'],str) or not compilation['verifier_contracts']):
+                errs.append('compilation.verifier_contracts invalid')
             if compilation.get('conformance_binding') is not None and (not isinstance(compilation.get('conformance_binding'), str) or not compilation['conformance_binding']):
                 errs.append('compilation.conformance_binding invalid')
             if not isinstance(compilation.get('allow_draft'), bool):
                 errs.append('compilation.allow_draft must be boolean')
     return errs
-
