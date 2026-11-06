@@ -138,11 +138,14 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 'domain_specs': ['DomainSpec.md'],
                 'allow_draft': False,
             }
+            for name in ('Process.md','PI.md','TCE.md'):
+                (root/name).write_text('placeholder',encoding='utf-8')
             path = self.write_work(root, work)
             result = flow.conformance_work(path, work, 'process-closure')
             self.assertEqual(result['status'], 'blocked')
-            with self.assertRaisesRegex(flow.Blocked, 'CommonRule/DomainSpec'):
-                flow.compile_work(path, work, 'model', False)
+            self.assertIn('common_rule not found',result['reason'])
+            with self.assertRaisesRegex(flow.Blocked, 'common_rule not found'):
+                flow.compile_work(path, work, 'model', True)
 
 
     def test_implementation_obligations_require_trace_and_method(self):
