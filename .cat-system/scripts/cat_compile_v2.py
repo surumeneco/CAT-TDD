@@ -20,6 +20,7 @@ import tokenize
 
 from catlib.markdown import parse_frontmatter
 from catlib import semantic_types as typed
+from catlib import semantic_rules
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -714,8 +715,12 @@ def _unresolved_domain(d):
     if t=='union':return any(_unresolved_domain(x) for x in d['variants'])
     return False
 
-def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
+def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common_rules=(),domain_specs=(),allow_partial=False):
     pf,p=read_artifact(process_path,'process',allow_draft)
+    rule_paths=[*common_rules,*domain_specs]
+    try:rule_docs=semantic_rules.load_many(rule_paths,p['process'],allow_draft)
+    except semantic_rules.RuleError as exc:raise Blocked(str(exc)) from exc
+    rule_obligations=[x for d in rule_docs for x in d['rules']]
     pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
     require(bool(pi_paths),'at least one PI required')
     pi_docs=[]
@@ -733,6 +738,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
     dfile,domain=(read_artifact(domain_path,'domain-rule',allow_draft) if domain_path else (None,None))
     files=[(process_path,pf),*[(path,fm) for path,fm,_ in pi_docs],*[(path,fm) for path,fm,_ in tce_docs]]
     if dfile:files.append((domain_path,dfile))
+    for path, doc in zip(rule_paths,rule_docs):
+        files.append((path,{'id':doc['id'],'kind':doc['kind'],'status':doc['status'],
+                            'semantic_contract':'markdown-v2'}))
     contracts={fm.get('semantic_contract') for _,fm in files}
     require(len(contracts)==1,'all compiled CAT artifacts must use the same semantic_contract')
     contract=next(iter(contracts))
@@ -918,9 +926,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
     presence_unproven=sorted(f['id'] for f in pi_fields.values() if f.get('presence','required')!='required')
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
                        and all(v=='closed' for v in local_coverage_requirements.values())
-                       and not presence_unproven and not (unresolved_interfaces if contract=='markdown-v2' else []))
+                       and not presence_unproven and not (unresolved_interfaces if contract=='markdown-v2' else [])
+                       and not rule_obligations)
     if not coverage_proved:
-        require(allow_draft,
+        require(allow_draft or allow_partial,
                 'assembled Process closed-world coverage requirement not proved: '+json.dumps({'closed_world':p['closed_world'],'tce':local_coverage_requirements,'presence':presence_unproven,'triggers':per_trigger},ensure_ascii=False)[:700])
 
     source_records=[]
@@ -947,6 +956,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
     result['unresolved_domains']=unresolved_domains
     result['unresolved_interfaces']=unresolved_interfaces if contract=='markdown-v2' else []
     result['pi_artifacts']=[fm['id'] for _,fm,_ in pi_docs]
+    result['rule_obligations']=rule_obligations
+    result['normative_rule_inputs']=[{'id':d['id'],'kind':d['kind'],'sha256':d['sha256']} for d in rule_docs]
+    result['unverified_rule_ids']=sorted({r['id'] for r in rule_obligations})
     tce_map=[]
     for _,tce_fm,_ in tce_docs:
         owned=[x for x in rules if x.get('source_artifact')==tce_fm['id']]
@@ -968,6 +980,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False):
             'operations':[x['id'] for x in pi_operations],
             'constraint_count':len(constraints)},
         'tce':tce_map,
+        'common_rules':[d['id'] for d in rule_docs if d['kind']=='common-rule'],
+        'domain_specs':[d['id'] for d in rule_docs if d['kind']=='domain-spec'],
         'domain_rule':{
             'artifact':dfile['id'] if dfile else None,
             'definitions':sorted(definitions)}}
@@ -1147,9 +1161,16 @@ def format_domain(d, language='en'):
         fmt='安全符号付き整数' if language=='ja' and d['format']=='safe-signed-integer' else d['format']
         return names['string']+'<'+fmt+'>'
     if t in ('set','sequence'):
-        element={'string':names['string'],'integer':names['integer']}[d['element']]
-        return f"{names[t]}<{element}>"
+        element=d['element']
+        return f"{names[t]}<{format_domain(element,language) if isinstance(element,dict) else names[element}>"
     if t=='enum':return names['enum']+'{' + ', '.join(_format_literal(v,language) for v in d['values']) + '}'
+    if t=='bytes':return 'バイト列' if language=='ja' else 'bytes'
+    if t=='real':return ('実数' if language=='ja' else 'real')+('['+str(d.get('min',''))+'..'+str(d.get('max',''))+']' if 'min' in d or 'max' in d else '')
+    if t=='nullable':return format_domain(d['of'],language)+('またはnull' if language=='ja' else '|null')
+    if t=='union':return 'Union<'+', '.join(format_domain(x,language) for x in d['variants'])+'>'
+    if t=='record':
+        if 'name' in d:return ('レコード<' if language=='ja' else 'record<')+d['name']+'>'
+        return ('レコード<' if language=='ja' else 'record<')+','.join(f['id']+(':'+format_domain(f['domain'],language) if f['domain']['type']!='unknown' else '') for f in d['fields'])+'>'
     raise Blocked('unknown domain for rendering')
 
 
@@ -1257,14 +1278,14 @@ def write(path,content,check):
 def main(argv=None):
     cli=argparse.ArgumentParser(description=__doc__)
     sub=cli.add_subparsers(dest='command',required=True)
-    m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('--pi-extra',action='append',default=[]);m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
-    v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',required=True);v.add_argument('--pi-extra',action='append',default=[]);v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
-    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--pi-extra',action='append',default=[]);q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
-    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--pi-extra',action='append',default=[]);t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
+    m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('--pi-extra',action='append',default=[]);m.add_argument('--common-rule',action='append',default=[]);m.add_argument('--domain-spec',action='append',default=[]);m.add_argument('--allow-partial',action='store_true');m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
+    v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',required=True);v.add_argument('--pi-extra',action='append',default=[]);v.add_argument('--common-rule',action='append',default=[]);v.add_argument('--domain-spec',action='append',default=[]);v.add_argument('--allow-partial',action='store_true');v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
+    q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--pi-extra',action='append',default=[]);q.add_argument('--common-rule',action='append',default=[]);q.add_argument('--domain-spec',action='append',default=[]);q.add_argument('--allow-partial',action='store_true');q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
+    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--pi-extra',action='append',default=[]);t.add_argument('--common-rule',action='append',default=[]);t.add_argument('--domain-spec',action='append',default=[]);t.add_argument('--allow-partial',action='store_true');t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
     args=cli.parse_args(argv)
     try:
         if args.command=='model':
-            result=load(args.process,[args.pi,*getattr(args,'pi_extra',[])],args.tce,args.domain_rule,args.allow_draft)
+            result=load(args.process,[args.pi,*getattr(args,'pi_extra',[])],args.tce,args.domain_rule,args.allow_draft,args.common_rule,args.domain_spec,args.allow_partial)
             write(args.output,_model_content(result,args.output),args.check)
         else:
             fresh=load(args.process,args.pi,args.tce,args.domain_rule,args.allow_draft)
