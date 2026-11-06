@@ -176,6 +176,20 @@ class ReadableArtifactTests(unittest.TestCase):
             self.assertEqual(failed['status'],'blocked')
             self.assertIn('operation_owners',failed['mismatches'])
 
+    def test_model_conformance_rejects_duplicate_json_inventories(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            process,pi,tce=write_v2(root,False)
+            clean=load(process,pi,tce,allow_draft=True)
+            model_path=root/'TestModel.json'
+            for name in ('fields','rules','triggers','pi_operations','source_records','pi_boundaries'):
+                with self.subTest(inventory=name):
+                    model=json.loads(json.dumps(clean))
+                    model[name].append(dict(model[name][0]))
+                    model_path.write_text(json.dumps(model),encoding='utf-8')
+                    with self.assertRaisesRegex(Blocked,'duplicate'):
+                        conformance.validate(process,pi,[tce],model_path,allow_draft=True)
+
     def test_v2_expression_rejects_arbitrary_code(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),True)
