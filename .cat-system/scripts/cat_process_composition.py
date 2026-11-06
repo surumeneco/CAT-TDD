@@ -48,6 +48,73 @@ def _operation(model,id_,source_pi,role):
     return any(x['id']==id_ and x.get('source_pi')==source_pi and x['direction']==role
                for x in model.get('pi_operations',[]))
 
+def _unresolved_domain(domain):
+    if not isinstance(domain,dict):
+        return False  # Legacy scalar collection element names.
+    kind=domain.get('type')
+    if kind in (None,'unknown'):
+        return True
+    if kind=='record':
+        return domain.get('resolved') is not True or any(
+            _unresolved_domain(f.get('domain')) for f in domain.get('fields',[]))
+    if kind in ('set','sequence'):
+        return _unresolved_domain(domain.get('element'))
+    if kind=='nullable':
+        return _unresolved_domain(domain.get('of'))
+    if kind=='union':
+        return any(_unresolved_domain(x) for x in domain.get('variants',[]))
+    return False
+
+
+def _type_subset(source,target):
+    """True only for proved inclusion; False for a counterexample; None if unknown."""
+    if _unresolved_domain(source) or _unresolved_domain(target):
+        return None
+    if source==target:
+        return True
+    if isinstance(source,str):
+        source={'type':source}
+    if isinstance(target,str):
+        target={'type':target}
+    a=source.get('type');b=target.get('type')
+    if a=='union':
+        results=[_type_subset(x,target) for x in source['variants']]
+        return False if False in results else (True if all(x is True for x in results) else None)
+    if b=='union':
+        results=[_type_subset(source,x) for x in target['variants']]
+        return True if True in results else None
+    if b=='nullable':
+        return _type_subset(source['of'],target['of']) if a=='nullable' else _type_subset(source,target['of'])
+    if a=='nullable':
+        return False  # Null cannot inhabit any non-nullable, non-union target.
+    if a=='enum':
+        if b=='enum':
+            return all(any(semantic_types.same(v,x) for x in target['values'])
+                       for v in source['values'])
+        try:
+            return all(semantic_types.contains(target,v) for v in source['values'])
+        except semantic_types.DomainError:
+            return None
+    if a==b and a in ('integer','real'):
+        return ((target.get('min') is None or (source.get('min') is not None
+                                               and source['min']>=target['min']))
+                and (target.get('max') is None or (source.get('max') is not None
+                                                   and source['max']<=target['max'])))
+    if a==b=='string':
+        return target.get('format','any')=='any'
+    if a in ('set','sequence') and b in ('set','sequence'):
+        if a=='sequence' and b=='set':
+            return False  # Sequence permits duplicates; Set forbids duplicates.
+        return _type_subset(source['element'],target['element'])
+    if a==b=='record':
+        return None  # Non-identical closed record shapes need a dedicated proof.
+    if a=='integer' and b=='real':
+        return None  # Unbounded integers need a representability proof.
+    if a!=b:
+        return False
+    return None
+
+
 def _link(binding,models):
     source=models.get(binding['source_process'])
     target=models.get(binding['target_process'])
@@ -77,8 +144,7 @@ def _link(binding,models):
         seen.add(pair)
         f=_field(source,pair[0],'output')
         t=_field(target,pair[1],'input')
-        matched=f['domain']==t['domain']
-        # An optional producer cannot guarantee a required consumer input.
+        inclusion=_type_subset(f['domain'],t['domain'])
         f_presence=f.get('presence','required')
         t_presence=t.get('presence','required')
         # Presence is independent of type/nullability: a producer's possible
@@ -88,13 +154,16 @@ def _link(binding,models):
         if f_presence not in states or t_presence not in states:
             raise CompositionError('unsupported boundary presence')
         presences_ok=states[f_presence].issubset(states[t_presence])
-        if not matched or not presences_ok:
+        if inclusion is False or not presences_ok:
             raise CompositionError('typed/presence mismatch on '+pair[0]+' -> '+pair[1])
+        proof='matched' if inclusion is True else 'inconclusive'
         checks.append({'source_field':f['id'],'target_field':t['id'],
-                       'type':f['domain'],'presence':(f_presence,t_presence),'status':'matched'})
+                       'type':f['domain'],'target_type':t['domain'],
+                       'presence':(f_presence,t_presence),'status':proof})
     return {'source_process':source['process'],'target_process':target['process'],
             'source_pi':a,'target_pi':b,'source_operation':source_op,
-            'target_operation':target_op,'field_links':checks,'status':'structurally-matched',
+            'target_operation':target_op,'field_links':checks,
+            'status':'structurally-matched' if all(c['status']=='matched' for c in checks) else 'inconclusive',
             'external_effects_verified':False}
 
 def compose(model_paths,binding_path=None):
@@ -130,6 +199,8 @@ def compose(model_paths,binding_path=None):
     # and the receiver's incoming declaration; neither proves external effects.
     bound_pairs=set()
     for x in proven:
+        if x['status']!='structurally-matched':
+            continue
         bound_pairs.add((x['source_process'],x['source_pi'],x['target_process'],'send'))
         bound_pairs.add((x['target_process'],x['target_pi'],x['source_process'],'receive'))
     for edge in edges:
