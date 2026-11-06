@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-from cat_compile_v2 import Blocked, format_expr, read_artifact
+from cat_compile_v2 import Blocked, format_expr, format_domain, read_artifact
 
 
 def require(test, message):
@@ -90,31 +90,45 @@ def split_list(value):
     return [x.strip() for x in value.split(',') if x.strip()]
 
 
-def source_semantics(process_path, pi_path, tce_path, domain_path=None):
-    pf, p = read_artifact(process_path, 'process', False)
-    pif, pi = read_artifact(pi_path, 'pi', False)
+def source_semantics(process_path, pi_path, tce_path, domain_path=None,
+                     common_rules=(), domain_specs=(), allow_draft=False):
+    pf, p = read_artifact(process_path, 'process', allow_draft)
+    pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
+    pis=[(path,*read_artifact(path,'pi',allow_draft)) for path in pi_paths]
+    pif,pi=pis[0][1:]
     tce_paths = list(tce_path) if isinstance(tce_path, (list, tuple)) else [tce_path]
     require(tce_paths, 'at least one TCE artifact required')
     tces = []
     for path in tce_paths:
-        tf, tce = read_artifact(path, 'tce', False)
+        tf, tce = read_artifact(path, 'tce', allow_draft)
         tces.append((path, tf, tce))
     tf = tces[0][1]
-    dfile, domain = read_artifact(domain_path, 'domain-rule', False) if domain_path else (None, None)
+    dfile, domain = read_artifact(domain_path, 'domain-rule', allow_draft) if domain_path else (None, None)
 
-    files = [(process_path, pf), (pi_path, pif), *[(path, fm) for path, fm, _ in tces]]
+    norms=[(path,*read_artifact(path,kind,allow_draft))
+           for kind,paths in (('common-rule',common_rules),('domain-spec',domain_specs)) for path in paths]
+    files = [(process_path, pf), *[(path,fm) for path,fm,_ in pis],
+             *[(path, fm) for path, fm, _ in tces], *[(path,fm) for path,fm,_ in norms]]
     if dfile:
         files.append((domain_path, dfile))
 
     fields = {}
-    for item in pi['fields']:
-        fields[item['id']] = item['role']
+    typed_fields={}
+    for _,_,pi_doc in pis:
+        for item in pi_doc['fields']:
+            require(item['id'] not in fields,'duplicated PI field '+item['id'])
+            fields[item['id']] = item['role']
+            typed_fields[item['id']]=(item['role'],json.dumps(item['domain'],sort_keys=True,ensure_ascii=False),
+                                      item.get('presence','required'))
     for item in p.get('state_fields', []):
         fields[item['id']] = 'state'
+        typed_fields[item['id']]=('state',json.dumps(item['domain'],sort_keys=True,ensure_ascii=False),'required')
     for item in p.get('observations', []):
         fields[item['id']] = 'observation'
+        typed_fields[item['id']]=('observation',json.dumps(item['domain'],sort_keys=True,ensure_ascii=False),'required')
     for item in p.get('actions', []):
         fields[item['id']] = 'action'
+        typed_fields[item['id']]=('action',json.dumps(item['domain'],sort_keys=True,ensure_ascii=False),'required')
 
     state_ids = {key for key, role in fields.items() if role == 'state'}
     emitted_ids = {key for key, role in fields.items() if role in ('output', 'action')}
@@ -155,12 +169,19 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None):
         },
         'interfaces': tuple(sorted(p.get('interfaces', []))),
         'boundary': pi.get('boundary'),
+        'boundaries': sorted((fm['id'],b['peer'],b['direction']) for _,fm,spec in pis
+                             for b in spec.get('boundaries',[spec.get('boundary')]) if b),
+        'typed_fields': typed_fields,
+        'normative_rules': sorted((fm['id'],rule['id'],rule['condition'],rule['requirement'],rule['verifier_hint'])
+                                  for _,fm,spec in norms for rule in spec['rules']),
+        'normative_sections': sorted((fm['id'],sec['heading'],sec['sha256'])
+                                     for _,fm,spec in norms for sec in spec['sections']),
         'operations': {
-            item['id']: (item['direction'], item.get('trigger')) for item in pi.get('operations', [])
+            item['id']: (item['direction'], item.get('trigger')) for _,_,sp in pis for item in sp.get('operations', [])
         },
         'triggers': {item['id']: item['origin'] for item in p['triggers']},
         'fields': fields,
-        'constraints': tuple(format_expr(expr, language=tf.get('language', 'en')) for expr in pi.get('constraints', [])),
+        'constraints': tuple(format_expr(expr, language=tf.get('language', 'en')) for _,_,sp in pis for expr in sp.get('constraints', [])),
         'definitions': definitions,
         'rules': rules,
         'effects': effects,
@@ -202,9 +223,15 @@ def markdown_model(path):
                 for row in table(text, 'Triggers', '起点')}
 
     fields = {}
+    typed_fields = {}
     for row in table(text, 'Fields', '仕様要素'):
         role = cell(row, 'Role', '役割')
-        fields[cell(row, 'ID')] = ROLE_ALIASES.get(role, role)
+        fid=cell(row, 'ID')
+        fields[fid] = ROLE_ALIASES.get(role, role)
+        if 'Presence' in row or '存在' in row:
+            domain=clean_expr(cell(row,'Domain'))
+            presence=cell(row,'Presence','存在')
+            typed_fields[fid]=(fields[fid],domain,presence)
 
     constraints = tuple(clean_expr(cell(row, 'Expression', '式'))
                         for row in table(text, 'PI constraints', 'PI制約'))
@@ -234,8 +261,32 @@ def markdown_model(path):
                     tuple(sorted(split_list(cell(row, 'Unchanged state', '不変状態')))),
                     tuple(sorted(split_list(cell(row, 'Absent outputs/actions', '不在の出力・作用'))))))
 
+    sigs=table(text,'Field signatures','フィールド署名')
+    if sigs:
+        typed_fields={}
+        for row in sigs:
+            fid=cell(row,'ID')
+            require(fid not in typed_fields,'duplicate field signature: '+fid)
+            typ=json.loads(clean_expr(cell(row,'Type JSON','型JSON')))
+            typed_fields[fid]=(cell(row,'Role','役割'),json.dumps(typ,sort_keys=True,ensure_ascii=False),
+                               cell(row,'Presence'))
+    borders=table(text,'PI boundaries','PI境界集合')
+    if borders:
+        boundaries=sorted((cell(row,'Artifact'),cell(row,'Peer process','相手Process'),
+                           cell(row,'Direction','方向')) for row in borders)
+    else:
+        pi_ids=[aid for aid,(kind,_) in sources.items() if kind=='pi']
+        boundaries=sorted((pi_ids[0],boundary['peer'],boundary['direction']) for _ in [0]) if boundary and pi_ids else []
+    normative_rules=sorted((cell(row,'Source','出典'),cell(row,'ID'),cell(row,'Condition','条件'),
+                            cell(row,'Requirement','要求'),cell(row,'Verifier'))
+                           for row in table(text,'Normative rules','規範規則集合'))
+    normative_sections=sorted((cell(row,'Source','出典'),cell(row,'Heading','見出し'),clean_expr(cell(row,'SHA-256')))
+                              for row in table(text,'Normative section hashes','規範節ハッシュ'))
     return {'sources': sources, 'interfaces': interfaces, 'boundary': boundary,
             'operations': operations, 'triggers': triggers, 'fields': fields,
+            'typed_fields': typed_fields,
+            'boundaries': boundaries, 'normative_rules': normative_rules,
+            'normative_sections': normative_sections,
             'constraints': constraints, 'definitions': definitions, 'rules': rules,
             'effects': effects, 'frames': frames}
 
@@ -256,6 +307,8 @@ def json_model(path):
                 sources[ident] = (kind, digest)
 
     fields = {item['id']: item['role'] for item in model.get('fields', [])}
+    typed_fields={item['id']:(item['role'],json.dumps(item['domain'],sort_keys=True,ensure_ascii=False),
+                             item.get('presence','required')) for item in model.get('fields', [])}
     rules = {item['id']: (item.get('source_artifact'), item['trigger'],
                           format_expr(item['when'], language=model.get('language', 'en')))
              for item in model.get('rules', [])}
@@ -280,6 +333,14 @@ def json_model(path):
         'sources': sources,
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
         'boundary': model.get('pi_boundary'),
+        'boundaries': sorted((x['artifact'],x['peer'],x['direction']) for x in model.get('pi_boundaries',[
+            {'artifact':model.get('source_semantic_map',{}).get('pi',{}).get('artifact'),
+             **model.get('pi_boundary',{})}] if model.get('pi_boundary') else [])),
+        'typed_fields': typed_fields,
+        'normative_rules': sorted((x['source_artifact'],x['id'],x['condition'],x['requirement'],x['verifier_hint'])
+                                  for x in model.get('normative_rules',[])),
+        'normative_sections': sorted((x['source_artifact'],x['heading'],x['sha256'])
+                                     for x in model.get('normative_sections',[])),
         'operations': operations,
         'triggers': {item['id']: item['origin'] for item in model.get('triggers', [])},
         'fields': fields,
@@ -292,16 +353,22 @@ def json_model(path):
     }
 
 
-def validate(process, pi, tce, model, domain_rule=None):
-    expected = source_semantics(process, pi, tce, domain_rule)
+def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_specs=(),allow_draft=False):
+    expected = source_semantics(process, pi, tce, domain_rule,common_rules,domain_specs,allow_draft)
     actual = json_model(model) if Path(model).suffix.lower() == '.json' else markdown_model(model)
     mismatches = []
     for key in ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
-                'constraints', 'definitions', 'rules', 'effects', 'frames'):
+                'constraints', 'definitions', 'rules', 'effects', 'frames',
+                'typed_fields','boundaries','normative_rules','normative_sections'):
         if actual.get(key) != expected.get(key):
             mismatches.append(key)
+    raw_model=json.loads(Path(model).read_text(encoding='utf-8')) if Path(model).suffix.lower()=='.json' else None
+    pending=(len(raw_model.get('normative_rules',[]))+len(raw_model.get('normative_sections',[]))+
+             len(raw_model.get('type_obligations',[]))+len(raw_model.get('rule_conflicts',[]))) if raw_model else 0
     return {
         'schema': 'cat-model-conformance/v1',
+        'model_status':raw_model.get('status') if raw_model else 'inconclusive',
+        'pending_obligations':pending,
         'status': 'passed' if not mismatches else 'blocked',
         'mismatches': mismatches,
         'source_semantics': sorted(expected),
@@ -316,9 +383,14 @@ def main(argv=None):
     ap.add_argument('model')
     ap.add_argument('--tce', action='append', required=True)
     ap.add_argument('--domain-rule')
+    ap.add_argument('--pi',dest='extra_pi',action='append',default=[])
+    ap.add_argument('--common-rule',action='append',default=[])
+    ap.add_argument('--domain-spec',action='append',default=[])
+    ap.add_argument('--allow-draft',action='store_true')
     args = ap.parse_args(argv)
     try:
-        result = validate(args.process, args.pi, args.tce, args.model, args.domain_rule)
+        result = validate(args.process, [args.pi,*args.extra_pi], args.tce, args.model, args.domain_rule,
+                          args.common_rule,args.domain_spec,args.allow_draft)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0 if result['status'] == 'passed' else 2
     except (Blocked, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
