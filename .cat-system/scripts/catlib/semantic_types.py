@@ -144,7 +144,15 @@ def check_presence(domain,presence,value=MISSING):
 def contains(d,value):
     t=d['type']
     if t=='nullable':return value is None or contains(d['of'],value)
-    if t=='union':return any(contains(v,value) for v in d['variants'])
+    if t=='union':
+        unknown=None
+        for variant in d['variants']:
+            try:
+                if contains(variant,value):return True
+            except DomainError as exc:
+                unknown=exc
+        if unknown is not None:raise unknown
+        return False
     if t=='integer':
         return type(value) is int and (d.get('min') is None or value>=d['min']) and (d.get('max') is None or value<=d['max'])
     if t=='real':
@@ -157,15 +165,31 @@ def contains(d,value):
     if t=='bytes':
         return isinstance(value,(bytes,bytearray)) or (isinstance(value,list) and all(type(v) is int and 0<=v<=255 for v in value))
     if t in ('set','sequence'):
-        if not isinstance(value,list) or not all(contains(d['element'],v) for v in value):return False
-        return t=='sequence' or len({_signature(v) for v in value})==len(value)
+        if not isinstance(value,list):return False
+        if t=='set' and len({_signature(v) for v in value})!=len(value):return False
+        unknown=None
+        for element in value:
+            try:
+                if not contains(d['element'],element):return False
+            except DomainError as exc:
+                unknown=exc
+        if unknown is not None:raise unknown
+        return True
     if t=='record':
         # Record shape is irrelevant for values that cannot be records.
         # Unknown field schemas are inconclusive only for record-shaped values.
         if type(value) is not dict:return False
         if not d.get('resolved'):raise DomainError('unresolved record shape')
         if set(value)-{f['id'] for f in d['fields']}:return False
-        return all(check_presence(f['domain'],f['presence'],value.get(f['id'],MISSING))[1] for f in d['fields'])
+        unknown=None
+        for field in d['fields']:
+            try:
+                if not check_presence(field['domain'],field['presence'],value.get(field['id'],MISSING))[1]:
+                    return False
+            except DomainError as exc:
+                unknown=exc
+        if unknown is not None:raise unknown
+        return True
     raise DomainError('cannot validate type '+repr(t))
 
 def set_add(values,element):
