@@ -20,7 +20,7 @@ def model(name,peer,role):
                         'direction':'provide' if send else 'accept','trigger':'run'}],
       'fields':[{'id':'output.value' if send else 'input.value',
                  'role':'output' if send else 'input','presence':'required',
-                 'domain':{'type':'integer'}}]}
+                 'source_pi':name+'.pi','domain':{'type':'integer'}}]}
 
 def binding():
     return {'schema':'cat-process-bindings/v1','links':[{
@@ -46,6 +46,14 @@ class CompositionTests(unittest.TestCase):
             self.assertEqual(result['bindings'][0]['status'],'structurally-matched')
             self.assertEqual(len(result['unresolved_connections']),0)
             self.assertFalse(result['bindings'][0]['external_effects_verified'])
+
+    def test_other_pi_field_cannot_be_borrowed_for_binding(self):
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            producer['fields'][0]['source_pi']='p.one.another-pi'
+            a,b,links=self.write(Path(td),first=producer)
+            with self.assertRaisesRegex(composer.CompositionError,'owned by PI p.one.pi'):
+                composer.compose([a,b],links)
 
     def test_type_mismatch_blocks_binding(self):
         with tempfile.TemporaryDirectory() as td:
