@@ -150,15 +150,14 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
 
 
 
-def aggregate(document, queue=None, technology_results=(), model_conformance=None, rule_verification=None):
-    """Derive evaluated obligation state from script/provider-owned evidence without mutating the skeleton."""
+def aggregate(document, queue=None, technology_results=(), model_conformance=None,
+              rule_verification=None, verified_green=None):
+    """Aggregate only independently checked Green receipts; Queue flags are not proof."""
     result=json.loads(json.dumps(document))
     items=result.get('items',[])
-    done_by_rule={}
-    if queue:
-        for q in queue.get('items',[]):
-            if q.get('status')=='done' and q.get('evidence_ref'):
-                done_by_rule.setdefault(q.get('model_ref'),[]).append(q.get('evidence_ref'))
+    # The caller must verify model/vectors hashes, pre-transition Queue SHA and
+    # the script-owned Green receipt before passing this evidence map.
+    done_by_rule=verified_green or {}
     tech=list(technology_results or [])
     tech_pass=bool(tech) and all(x.get('status')=='passed' for x in tech)
     model_pass=bool(model_conformance and model_conformance.get('status')=='passed')
