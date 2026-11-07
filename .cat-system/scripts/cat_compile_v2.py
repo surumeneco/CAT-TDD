@@ -411,6 +411,14 @@ def _readable_spec_v2(path, kind, fm):
             trig=_cell(row,'Trigger','trigger','起点',required=False)
             operations.append({'id':semantic_ident(_cell(row,'ID','Id','id'),'PI operation ID'),'direction':odir,
                                'trigger':None if trig in ('','-','—','none','なし') else trig})
+        operation_presence=[]
+        for row in _table_any(body,('Operation presence','操作別存在'),required=False):
+            operation_presence.append({
+                'operation':semantic_ident(_cell(row,'Operation','操作'),'Operation presence operation'),
+                'field':semantic_ident(_cell(row,'Field','項目'),'Operation presence field'),
+                'presence':_canon(_cell(row,'Presence','存在'),
+                                  {'required':{'必須'},'optional':{'任意'},'absent':{'不在'},
+                                   'undefined':{'未定義'}},'Operation presence state')})
         constraints=[]
         for row in _table_any(body,('Constraints','制約'),required=False):
             constraints.append(parse_expr_text(_cell(row,'Expression','Condition','expression','condition','式','条件')))
@@ -420,7 +428,8 @@ def _readable_spec_v2(path, kind, fm):
                            {'receive':{'受信'},'send':{'送信'},'bidirectional':{'双方向'}},'PI boundary direction') == direction,
                     'PI boundary mixed direction requires explicit per-peer operation semantics')
         return {'schema':S,'kind':kind,'process':process,'boundary':{'peer':peer,'direction':direction,**({'peers':extra_peers} if len(extra_peers)>1 else {})},
-                'fields':fields,'operations':operations,'constraints':constraints}
+                'fields':fields,'operations':operations,'operation_presence':operation_presence,
+                'constraints':constraints}
     if kind=='tce':
         require(_section_any(body,'Rules','Effects') is None,
                 'markdown-v2 TCE must use Behaviors/振る舞い; legacy Rules/Effects are markdown-v1 only')
@@ -532,7 +541,7 @@ def read_artifact(path, kind, allow_draft):
         except json.JSONDecodeError as e: raise Blocked(f'{path}: {e}') from e
     check_keys(spec,['schema','kind','process'],
                ['triggers','fields','rules','definitions','closed_world','coverage','constraints',
-                'interfaces','state_fields','observations','actions','boundary','operations'],str(path))
+                'interfaces','state_fields','observations','actions','boundary','operations','operation_presence'],str(path))
     require(spec['schema']==S and spec['kind']==kind and spec['process']==fm.get('process'),
             f'{path}: frontmatter/semantic body mismatch')
     ident(fm.get('id'),'artifact id'); ident(spec['process'],'process id')
@@ -744,8 +753,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     contracts={fm.get('semantic_contract') for _,fm in files}
     require(len(contracts)==1,'all compiled CAT artifacts must use the same semantic_contract')
     contract=next(iter(contracts))
-    semantics=[p,*[a for _,_,a in pi_docs],*[tce for _,_,tce in tce_docs],*([domain] if domain else [])]
+    semantics=[p,*[a for _,_,a in pi_docs],*[tce for _,_,tce in tce_docs]]
     require(len({a['process'] for a in semantics})==1,'different Process IDs in artifacts')
+    if domain and domain['process']!=p['process']:
+        require(p['process'].startswith(domain['process']+'.'),
+                'DomainRule scope is not an ancestor of the assembled Process')
+        require(p['process'] in dfile.get('refs',[]),
+                'shared DomainRule must explicitly reference the assembled Process')
     for _,item_fm,_ in pi_docs:
         require(pf['id'] in item_fm['refs'] or item_fm['id'] in p.get('interfaces',[]),
                 'missing Process→PI reference: '+item_fm['id'])
@@ -768,10 +782,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     pi_fields={}
     constraints=[]
     pi_operations=[]
+    operation_presence=[]
     for _,pif,pi in pi_docs:
         if contract=='markdown-v2':
             require(pif['id'] in p.get('interfaces',[]),'Process Interfaces must reference loaded PI '+pif['id'])
-            check_keys(pi,['schema','kind','process','boundary','fields','operations'],['constraints'],where='PI')
+            check_keys(pi,['schema','kind','process','boundary','fields','operations'],
+                       ['constraints','operation_presence'],where='PI')
             check_keys(pi['boundary'],['peer','direction'],['peers'],where='PI boundary')
             require(all(ID.fullmatch(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
                     'PI peer process must use stable Process IDs')
@@ -786,6 +802,15 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 elif op['trigger'] is not None:
                     require(op['trigger'] in {t['id'] for t in p['triggers']},'PI operation trigger undeclared')
             pi_operations.extend(dict(op, source_pi=pif['id']) for op in pi['operations'])
+            known_ops={op['id'] for op in pi['operations']}
+            known_fields={f['id'] for f in pi['fields']}
+            for entry in pi.get('operation_presence',[]):
+                check_keys(entry,['operation','field','presence'],where='Operation presence')
+                require(entry['operation'] in known_ops,'presence references operation outside owning PI')
+                require(entry['field'] in known_fields,'presence references field outside owning PI')
+                require(entry['presence'] in ('required','optional','absent','undefined'),
+                        'invalid operation presence')
+                operation_presence.append(dict(entry,source_pi=pif['id']))
         else:
             check_keys(pi,['schema','kind','process','fields'],['constraints'],where='PI')
         require(isinstance(pi['fields'],list) and pi['fields'],'PI fields required')
@@ -823,6 +848,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 'compiled PI not declared in Process interfaces')
         unresolved_interfaces=sorted(set(p.get('interfaces',[]))-{fm['id'] for _,fm,_ in pi_docs})
         unique([op['id'] for op in pi_operations], 'assembled PI operations')
+        unique([(x['operation'],x['field']) for x in operation_presence],
+               'operation/field presence declarations')
 
     if contract=='markdown-v2':
         for name,items,role,extra in (
@@ -992,7 +1019,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     if contract=='markdown-v2':
         result['pi_boundary']=pi_docs[0][2]['boundary'] if len(pi_docs)==1 else None
         result['pi_boundaries']=[{'artifact':fm['id'],**spec['boundary']} for _,fm,spec in pi_docs]
-        result['pi_operations']=pi_operations;result['process_interfaces']=p.get('interfaces',[])
+        result['pi_operations']=pi_operations
+        result['operation_presence']=operation_presence
+        result['process_interfaces']=p.get('interfaces',[])
     if contract in ('markdown-v1','markdown-v2'):result['normalized_ir']='cat-machine/v2'
     return result
 
