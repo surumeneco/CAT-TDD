@@ -19,6 +19,7 @@ from pathlib import Path, PurePath
 from catlib.common import Blocked, json_bytes, read_json, require, sha
 from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
 import cat_queue
+import cat_queue_evidence as queue_evidence
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
 import cat_verifier_contracts as verifier_runtime
@@ -574,9 +575,23 @@ def conformance_work(wpath, w, kind):
     skeleton=read_json(Path(path))
     require(skeleton.get('schema')=='cat-implementation-obligations/v1','wrong implementation obligation schema')
     queue=None
+    verified_green={}
     if conf.get('queue'):
         qpath=Path(compilation_path(wpath,w,conf,'queue',True))
         queue=read_json(qpath)
+        if any(x.get('status')=='done' for x in queue.get('items',[])):
+            if not (conf.get('model') and conf.get('vectors')):
+                return {'gate':kind,'status':'inconclusive',
+                        'reason':'completed Queue needs exact model/vectors and Green receipts'}
+            try:
+                verified_green=queue_evidence.verify(
+                    w['id'],qpath,
+                    compilation_path(wpath,w,conf,'model',True),
+                    compilation_path(wpath,w,conf,'vectors',True),
+                    wpath.parent/'.cat-flow'/'evidence')
+            except (Blocked,ValueError,KeyError,OSError,TypeError) as exc:
+                return {'gate':kind,'status':'blocked',
+                        'reason':'Queue Green evidence invalid: '+str(exc)}
     model_gate=conformance_evidence_status(wpath,w,'model-conformance')
     rule_verification=None
     if any(x.get('method')=='normative-rule-verifier' for x in skeleton['items']):
@@ -587,7 +602,7 @@ def conformance_work(wpath, w, kind):
                 rule_verification=verifier_runtime.evaluate(model_path,registry_path)
             except (verifier_runtime.VerifierError,Blocked,ValueError,OSError,KeyError,TypeError) as exc:
                 return {'gate':kind,'status':'blocked','reason':'invalid normative rule verifier: '+str(exc)}
-    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate,rule_verification)
+    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate,rule_verification,verified_green)
     runtime=wpath.parent/'.cat-flow'/'cache'
     runtime.mkdir(parents=True,exist_ok=True)
     evaluated=runtime/'implementation-obligations-evaluated.json'
