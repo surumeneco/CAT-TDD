@@ -1031,6 +1031,44 @@ def match_rules(model, trigger, env):
     require(len(matched)==1,f'test vector has {len(matched)} matching TCE rules at {trigger}')
     return matched[0]
 
+def _vector_operation(model,test):
+    matches=[op for op in model.get('pi_operations',[])
+             if op['direction']=='accept' and op.get('trigger')==test['trigger']]
+    specified=test.get('operation')
+    if specified is None:
+        require(len(matches)<=1,
+                'ambiguous accepted PI operations for trigger; vector.operation required')
+        return matches[0] if matches else None
+    matching=[op for op in matches if op['id']==specified]
+    require(len(matching)==1,'vector.operation not accepted for trigger')
+    return matching[0]
+
+
+def _vector_field_presence(model,operation,field):
+    presence=field.get('presence','required')
+    if operation is None or field.get('source_pi')!=operation.get('source_pi'):
+        return presence
+    matched=[x for x in model.get('operation_presence',[])
+             if x['operation']==operation['id'] and x['field']==field['id']]
+    require(len(matched)<=1,'ambiguous per-operation field presence')
+    return matched[0]['presence'] if matched else presence
+
+
+def _vector_input_value(domain,presence,payload,name):
+    if name not in payload:
+        require(presence in ('optional','absent'),
+                'vector missing required/undefined input '+name)
+        return typed.MISSING
+    value=payload[name]
+    if value=={'$cat_presence':'undefined'}:
+        require(presence=='undefined','undefined input not allowed by Presence '+name)
+        return typed.UNDEFINED
+    require(presence not in ('absent','undefined'),
+            'value input incompatible with Presence '+name)
+    require(in_domain(domain,value), 'input out of domain '+name)
+    return value
+
+
 def expand_cases(model, vectors):
     check_keys(vectors,['schema','process','cases'],optional=('selection_rule',),where='vectors')
     require(vectors['schema']==V and vectors['process']==model['process'],'vector version/Process mismatch')
@@ -1039,12 +1077,26 @@ def expand_cases(model, vectors):
     states={f for f in fields if fields[f]['role']=='state'}
     cases=[]
     for test in vectors['cases']:
-        check_keys(test,['id','trigger','input','state'],where='test vector')
+        check_keys(test,['id','trigger','input','state'],optional=('operation',),where='test vector')
         ident(test['id'],'test ID');require(test['trigger'] in {t['id'] for t in model['triggers']},'unknown vector trigger')
-        env={**test['input'],**test['state']}
-        require(set(test['input'])==inputs and set(test['state'])==states,'vector must supply each declared input/state exactly once')
-        for name,val in env.items():require(in_domain(fields[name]['domain'],val),f'{test["id"]}: {name} out of declared domain')
+        require(isinstance(test['input'],dict) and isinstance(test['state'],dict),'vector input/state must be objects')
+        operation=_vector_operation(model,test)
+        require(set(test['input'])<=inputs and set(test['state'])==states,
+                'vector input includes undeclared fields or omits state')
+        env={}
+        for name in sorted(inputs):
+            field=fields[name]
+            presence=_vector_field_presence(model,operation,field)
+            val=_vector_input_value(field['domain'],presence,test['input'],name)
+            if val is not typed.MISSING:env[name]=val
+        for name,val in test['state'].items():
+            require(in_domain(fields[name]['domain'],val),f'{test["id"]}: {name} out of declared domain')
+            env[name]=val
         defs={d['id']:d for d in model['definitions']}
+        reads=set().union(*(used_refs(x,defs) for x in model['pi_constraints']),
+                          *(used_refs(r['when'],defs) for r in model['rules'] if r['trigger']==test['trigger']))
+        require(all(name in env and env[name] is not typed.UNDEFINED for name in reads),
+                'TCE/PI expression reads missing or undefined field; presence-aware guard is required')
         require(all(eval_expr(c,env,defs) for c in model['pi_constraints']),f'{test["id"]}: violates PI combination constraint')
         rule=match_rules(model,test['trigger'],env)
         defs={d['id']:d for d in model['definitions']}
