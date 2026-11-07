@@ -424,16 +424,17 @@ def conformance_input_hashes(wpath, w, kind):
             entry={**conf,'model':rel}
             path=Path(compilation_path(wpath,w,entry,'model',True))
             result['composition_model:'+str(i)]={'path':str(path),'sha256':sha(path.read_bytes())}
-        if conf.get('verifier_registry'):
-            path=Path(compilation_path(wpath,w,conf,'verifier_registry',True))
-            manifest=read_json(path)
-            for i,entry in enumerate(manifest.get('entries',[]),1):
-                for label in ('fixture','runner'):
-                    if not entry.get(label):continue
-                    try:dep=verifier_runtime.resolve(path.parent,entry[label]['path'])
-                    except (verifier_runtime.VerifierError,KeyError,OSError) as exc:
-                        raise Blocked('invalid verifier dependency: '+str(exc)) from exc
-                    result['verifier:'+str(i)+':'+label]={'path':str(dep),'sha256':sha(dep.read_bytes())}
+    if kind in ('process-closure','implementation-conformance') and conf.get('verifier_registry'):
+        registry_path=Path(compilation_path(wpath,w,conf,'verifier_registry',True))
+        registry=read_json(registry_path)
+        for i,entry in enumerate(registry.get('entries',[]),1):
+            for label in ('fixture','runner'):
+                if not entry.get(label):continue
+                try:dep=verifier_runtime.resolve(registry_path.parent,entry[label]['path'])
+                except (verifier_runtime.VerifierError,KeyError,OSError) as exc:
+                    raise Blocked('invalid verifier dependency: '+str(exc)) from exc
+                result['verifier:'+str(i)+':'+label]={'path':str(dep),
+                                                       'sha256':sha(dep.read_bytes())}
     return result
 
 
