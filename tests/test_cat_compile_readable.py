@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.cat-system' / 'scripts'))
 from cat_compile_v2 import load, render_model_markdown, Blocked
+import cat_model_conformance as conformance
 
 
 def fm(kind, identifier, refs, contract='markdown-v2', language=None):
@@ -160,6 +161,50 @@ class ReadableArtifactTests(unittest.TestCase):
             for key in ('triggers','fields','pi_constraints','rules','coverage_requirement','pi_boundary','pi_operations'):
                 self.assertEqual(ja[key],en[key],key)
 
+    def test_model_conformance_detects_operation_reassigned_to_another_pi(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            process,pi,tce=write_v2(root,False)
+            model=load(process,pi,tce,allow_draft=True)
+            model_path=root/'TestModel.json'
+            model_path.write_text(json.dumps(model),encoding='utf-8')
+            passed=conformance.validate(process,pi,[tce],model_path,allow_draft=True)
+            self.assertEqual(passed['status'],'passed')
+            model['pi_operations'][0]['source_pi']='unrelated.pi'
+            model_path.write_text(json.dumps(model),encoding='utf-8')
+            failed=conformance.validate(process,pi,[tce],model_path,allow_draft=True)
+            self.assertEqual(failed['status'],'blocked')
+            self.assertIn('operation_owners',failed['mismatches'])
+
+    def test_model_conformance_rejects_interface_field_owned_by_wrong_pi(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            process,pi,tce=write_v2(root,False)
+            model=load(process,pi,tce,allow_draft=True)
+            model_path=root/'TestModel.json'
+            model_path.write_text(json.dumps(model),encoding='utf-8')
+            self.assertEqual(conformance.validate(process,pi,[tce],model_path,allow_draft=True)['status'],'passed')
+            field=next(f for f in model['fields'] if f['role']=='input')
+            field['source_pi']='unrelated.pi'
+            model_path.write_text(json.dumps(model),encoding='utf-8')
+            result=conformance.validate(process,pi,[tce],model_path,allow_draft=True)
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('field_owners',result['mismatches'])
+
+    def test_model_conformance_rejects_duplicate_json_inventories(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            process,pi,tce=write_v2(root,False)
+            clean=load(process,pi,tce,allow_draft=True)
+            model_path=root/'TestModel.json'
+            for name in ('fields','rules','triggers','pi_operations','source_records','pi_boundaries'):
+                with self.subTest(inventory=name):
+                    model=json.loads(json.dumps(clean))
+                    model[name].append(dict(model[name][0]))
+                    model_path.write_text(json.dumps(model),encoding='utf-8')
+                    with self.assertRaisesRegex(Blocked,'duplicate'):
+                        conformance.validate(process,pi,[tce],model_path,allow_draft=True)
+
     def test_v2_expression_rejects_arbitrary_code(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),True)
@@ -191,8 +236,11 @@ class ReadableArtifactTests(unittest.TestCase):
             process,pi,tce=write_v2(Path(d),False)
             pi.write_text(pi.read_text().replace('input.enabled | receive | boolean | required',
                                                  'input.enabled | receive | boolean | optional'),encoding='utf-8')
-            with self.assertRaisesRegex(Blocked,'supports required PI presence only'):
-                load(process,pi,tce,allow_draft=True)
+            model=load(process,pi,tce,allow_draft=True)
+            field=next(f for f in model['fields'] if f['id']=='input.enabled')
+            self.assertEqual(field['presence'],'optional')
+            self.assertIn('input.enabled',model['presence_unproven'])
+            self.assertEqual(model['coverage_claim'],'partial')
 
     def test_undeclared_observation_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:

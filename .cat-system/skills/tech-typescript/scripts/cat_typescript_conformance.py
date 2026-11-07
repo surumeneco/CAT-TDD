@@ -94,7 +94,7 @@ def exports_from(path: Path):
     return exports, wildcard
 
 
-def inspect(repo, binding_path, process_path, pi_path):
+def inspect(repo, binding_path, process_path, pi_path, pi_extras=()):
     repo = Path(repo).resolve()
     binding_path = Path(binding_path).resolve()
     require(repo.is_dir(), 'repository root missing')
@@ -103,11 +103,13 @@ def inspect(repo, binding_path, process_path, pi_path):
     require(binding.get('schema') == 'cat-typescript-conformance-binding/v1', 'wrong TypeScript conformance binding schema')
 
     _, process = read_artifact(process_path, 'process', False)
-    _, pi = read_artifact(pi_path, 'pi', False)
+    pi_docs=[read_artifact(path,'pi',False) for path in (pi_path,*pi_extras)]
     observations = {x['id'] for x in process.get('observations', [])}
     actions = {x['id'] for x in process.get('actions', [])}
     capability_refs = observations | actions
-    operations = {x['id'] for x in pi.get('operations', [])}
+    operations = {x['id'] for _,pi in pi_docs for x in pi.get('operations', [])}
+    require(len(operations)==sum(len(pi.get('operations',[])) for _,pi in pi_docs),
+            'duplicate PI operation across implementation boundary')
 
     source_globs = binding.get('source_globs', ['src/**/*.ts', 'src/**/*.tsx'])
     require(isinstance(source_globs, list) and source_globs and all(isinstance(x, str) and x for x in source_globs),
@@ -188,6 +190,13 @@ def inspect(repo, binding_path, process_path, pi_path):
         'detected_capabilities': detected,
         'source_files': [str(x.relative_to(repo)) for x in sources],
         'public_exports': sorted(observed_exports),
+        'covered_obligation_ids': sorted({
+            'interface.'+x['semantic_ref'] for x in checks
+            if x['kind']=='interface' and x['status']=='passed'
+        } | {
+            'capability.'+x['semantic_ref'] for x in checks
+            if x['kind']=='capability' and x['status']=='passed'
+        }) if status=='passed' else [],
     }
 
 
@@ -197,9 +206,10 @@ def main(argv=None):
     ap.add_argument('--binding', required=True)
     ap.add_argument('--process', required=True)
     ap.add_argument('--pi', required=True)
+    ap.add_argument('--pi-extra', action='append', default=[])
     args = ap.parse_args(argv)
     try:
-        result = inspect(args.repo, args.binding, args.process, args.pi)
+        result = inspect(args.repo, args.binding, args.process, args.pi,args.pi_extra)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0 if result['status'] == 'passed' else (3 if result['status'] == 'inconclusive' else 2)
     except (Blocked, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
