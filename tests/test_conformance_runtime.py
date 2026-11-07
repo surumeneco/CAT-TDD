@@ -148,6 +148,32 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 flow.compile_work(path, work, 'model', True)
 
 
+    def test_implementation_gate_freshness_tracks_rule_runner_and_fixture(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);work=base_work()
+            work['compilation']={'schema':'cat-compile/v2','process':'Process.md',
+                                 'pi':'PI.md','tce':'TCE.md','model':'Model.json',
+                                 'obligations':'Obligations.json','verifier_registry':'Registry.json',
+                                 'allow_draft':False}
+            for name in ('Process.md','PI.md','TCE.md','Model.json','Obligations.json'):
+                (root/name).write_text('{}',encoding='utf-8')
+            (root/'fixture.json').write_text('{"version":1}',encoding='utf-8')
+            (root/'runner.py').write_text('print("pass")',encoding='utf-8')
+            (root/'Registry.json').write_text(json.dumps({'entries':[{
+                'fixture':{'path':'fixture.json','sha256':'0'*64},
+                'runner':{'path':'runner.py','sha256':'0'*64}}]}),encoding='utf-8')
+            work_path=self.write_work(root,work)
+            before=flow.conformance_input_hashes(work_path,work,'implementation-conformance')
+            self.assertIn('verifier:1:runner',before)
+            (root/'runner.py').write_text('print("changed")',encoding='utf-8')
+            after=flow.conformance_input_hashes(work_path,work,'implementation-conformance')
+            self.assertNotEqual(before['verifier:1:runner']['sha256'],
+                                after['verifier:1:runner']['sha256'])
+            (root/'fixture.json').write_text('{"version":2}',encoding='utf-8')
+            final=flow.conformance_input_hashes(work_path,work,'implementation-conformance')
+            self.assertNotEqual(after['verifier:1:fixture']['sha256'],
+                                final['verifier:1:fixture']['sha256'])
+
     def test_implementation_obligations_require_trace_and_method(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
