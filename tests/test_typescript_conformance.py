@@ -172,9 +172,11 @@ export function provideResult() { return false; }
                 for i,r in enumerate(model['rules'])
             ]}
             tech=[{'technology':'TypeScript','status':'passed','checks':[]}]
+            verified_green={r['id']:['evidence:green:'+r['id']] for r in model['rules']}
             evaluated=obligations.aggregate(
                 skeleton,queue,tech,
-                {'status':'passed','evidence':'evidence:model-conformance'})
+                {'status':'passed','evidence':'evidence:model-conformance'},
+                verified_green=verified_green)
             status_by_category={}
             for obligation in evaluated['items']:
                 status_by_category.setdefault(obligation['category'],set()).add(obligation['status'])
