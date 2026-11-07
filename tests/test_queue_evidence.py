@@ -94,7 +94,7 @@ class QueueEvidenceTest(unittest.TestCase):
                                       allowed_evidence_root=root)
             data=json.loads(m.read_text());data['fields'][0]['presence']='optional'
             m.write_bytes(json_bytes(data))
-            with self.assertRaisesRegex(Blocked,'stale'):
+            with self.assertRaisesRegex(compiler.Blocked,'stale'):
                 cat_queue_evidence.verify('demo.work',q,m,v,root)
 
 
