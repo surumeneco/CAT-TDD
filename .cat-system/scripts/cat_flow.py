@@ -376,7 +376,7 @@ def conformance_input_hashes(wpath, w, kind):
     if kind == 'model-conformance':
         keys.append('model')
     elif kind == 'implementation-conformance':
-        keys.extend(['model','queue','obligations'])
+        keys.extend(['model','vectors','queue','obligations'])
         if conf.get('conformance_binding'):
             keys.append('conformance_binding')
     # Runtime rule verification must be invalidated when its registered
@@ -398,6 +398,21 @@ def conformance_input_hashes(wpath, w, kind):
     for index, raw in enumerate(compilation_tce_paths(wpath, w, conf, True), 1):
         path = Path(raw)
         result['tce:' + str(index)] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    if kind=='implementation-conformance' and conf.get('queue'):
+        queue_file=Path(compilation_path(wpath,w,conf,'queue',True))
+        queue_data=read_json(queue_file)
+        root=(wpath.parent/'.cat-flow'/'evidence').resolve()
+        for item in queue_data.get('items',[]):
+            if item.get('status')!='done':continue
+            ref=item.get('evidence_ref')
+            require(isinstance(ref,str) and bool(ref),
+                    'done Queue missing Green evidence ref')
+            evidence=Path(ref)
+            require(evidence.is_file() and not evidence.is_symlink() and
+                    evidence.resolve().is_relative_to(root),
+                    'Queue Green evidence must remain in script-owned root')
+            result['green:'+item['id']]={'path':str(evidence.resolve()),
+                                         'sha256':sha(evidence.read_bytes())}
     if kind=='process-closure':
         for key in ('verifier_registry','composition_binding'):
             if conf.get(key):
