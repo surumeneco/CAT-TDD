@@ -136,6 +136,17 @@ export function provideResult() { return false; }
             binding=self.binding(root)
             result=inspector.inspect(repo,binding,process,pi)
             self.assertEqual(result['status'],'passed',result)
+            self.assertEqual(set(result['covered_obligation_ids']),
+                             {'interface.送信要求','interface.結果提供'})
+            skeleton=obligations.generate(process,pi,[self.confirmed_sources(root)[2]],
+                                          technologies=['TypeScript'])
+            evaluated=obligations.aggregate(
+                skeleton,technology_results=[{'technology':'TypeScript',**result}])
+            interfaces=[x for x in evaluated['items'] if x['category']=='interface']
+            self.assertTrue(interfaces)
+            self.assertTrue(all(x['status']=='passed' for x in interfaces),interfaces)
+            self.assertTrue(all(x['status']=='inconclusive'
+                                for x in evaluated['items'] if x['category']=='cross-process'))
 
     def test_obligation_generator_derives_all_categories_and_starts_not_run(self):
         with tempfile.TemporaryDirectory() as td:
@@ -172,12 +183,21 @@ export function provideResult() { return false; }
                 for i,r in enumerate(model['rules'])
             ]}
             tech=[{'technology':'TypeScript','status':'passed','checks':[]}]
+            verified_green={r['id']:['evidence:green:'+r['id']] for r in model['rules']}
             evaluated=obligations.aggregate(
                 skeleton,queue,tech,
-                {'status':'passed','evidence':'evidence:model-conformance'})
-            self.assertTrue(all(x['status']=='passed' for x in evaluated['items']),evaluated)
+                {'status':'passed','evidence':'evidence:model-conformance'},
+                verified_green=verified_green)
+            status_by_category={}
+            for obligation in evaluated['items']:
+                status_by_category.setdefault(obligation['category'],set()).add(obligation['status'])
+            for category in ('behavior','invariant','domain','implementation-constraint'):
+                self.assertEqual(status_by_category[category],{'passed'})
+            for category in ('interface','capability','cross-process'):
+                self.assertEqual(status_by_category[category],{'inconclusive'})
             self.assertTrue(all(x['limitation'] for x in evaluated['items']))
-            self.assertTrue(all(x.get('evidence') for x in evaluated['items']))
+            self.assertTrue(all(x.get('evidence') for x in evaluated['items'] if x['status']=='passed'))
+            self.assertTrue(all(x.get('reason') for x in evaluated['items'] if x['status']=='inconclusive'))
 
     def test_tampered_obligation_skeleton_is_blocked_before_gate_evaluation(self):
         with tempfile.TemporaryDirectory() as td:

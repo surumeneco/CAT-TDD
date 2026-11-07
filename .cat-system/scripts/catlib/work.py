@@ -175,10 +175,20 @@ def read_work_markdown(path):
         mapping = {('Process','プロセス'):'process',('PI',):'pi',('TCE',):'tce',('Domain rule','DomainRule','ドメイン規則'):'domain_rule',
                    ('Model','モデル'):'model',('Vectors','具体値'):'vectors',('Queue','キュー'):'queue',
                    ('Binding','接続'):'binding',('Tests','テスト'):'tests_output',
-                   ('Obligations','適合義務'):'obligations',('Conformance binding','適合接続'):'conformance_binding'}
+                   ('Obligations','適合義務'):'obligations',('Conformance binding','適合接続'):'conformance_binding',
+                   ('Rule verifier registry','規則検証登録'):'verifier_registry',
+                   ('Composition models','合成モデル'):'composition_models',
+                   ('Composition binding','合成接続'):'composition_binding'}
         for humans, key in mapping.items():
             value = _cell(row, *humans, key, required=False)
             if not _none(value): compilation[key] = value
+        if compilation.get('composition_models'):
+            compilation['composition_models']=_items(compilation['composition_models'])
+        if compilation.get('pi'):
+            pis=_items(compilation['pi'])
+            require(pis, 'Compilation PI requires at least one path')
+            compilation['pi']=pis[0]
+            compilation['pis']=pis
         if compilation.get('tce'):
             tces = _items(compilation['tce'])
             require(tces, 'Compilation TCE requires at least one path')
@@ -430,6 +440,9 @@ def validate(w):
             for key in ('process', 'pi', 'tce', 'model'):
                 if not isinstance(compilation.get(key), str) or not compilation[key]:
                     errs.append(f'compilation.{key} required')
+            pis = compilation.get('pis', [compilation.get('pi')] if compilation.get('pi') else [])
+            if not isinstance(pis,list) or not pis or not all(isinstance(v,str) and v for v in pis) or pis[0]!=compilation.get('pi'):
+                errs.append('compilation.pis must be a nonempty string array matching compilation.pi')
             tces = compilation.get('tces', [compilation.get('tce')] if compilation.get('tce') else [])
             if not isinstance(tces, list) or not tces or not all(isinstance(v, str) and v for v in tces):
                 errs.append('compilation.tces must be a nonempty string array')
@@ -439,6 +452,13 @@ def validate(w):
                 vals = compilation.get(list_key, [])
                 if not isinstance(vals, list) or not all(isinstance(v, str) and v for v in vals):
                     errs.append('compilation.' + list_key + ' invalid')
+            if compilation.get('composition_models') is not None:
+                vals=compilation['composition_models']
+                if not isinstance(vals,list) or len(vals)<2 or not all(isinstance(x,str) and x for x in vals):
+                    errs.append('compilation.composition_models requires >=2 paths')
+            for extra_key in ('verifier_registry','composition_binding'):
+                if compilation.get(extra_key) is not None and (not isinstance(compilation[extra_key],str) or not compilation[extra_key]):
+                    errs.append('compilation.'+extra_key+' invalid')
             if compilation.get('conformance_binding') is not None and (not isinstance(compilation.get('conformance_binding'), str) or not compilation['conformance_binding']):
                 errs.append('compilation.conformance_binding invalid')
             if not isinstance(compilation.get('allow_draft'), bool):

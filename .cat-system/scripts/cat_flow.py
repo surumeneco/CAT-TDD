@@ -19,8 +19,11 @@ from pathlib import Path, PurePath
 from catlib.common import Blocked, json_bytes, read_json, require, sha
 from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
 import cat_queue
+import cat_queue_evidence as queue_evidence
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
+import cat_verifier_contracts as verifier_runtime
+import cat_process_composition as composition_runtime
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / 'config' / 'routing.json'
@@ -218,20 +221,44 @@ def compilation_tce_paths(wpath, w, conf, check):
     return result
 
 
+def compilation_paths(wpath, w, conf, plural, singular, check):
+    refs=conf.get(plural) or ([conf[singular]] if conf.get(singular) else [])
+    require(isinstance(refs,list) and all(isinstance(x,str) and x for x in refs),
+            'compilation.'+plural+' must contain paths')
+    result=[]
+    for ref in refs:
+        entry=dict(conf);entry[singular]=ref
+        result.append(compilation_path(wpath,w,entry,singular,check))
+    return result
+
+
+def compilation_pi_paths(wpath,w,conf,check):
+    paths=compilation_paths(wpath,w,conf,'pis','pi',check)
+    require(paths,'at least one compilation PI required')
+    return paths
+
+
+def rule_cli_args(wpath,w,conf,check):
+    args=[]
+    for plural,singular,option in (('common_rules','common_rule','--common-rule'),
+                                   ('domain_specs','domain_spec','--domain-spec')):
+        for path in compilation_paths(wpath,w,conf,plural,singular,check):args.extend([option,path])
+    return args
+
+
 def compile_work(wpath, w, kind, check):
     conf = w.get('compilation')
     require(conf is not None, 'no machine-readable compilation declared')
     require(kind in ('model', 'vectors', 'queue', 'tests'), 'kind must be model, vectors, queue or tests')
-    unsupported = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
-    require(not unsupported, 'normative compiler does not map declared CommonRule/DomainSpec inputs: ' + ', '.join(unsupported))
     def loc(key):
         return compilation_path(wpath, w, conf, key, check)
     argv = [sys.executable, str(ROOT / 'scripts/cat_compile_v2.py'), kind]
     if kind == 'model':
         process = loc('process')
-        pi = loc('pi')
+        pis = compilation_pi_paths(wpath, w, conf, check)
         tces = compilation_tce_paths(wpath, w, conf, check)
-        argv += [process, pi, *tces]
+        argv += [process, pis[0], *tces]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
     else:
         require(conf.get('model'), 'compilation.model missing')
         if kind == 'vectors':
@@ -244,13 +271,16 @@ def compile_work(wpath, w, kind, check):
                     require(conf.get(key), f'compilation.{key} missing')
                 argv += [loc('binding'), '--queue', loc('queue')]
         process = loc('process')
-        pi = loc('pi')
+        pis = compilation_pi_paths(wpath, w, conf, check)
         tces = compilation_tce_paths(wpath, w, conf, check)
-        argv += ['--process', process, '--pi', pi]
+        argv += ['--process', process, '--pi', pis[0]]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
         for tce in tces:
             argv += ['--tce', tce]
     if conf.get('domain_rule'):
         argv += ['--domain-rule', loc('domain_rule')]
+    argv += rule_cli_args(wpath,w,conf,check)
+    if conf.get('allow_partial',True):argv.append('--allow-partial')
     output_key = {'model':'model','vectors':'vectors','queue':'queue','tests':'tests_output'}[kind]
     argv += ['-o', loc(output_key)]
     if conf['allow_draft']:
@@ -267,16 +297,17 @@ def obligations_work(wpath, w, check=False):
     conf = w.get('compilation')
     require(conf is not None, 'implementation obligations require Compilation inputs')
     require(conf.get('obligations'), 'compilation.obligations missing')
-    unsupported = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
-    require(not unsupported, 'implementation obligations cannot omit declared CommonRule/DomainSpec semantics: ' + ', '.join(unsupported))
     def loc(key, exists=True):
         return compilation_path(wpath, w, conf, key, exists)
     tces = compilation_tce_paths(wpath, w, conf, True)
     output = loc('obligations', check)
+    pis=compilation_pi_paths(wpath,w,conf,True)
     argv = [sys.executable, str(ROOT / 'scripts/cat_implementation_obligations.py'),
-            loc('process'), loc('pi'), *tces]
+            loc('process'), pis[0], *tces]
+    for pi in pis[1:]:argv+=['--pi-extra',pi]
     if conf.get('domain_rule'):
         argv += ['--domain-rule', loc('domain_rule')]
+    argv += rule_cli_args(wpath,w,conf,True)
     for technology in sorted(set(w.get('technologies', []))):
         argv += ['--technology', technology]
     argv += ['-o', output]
@@ -303,11 +334,13 @@ def technology_conformance(wpath, w, conf):
         repo_name = binding.get('repository')
         require(isinstance(repo_name, str) and repo_name, 'TypeScript conformance binding repository required')
         repo_root = resolve_dir(wpath, w, '@repo:' + repo_name)
+        pis=compilation_pi_paths(wpath,w,conf,True)
         argv = [sys.executable,
                 str(ROOT / 'skills/tech-typescript/scripts/cat_typescript_conformance.py'),
                 '--repo', str(repo_root), '--binding', str(binding_path),
                 '--process', compilation_path(wpath, w, conf, 'process', True),
-                '--pi', compilation_path(wpath, w, conf, 'pi', True)]
+                '--pi', pis[0]]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
         p = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, timeout=60, check=False)
         payload = None
         raw = (p.stdout or p.stderr).strip()
@@ -345,18 +378,63 @@ def conformance_input_hashes(wpath, w, kind):
     if kind == 'model-conformance':
         keys.append('model')
     elif kind == 'implementation-conformance':
-        keys.extend(['model','queue','obligations'])
+        keys.extend(['model','vectors','queue','obligations'])
         if conf.get('conformance_binding'):
             keys.append('conformance_binding')
+    # Runtime rule verification must be invalidated when its registered
+    # runner/fixture/assertion identities change, even if the Work is unchanged.
+    if kind in ('process-closure','implementation-conformance') and conf.get('verifier_registry'):
+        keys.append('verifier_registry')
+    if kind=='process-closure' and conf.get('composition_binding'):
+        keys.append('composition_binding')
     result = {}
     for key in keys:
         if not conf.get(key):
             continue
         path = Path(compilation_path(wpath, w, conf, key, True))
         result[key] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    for plural,singular in (('pis','pi'),('common_rules','common_rule'),('domain_specs','domain_spec')):
+        for index, raw in enumerate(compilation_paths(wpath, w, conf, plural, singular, True), 1):
+            path=Path(raw)
+            result[singular+':'+str(index)]={'path':str(path),'sha256':sha(path.read_bytes())}
     for index, raw in enumerate(compilation_tce_paths(wpath, w, conf, True), 1):
         path = Path(raw)
         result['tce:' + str(index)] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    if kind=='implementation-conformance' and conf.get('queue'):
+        queue_file=Path(compilation_path(wpath,w,conf,'queue',True))
+        queue_data=read_json(queue_file)
+        root=(wpath.parent/'.cat-flow'/'evidence').resolve()
+        for item in queue_data.get('items',[]):
+            if item.get('status')!='done':continue
+            ref=item.get('evidence_ref')
+            require(isinstance(ref,str) and bool(ref),
+                    'done Queue missing Green evidence ref')
+            evidence=Path(ref)
+            require(evidence.is_file() and not evidence.is_symlink() and
+                    evidence.resolve().is_relative_to(root),
+                    'Queue Green evidence must remain in script-owned root')
+            result['green:'+item['id']]={'path':str(evidence.resolve()),
+                                         'sha256':sha(evidence.read_bytes())}
+    if kind=='process-closure':
+        for key in ('verifier_registry','composition_binding'):
+            if conf.get(key):
+                path=Path(compilation_path(wpath,w,conf,key,True))
+                result[key]={'path':str(path),'sha256':sha(path.read_bytes())}
+        for i,rel in enumerate(conf.get('composition_models',[]),1):
+            entry={**conf,'model':rel}
+            path=Path(compilation_path(wpath,w,entry,'model',True))
+            result['composition_model:'+str(i)]={'path':str(path),'sha256':sha(path.read_bytes())}
+    if kind in ('process-closure','implementation-conformance') and conf.get('verifier_registry'):
+        registry_path=Path(compilation_path(wpath,w,conf,'verifier_registry',True))
+        registry=read_json(registry_path)
+        for i,entry in enumerate(registry.get('entries',[]),1):
+            for label in ('fixture','runner'):
+                if not entry.get(label):continue
+                try:dep=verifier_runtime.resolve(registry_path.parent,entry[label]['path'])
+                except (verifier_runtime.VerifierError,KeyError,OSError) as exc:
+                    raise Blocked('invalid verifier dependency: '+str(exc)) from exc
+                result['verifier:'+str(i)+':'+label]={'path':str(dep),
+                                                       'sha256':sha(dep.read_bytes())}
     return result
 
 
@@ -373,6 +451,8 @@ def record_conformance_evidence(wpath, w, kind, result):
         'verdict': result['status'],
         'reason': result.get('reason', ''),
         'supporting_evidence': supporting,
+        'verifier_evidence':result.get('verifier_evidence'),
+        'composition_evidence':result.get('composition_evidence'),
     }
     if kind == 'implementation-conformance':
         payload['repo_state_sha256'] = sha(json_bytes(_repo_state(wpath, w)))
@@ -410,24 +490,66 @@ def conformance_work(wpath, w, kind):
     require(kind in CONFORMANCE_GATES, 'unknown conformance gate')
     conf = w.get('compilation')
     require(conf is not None, 'conformance requires Compilation inputs')
-    unmapped = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
-    if unmapped:
-        return {'gate': kind, 'status': 'blocked',
-                'reason': 'declared CommonRule/DomainSpec semantics are not mapped by the normative compiler: ' + ', '.join(unmapped)}
     if kind == 'process-closure':
         if len(w['scope']['process_ids']) != 1:
-            return {'gate':kind,'status':'inconclusive',
-                    'reason':'current deterministic compiler proves one Process at a time; assembled multi-Process closure requires explicit composition evidence'}
+            if not conf.get('composition_models'):
+                return {'gate':kind,'status':'inconclusive',
+                        'reason':'cross-Process closure requires explicit model collection and typed bindings'}
+            try:
+                paths=[]
+                for rel in conf['composition_models']:
+                    entry={**conf,'model':rel}
+                    paths.append(compilation_path(wpath,w,entry,'model',True))
+                binding=compilation_path(wpath,w,conf,'composition_binding',True) if conf.get('composition_binding') else None
+                composed=composition_runtime.compose(paths,binding)
+            except (composition_runtime.CompositionError,Blocked,ValueError,OSError,KeyError,TypeError) as exc:
+                return {'gate':kind,'status':'blocked','reason':str(exc)}
+            path=wpath.parent/'.cat-flow'/'cache'/'process-composition.json'
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(json_bytes(composed))
+            return {'gate':kind,'status':'inconclusive' if composed['status']=='passed' else composed['status'],
+                    'composition_evidence':str(path),
+                    'reason':'typed composition evidence recorded; independent local Model Conformance and interleaving/effect proofs remain required'}
         runtime = wpath.parent / '.cat-flow' / 'cache'
         runtime.mkdir(parents=True, exist_ok=True)
         def loc(key): return compilation_path(wpath, w, conf, key, False)
-        tces = compilation_tce_paths(wpath, w, conf, True)
-        argv=[sys.executable,str(ROOT/'scripts/cat_compile_v2.py'),'model',loc('process'),loc('pi'),*tces]
+        try:
+            tces = compilation_tce_paths(wpath, w, conf, True)
+            pis=compilation_pi_paths(wpath,w,conf,True)
+            rules=rule_cli_args(wpath,w,conf,True)
+        except Blocked as exc:
+            return {'gate':kind,'status':'blocked','reason':str(exc)}
+        argv=[sys.executable,str(ROOT/'scripts/cat_compile_v2.py'),'model',loc('process'),pis[0],*tces]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
+        argv+=rules
+        argv+=['--allow-partial']
         if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
         argv += ['-o',str(runtime/'process-closure.model.json')]
         p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
         if p.returncode == 0:
             model = read_json(runtime/'process-closure.model.json')
+            rule_status='passed'
+            verifier_evidence=None
+            if model.get('unverified_rule_ids'):
+                if not conf.get('verifier_registry'):
+                    rule_status='inconclusive'
+                else:
+                    try:
+                        registry_path=compilation_path(wpath,w,conf,'verifier_registry',True)
+                        verified=verifier_runtime.evaluate(runtime/'process-closure.model.json',registry_path)
+                        verifier_path=runtime/'process-closure-verifiers.json'
+                        verifier_path.write_bytes(json_bytes(verified))
+                        verifier_evidence=str(verifier_path)
+                        rule_status=verified['status']
+                    except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
+                        return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
+            if rule_status=='failed':
+                return {'gate':kind,'status':'blocked','verifier_evidence':verifier_evidence,
+                        'reason':'one or more deterministic normative rule checks failed'}
+            if model.get('status')!='confirmed' or rule_status!='passed' or model.get('unresolved_domains') or model.get('presence_unproven') or model.get('unresolved_interfaces'):
+                return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
+                        'verifier_evidence':verifier_evidence,
+                        'reason':'model has partial, unverified, unresolved or non-confirmed normative inputs'}
             if model.get('coverage_requirement') != 'closed':
                 return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
                         'reason':'local TCE coverage is partial; assembled Process closure requires additional deterministic or review evidence'}
@@ -435,7 +557,8 @@ def conformance_work(wpath, w, kind):
                 return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
                         'reason':'closed-world declaration exists but closure proof is incomplete'}
             return {'gate':kind,'status':'passed','evidence':str(runtime/'process-closure.model.json'),
-                    'reason':'supported finite closed-world coverage compiled and proved from confirmed sources'}
+                    'verifier_evidence':verifier_evidence,
+                    'reason':'supported finite closed-world coverage compiled from confirmed sources and executed rule verifiers'}
         msg=(p.stderr or p.stdout).strip()
         inconclusive_markers=('currently supports','unproven','non-finite','requires a technology','unsupported')
         status='inconclusive' if any(x in msg for x in inconclusive_markers) else 'blocked'
@@ -443,7 +566,10 @@ def conformance_work(wpath, w, kind):
     if kind == 'model-conformance':
         require(conf.get('model'), 'model-conformance requires Compilation Model')
         def loc(key): return compilation_path(wpath, w, conf, key, True)
-        argv=[sys.executable,str(ROOT/'scripts/cat_model_conformance.py'),loc('process'),loc('pi'),loc('model')]
+        pis=compilation_pi_paths(wpath,w,conf,True)
+        argv=[sys.executable,str(ROOT/'scripts/cat_model_conformance.py'),loc('process'),pis[0],loc('model')]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
+        argv+=rule_cli_args(wpath,w,conf,True)
         for tce in compilation_tce_paths(wpath, w, conf, True):
             argv += ['--tce', tce]
         if conf.get('domain_rule'): argv += ['--domain-rule',loc('domain_rule')]
@@ -467,11 +593,34 @@ def conformance_work(wpath, w, kind):
     skeleton=read_json(Path(path))
     require(skeleton.get('schema')=='cat-implementation-obligations/v1','wrong implementation obligation schema')
     queue=None
+    verified_green={}
     if conf.get('queue'):
         qpath=Path(compilation_path(wpath,w,conf,'queue',True))
         queue=read_json(qpath)
+        if any(x.get('status')=='done' for x in queue.get('items',[])):
+            if not (conf.get('model') and conf.get('vectors')):
+                return {'gate':kind,'status':'inconclusive',
+                        'reason':'completed Queue needs exact model/vectors and Green receipts'}
+            try:
+                verified_green=queue_evidence.verify(
+                    w['id'],qpath,
+                    compilation_path(wpath,w,conf,'model',True),
+                    compilation_path(wpath,w,conf,'vectors',True),
+                    wpath.parent/'.cat-flow'/'evidence')
+            except (Blocked,ValueError,KeyError,OSError,TypeError) as exc:
+                return {'gate':kind,'status':'blocked',
+                        'reason':'Queue Green evidence invalid: '+str(exc)}
     model_gate=conformance_evidence_status(wpath,w,'model-conformance')
-    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate)
+    rule_verification=None
+    if any(x.get('method')=='normative-rule-verifier' for x in skeleton['items']):
+        if conf.get('verifier_registry') and conf.get('model'):
+            try:
+                model_path=compilation_path(wpath,w,conf,'model',True)
+                registry_path=compilation_path(wpath,w,conf,'verifier_registry',True)
+                rule_verification=verifier_runtime.evaluate(model_path,registry_path)
+            except (verifier_runtime.VerifierError,Blocked,ValueError,OSError,KeyError,TypeError) as exc:
+                return {'gate':kind,'status':'blocked','reason':'invalid normative rule verifier: '+str(exc)}
+    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate,rule_verification,verified_green)
     runtime=wpath.parent/'.cat-flow'/'cache'
     runtime.mkdir(parents=True,exist_ok=True)
     evaluated=runtime/'implementation-obligations-evaluated.json'
@@ -501,8 +650,12 @@ def conformance_work(wpath, w, kind):
         return {'gate':kind,'status':'inconclusive','reason':'obligations are incomplete or not machine-decidable',**base}
     if tech['status'] != 'passed':
         return {'gate':kind,'status':'inconclusive','reason':tech['reason'],**base}
+    predecessor=conformance_evidence_status(wpath,w,'process-closure')
+    if predecessor.get('status')!='passed' or model_gate.get('status')!='passed':
+        return {'gate':kind,'status':'inconclusive',
+                'reason':'fresh passed process-closure and model-conformance evidence required',**base}
     return {'gate':kind,'status':'passed',
-            'reason':'all CAT implementation obligations and available technology inspectors passed',**base}
+            'reason':'all CAT implementation obligations, predecessor Gates and technology inspectors passed',**base}
 
 
 def _repo_state(wpath,w):
