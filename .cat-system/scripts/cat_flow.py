@@ -334,11 +334,13 @@ def technology_conformance(wpath, w, conf):
         repo_name = binding.get('repository')
         require(isinstance(repo_name, str) and repo_name, 'TypeScript conformance binding repository required')
         repo_root = resolve_dir(wpath, w, '@repo:' + repo_name)
+        pis=compilation_pi_paths(wpath,w,conf,True)
         argv = [sys.executable,
                 str(ROOT / 'skills/tech-typescript/scripts/cat_typescript_conformance.py'),
                 '--repo', str(repo_root), '--binding', str(binding_path),
                 '--process', compilation_path(wpath, w, conf, 'process', True),
-                '--pi', compilation_path(wpath, w, conf, 'pi', True)]
+                '--pi', pis[0]]
+        for pi in pis[1:]:argv+=['--pi-extra',pi]
         p = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, timeout=60, check=False)
         payload = None
         raw = (p.stdout or p.stderr).strip()
