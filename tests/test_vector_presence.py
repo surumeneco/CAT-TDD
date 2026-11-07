@@ -79,6 +79,29 @@ class ExplicitPresenceVectorTest(unittest.TestCase):
             compiler.expand_cases(m,vectors(case({})))
         self.assertEqual(len(compiler.expand_cases(m,vectors(case({},'submit.op')))),1)
 
+    def test_output_presence_requires_explicit_provide_operation(self):
+        m=model('required')
+        m['pi_operations'].append({'id':'reply.op','direction':'provide',
+                                   'trigger':'submit','source_pi':'demo.pi'})
+        m['operation_presence'].append({'operation':'reply.op','field':'output.ok',
+                                        'presence':'optional','source_pi':'demo.pi'})
+        with self.assertRaisesRegex(compiler.Blocked,'output_operation'):
+            compiler.expand_cases(m,vectors(case({'input.flag':True})))
+        witness=case({'input.flag':True});witness['output_operation']='reply.op'
+        self.assertEqual(len(compiler.expand_cases(m,vectors(witness))),1)
+        m['operation_presence'][-1]['presence']='absent'
+        with self.assertRaisesRegex(compiler.Blocked,'absent output emitted'):
+            compiler.expand_cases(m,vectors(witness))
+
+    def test_required_provided_output_cannot_be_silently_absent(self):
+        m=model('required')
+        m['pi_operations'].append({'id':'reply.op','direction':'provide',
+                                   'trigger':'submit','source_pi':'demo.pi'})
+        witness=case({'input.flag':True});witness['output_operation']='reply.op'
+        m['rules'][0]['allowed'][0]['write']=[]
+        with self.assertRaisesRegex(compiler.Blocked,'required output missing'):
+            compiler.expand_cases(m,vectors(witness))
+
     def test_automatic_witness_refuses_nonrequired_presence(self):
         with self.assertRaisesRegex(compiler.Blocked,'non-required operation Presence'):
             compiler.selection_vectors(model('optional'))
