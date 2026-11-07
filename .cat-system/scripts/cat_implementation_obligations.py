@@ -22,7 +22,7 @@ def item(identifier, category, source_ref, method):
     }
 
 
-def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()):
+def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=(), common_rules=(), domain_specs=()):
     model = load(process_path, pi_path, tce_paths, domain_path, allow_draft=False)
     pf, process = read_artifact(process_path, 'process', False)
     pif, pi = read_artifact(pi_path, 'pi', False)
