@@ -175,9 +175,16 @@ export function provideResult() { return false; }
             evaluated=obligations.aggregate(
                 skeleton,queue,tech,
                 {'status':'passed','evidence':'evidence:model-conformance'})
-            self.assertTrue(all(x['status']=='passed' for x in evaluated['items']),evaluated)
+            status_by_category={}
+            for obligation in evaluated['items']:
+                status_by_category.setdefault(obligation['category'],set()).add(obligation['status'])
+            for category in ('behavior','invariant','domain','implementation-constraint'):
+                self.assertEqual(status_by_category[category],{'passed'})
+            for category in ('interface','capability','cross-process'):
+                self.assertEqual(status_by_category[category],{'inconclusive'})
             self.assertTrue(all(x['limitation'] for x in evaluated['items']))
-            self.assertTrue(all(x.get('evidence') for x in evaluated['items']))
+            self.assertTrue(all(x.get('evidence') for x in evaluated['items'] if x['status']=='passed'))
+            self.assertTrue(all(x.get('reason') for x in evaluated['items'] if x['status']=='inconclusive'))
 
     def test_tampered_obligation_skeleton_is_blocked_before_gate_evaluation(self):
         with tempfile.TemporaryDirectory() as td:
