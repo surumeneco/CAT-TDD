@@ -136,6 +136,17 @@ export function provideResult() { return false; }
             binding=self.binding(root)
             result=inspector.inspect(repo,binding,process,pi)
             self.assertEqual(result['status'],'passed',result)
+            self.assertEqual(set(result['covered_obligation_ids']),
+                             {'interface.送信要求','interface.結果提供'})
+            skeleton=obligations.generate(process,pi,[self.confirmed_sources(root)[2]],
+                                          technologies=['TypeScript'])
+            evaluated=obligations.aggregate(
+                skeleton,technology_results=[{'technology':'TypeScript',**result}])
+            interfaces=[x for x in evaluated['items'] if x['category']=='interface']
+            self.assertTrue(interfaces)
+            self.assertTrue(all(x['status']=='passed' for x in interfaces),interfaces)
+            self.assertTrue(all(x['status']=='inconclusive'
+                                for x in evaluated['items'] if x['category']=='cross-process'))
 
     def test_obligation_generator_derives_all_categories_and_starts_not_run(self):
         with tempfile.TemporaryDirectory() as td:
