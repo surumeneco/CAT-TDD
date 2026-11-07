@@ -1069,6 +1069,25 @@ def _vector_input_value(domain,presence,payload,name):
     return value
 
 
+
+def _vector_output_operation(model,test,fields):
+    declared=[x for x in model.get('operation_presence',[])
+              if fields[x['field']]['role']=='output']
+    chosen=test.get('output_operation')
+    if declared:
+        require(chosen is not None,
+                'operation-scoped output Presence requires vector.output_operation')
+    if chosen is None:return None
+    ops=[x for x in model.get('pi_operations',[])
+         if x['id']==chosen and x['direction']=='provide'
+         and (x.get('trigger') is None or x['trigger']==test['trigger'])]
+    require(len(ops)==1,'vector.output_operation is not a provided operation for trigger')
+    op=ops[0]
+    require(all(x['source_pi']==op['source_pi'] for x in declared),
+            'multiple output PI owners require explicit multi-operation witness extension')
+    return op
+
+
 def expand_cases(model, vectors):
     check_keys(vectors,['schema','process','cases'],optional=('selection_rule',),where='vectors')
     require(vectors['schema']==V and vectors['process']==model['process'],'vector version/Process mismatch')
@@ -1077,10 +1096,11 @@ def expand_cases(model, vectors):
     states={f for f in fields if fields[f]['role']=='state'}
     cases=[]
     for test in vectors['cases']:
-        check_keys(test,['id','trigger','input','state'],optional=('operation',),where='test vector')
+        check_keys(test,['id','trigger','input','state'],optional=('operation','output_operation'),where='test vector')
         ident(test['id'],'test ID');require(test['trigger'] in {t['id'] for t in model['triggers']},'unknown vector trigger')
         require(isinstance(test['input'],dict) and isinstance(test['state'],dict),'vector input/state must be objects')
         operation=_vector_operation(model,test)
+        output_operation=_vector_output_operation(model,test,fields)
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
         env={}
@@ -1108,6 +1128,17 @@ def expand_cases(model, vectors):
                 require(in_domain(fields[target]['domain'],val),f'{test["id"]}: output {target} out of declared domain')
                 if fields[target]['role']=='state':after[target]=val
                 else:emitted[target]=val
+            if output_operation is not None:
+                for field in fields.values():
+                    if field['role']!='output' or field.get('source_pi')!=output_operation['source_pi']:
+                        continue
+                    pres=_vector_field_presence(model,output_operation,field)
+                    require(pres!='undefined',
+                            'undefined output effect requires explicit technology transport')
+                    require(pres!='required' or field['id'] in emitted,
+                            'required output missing for operation '+output_operation['id']+': '+field['id'])
+                    require(pres!='absent' or field['id'] not in emitted,
+                            'absent output emitted by operation '+output_operation['id']+': '+field['id'])
             allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs']})
         cases.append({'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                       'input':test['input'],'initial_state':test['state'],'allowed':allowed})
@@ -1180,6 +1211,8 @@ def emit_vitest(model,vectors,binding_path):
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     cases=expand_cases(model,vectors)
+    if any(x.get('output_operation') for x in vectors['cases']):
+        raise Blocked('Vitest renderer lacks output-operation identity transport; cannot assert provider operation')
     if any(any(v=={'$cat_presence':'undefined'} for v in c['input'].values()) for c in cases):
         raise Blocked('Vitest renderer has no source-backed undefined transport binding; cannot generate a false oracle')
     return _vitest_renderer()(model,cases,binding)
