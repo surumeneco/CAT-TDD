@@ -296,16 +296,17 @@ def obligations_work(wpath, w, check=False):
     conf = w.get('compilation')
     require(conf is not None, 'implementation obligations require Compilation inputs')
     require(conf.get('obligations'), 'compilation.obligations missing')
-    unsupported = [key for key in ('common_rules', 'domain_specs') if conf.get(key)]
-    require(not unsupported, 'implementation obligations cannot omit declared CommonRule/DomainSpec semantics: ' + ', '.join(unsupported))
     def loc(key, exists=True):
         return compilation_path(wpath, w, conf, key, exists)
     tces = compilation_tce_paths(wpath, w, conf, True)
     output = loc('obligations', check)
+    pis=compilation_pi_paths(wpath,w,conf,True)
     argv = [sys.executable, str(ROOT / 'scripts/cat_implementation_obligations.py'),
-            loc('process'), loc('pi'), *tces]
+            loc('process'), pis[0], *tces]
+    for pi in pis[1:]:argv+=['--pi-extra',pi]
     if conf.get('domain_rule'):
         argv += ['--domain-rule', loc('domain_rule')]
+    argv += rule_cli_args(wpath,w,conf,True)
     for technology in sorted(set(w.get('technologies', []))):
         argv += ['--technology', technology]
     argv += ['-o', output]
@@ -377,6 +378,12 @@ def conformance_input_hashes(wpath, w, kind):
         keys.extend(['model','queue','obligations'])
         if conf.get('conformance_binding'):
             keys.append('conformance_binding')
+    # Runtime rule verification must be invalidated when its registered
+    # runner/fixture/assertion identities change, even if the Work is unchanged.
+    if kind in ('process-closure','implementation-conformance') and conf.get('verifier_registry'):
+        keys.append('verifier_registry')
+    if kind=='process-closure' and conf.get('composition_binding'):
+        keys.append('composition_binding')
     result = {}
     for key in keys:
         if not conf.get(key):
@@ -571,7 +578,16 @@ def conformance_work(wpath, w, kind):
         qpath=Path(compilation_path(wpath,w,conf,'queue',True))
         queue=read_json(qpath)
     model_gate=conformance_evidence_status(wpath,w,'model-conformance')
-    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate)
+    rule_verification=None
+    if any(x.get('method')=='normative-rule-verifier' for x in skeleton['items']):
+        if conf.get('verifier_registry') and conf.get('model'):
+            try:
+                model_path=compilation_path(wpath,w,conf,'model',True)
+                registry_path=compilation_path(wpath,w,conf,'verifier_registry',True)
+                rule_verification=verifier_runtime.evaluate(model_path,registry_path)
+            except (verifier_runtime.VerifierError,Blocked,ValueError,OSError,KeyError,TypeError) as exc:
+                return {'gate':kind,'status':'blocked','reason':'invalid normative rule verifier: '+str(exc)}
+    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate,rule_verification)
     runtime=wpath.parent/'.cat-flow'/'cache'
     runtime.mkdir(parents=True,exist_ok=True)
     evaluated=runtime/'implementation-obligations-evaluated.json'
@@ -601,8 +617,12 @@ def conformance_work(wpath, w, kind):
         return {'gate':kind,'status':'inconclusive','reason':'obligations are incomplete or not machine-decidable',**base}
     if tech['status'] != 'passed':
         return {'gate':kind,'status':'inconclusive','reason':tech['reason'],**base}
+    predecessor=conformance_evidence_status(wpath,w,'process-closure')
+    if predecessor.get('status')!='passed' or model_gate.get('status')!='passed':
+        return {'gate':kind,'status':'inconclusive',
+                'reason':'fresh passed process-closure and model-conformance evidence required',**base}
     return {'gate':kind,'status':'passed',
-            'reason':'all CAT implementation obligations and available technology inspectors passed',**base}
+            'reason':'all CAT implementation obligations, predecessor Gates and technology inspectors passed',**base}
 
 
 def _repo_state(wpath,w):
