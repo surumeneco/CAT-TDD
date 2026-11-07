@@ -178,6 +178,8 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'interfaces': tuple(sorted(p.get('interfaces', []))),
         'boundary': pi_docs[0][2].get('boundary') if len(pi_docs)==1 else None,
         'pi_boundaries': [{'artifact':fm['id'],**a['boundary']} for _,fm,a in pi_docs],
+        'operation_presence':sorted((e['operation'],e['field'],e['presence'],fm['id'])
+                                    for _,fm,a in pi_docs for e in a.get('operation_presence',[])),
         'operations': {
             item['id']: (item['direction'], item.get('trigger')) for _,_,a in pi_docs
             for item in a.get('operations', [])
@@ -332,6 +334,8 @@ def json_model(path):
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
         'boundary': model.get('pi_boundary'),
         'pi_boundaries':model.get('pi_boundaries',[]),
+        'operation_presence':sorted((e['operation'],e['field'],e['presence'],e['source_pi'])
+                                    for e in model.get('operation_presence',[])),
         'operations': operations,
         'operation_owners': {item['id']:item.get('source_pi') for item in model.get('pi_operations', [])},
         'triggers': {item['id']: item['origin'] for item in model.get('triggers', [])},
@@ -354,10 +358,12 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('pi_boundaries','operation_owners','field_owners','normative_rule_inputs','rule_obligations','domains','presence')
+        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence')
     for key in checks:
         if actual.get(key) != expected.get(key):
             mismatches.append(key)
+    if Path(model).suffix.lower()!='.json' and expected.get('operation_presence'):
+        mismatches.append('operation_presence: Markdown renderer omits operation-specific semantics')
     return {
         'schema': 'cat-model-conformance/v1',
         'status': 'passed' if not mismatches else 'blocked',
