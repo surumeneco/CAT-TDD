@@ -1118,6 +1118,10 @@ def selection_vectors(model, strategy='rule-witness/v1'):
     require(strategy == 'rule-witness/v1', 'unsupported test-selection rule: ' + str(strategy))
     require(model.get('status') == 'confirmed', 'normative vector selection requires confirmed TestModel')
     fields={f['id']:f for f in model['fields']}
+    unsupported_presence=sorted(f['id'] for f in fields.values() if f['role']=='input' and f.get('presence','required')!='required')
+    unsupported_presence+=sorted(x['operation']+':'+x['field'] for x in model.get('operation_presence',[]) if x['presence']!='required')
+    require(not unsupported_presence,
+            'rule-witness/v1 cannot automatically enumerate non-required operation Presence: '+str(unsupported_presence))
     variable_ids=sorted(f for f in fields if fields[f]['role'] in ('input','state'))
     domains=[]
     for field_id in variable_ids:
@@ -1176,6 +1180,8 @@ def emit_vitest(model,vectors,binding_path):
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     cases=expand_cases(model,vectors)
+    if any(any(v=={'$cat_presence':'undefined'} for v in c['input'].values()) for c in cases):
+        raise Blocked('Vitest renderer has no source-backed undefined transport binding; cannot generate a false oracle')
     return _vitest_renderer()(model,cases,binding)
 
 
