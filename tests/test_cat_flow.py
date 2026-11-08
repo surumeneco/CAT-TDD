@@ -330,7 +330,7 @@ class CatFlowTest(unittest.TestCase):
         checked = subprocess.run([sys.executable, str(flow.ROOT/'scripts/cat_flow.py'),
                                   'validate', '--work', str(scaffold)],
                                  text=True, capture_output=True)
-        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(checked.returncode, 2, checked.stderr)  # unresolved sources are deliberately blocked
         result = json.loads(checked.stdout)
         self.assertTrue(result['contract_valid'])
         self.assertEqual(result['status'], 'blocked')
