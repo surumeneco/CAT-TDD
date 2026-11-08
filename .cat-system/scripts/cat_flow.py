@@ -1025,9 +1025,12 @@ def command_work(wpath, w, key, execute=False):
     check = next((c for c in w['checks'] if c['id'] == key), None)
     require(check is not None, f'check id not declared in Work: {key}')
     require(w['mode'] == 'implementation', 'shadow Work cannot execute declared commands; use validate/route/git/compile or an isolated external sandbox')
-    if check['stage'] in ('red', 'green', 'regression', 'refactor-baseline'):
-        require(w['mode'] == 'implementation', 'shadow Work cannot record real TDD stages')
-        require(w['specification']['status'] == 'confirmed', 'no TDD gate without declared confirmed specification')
+    if check['stage'] in ('red', 'green'):
+        require(w['specification']['status'] == 'confirmed',
+                'no TDD gate without declared confirmed specification')
+    if check['stage'] in ('refactor-baseline', 'regression'):
+        require(infer_flow(w) == 'refactor',
+                'independent refactor checks require the refactor flow')
     cwd = resolve_dir(wpath, w, check['cwd'])
     require(cwd.is_dir(), f'command cwd unavailable: {cwd}')
     runtime = wpath.parent / '.cat-flow'
