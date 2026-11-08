@@ -316,5 +316,26 @@ class CatFlowTest(unittest.TestCase):
         self.assertIn('real-use',st['independent_unverified_gates'])
 
 
+    def test_scaffold_init_round_trips_and_validate_reports_placeholders(self):
+        from catlib.work import read_work_markdown
+        scaffold = Path(self.tmp.name) / 'new-work.md'
+        proc = subprocess.run([sys.executable, str(flow.ROOT/'scripts/cat_flow.py'),
+                               'init', '--id', 'demo.scaffold', '--output', str(scaffold)],
+                              text=True, capture_output=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        parsed = read_work_markdown(scaffold)
+        self.assertEqual(parsed['id'], 'demo.scaffold')
+        self.assertEqual(parsed['specification']['status'], 'unknown')
+        self.assertEqual(flow.validate(parsed), [])
+        checked = subprocess.run([sys.executable, str(flow.ROOT/'scripts/cat_flow.py'),
+                                  'validate', '--work', str(scaffold)],
+                                 text=True, capture_output=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        result = json.loads(checked.stdout)
+        self.assertTrue(result['contract_valid'])
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIn('issue_ref', result['unresolved_source_placeholders'])
+
+
 if __name__=='__main__':
     unittest.main()
