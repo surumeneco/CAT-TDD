@@ -22,28 +22,32 @@ def item(identifier, category, source_ref, method):
     }
 
 
-def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()):
-    model = load(process_path, pi_path, tce_paths, domain_path, allow_draft=False)
+def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=(),
+             common_rules=(), domain_specs=()):
+    # Do not skip declared normative inputs, and never infer closed coverage
+    # from a partially specified or open-world Process.
+    model = load(process_path, pi_path, tce_paths, domain_path,
+                 common_rules=common_rules, domain_specs=domain_specs,
+                 allow_draft=False, allow_partial=True)
     pf, process = read_artifact(process_path, 'process', False)
-    pif, pi = read_artifact(pi_path, 'pi', False)
+    pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
+    pi_docs=[read_artifact(path, 'pi', False) for path in pi_paths]
     obligations = []
 
-    operations = pi.get('operations', [])
-    if operations:
-        for op in operations:
+    for pif,pi in pi_docs:
+        operations = pi.get('operations', [])
+        if operations:
+            for op in operations:
+                obligations.append(item(
+                    'interface.' + op['id'], 'interface',
+                    pif['id'] + '#' + op['id'],
+                    'technology-inspector:public-interface',
+                ))
+        else:
             obligations.append(item(
-                'interface.' + op['id'],
-                'interface',
-                pif['id'] + '#' + op['id'],
-                'technology-inspector:public-interface',
+                'interface.boundary.' + pif['id'], 'interface',
+                pif['id'], 'technology-inspector:public-interface',
             ))
-    else:
-        obligations.append(item(
-            'interface.boundary',
-            'interface',
-            pif['id'],
-            'technology-inspector:public-interface',
-        ))
 
     capabilities = list(process.get('observations', [])) + list(process.get('actions', []))
     for cap in capabilities:
@@ -76,13 +80,25 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
                 'generated-test-frame',
             ))
 
-    boundary = pi.get('boundary')
-    obligations.append(item(
-        'cross-process.boundary',
-        'cross-process',
-        pif['id'] + (('#' + boundary['peer']) if boundary else ''),
-        'integration-contract',
-    ))
+    for pif,pi in pi_docs:
+        boundary=pi.get('boundary')
+        peers=boundary.get('peers',[boundary['peer']]) if boundary else [None]
+        for peer in peers:
+            obligations.append(item(
+                'cross-process.boundary.' + pif['id'] + ('.'+peer if peer else ''),
+                'cross-process',
+                pif['id'] + (('#'+peer) if peer else ''),
+                'integration-contract',
+            ))
+
+    # These rules have meaning independent of TCE tests; preserve each as a
+    # first-class implementation obligation with source attribution.
+    for rule in model.get('rule_obligations',[]):
+        obligations.append(item(
+            'normative-rule.' + rule['id'], 'domain',
+            rule['source_artifact']+'#'+rule['id'],
+            'normative-rule-verifier',
+        ))
 
     if model.get('definitions'):
         for definition in model['definitions']:
@@ -118,26 +134,30 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
             'project-constraint-review',
         ))
 
+    identifiers=[x['id'] for x in obligations]
+    if len(identifiers)!=len(set(identifiers)):
+        raise Blocked('duplicate implementation obligation ID')
     source_records = model.get('source_records', [])
     return {
         'schema': 'cat-implementation-obligations/v1',
         'process': model['process'],
         'source_sha256': {x['id']: x['sha256'] for x in source_records},
         'model_semantic_authority': model.get('semantic_authority'),
+        'model_status': model.get('status'),
+        'unresolved_rule_ids': model.get('unverified_rule_ids',[]),
         'items': obligations,
     }
 
 
 
-def aggregate(document, queue=None, technology_results=(), model_conformance=None):
-    """Derive evaluated obligation state from script/provider-owned evidence without mutating the skeleton."""
+def aggregate(document, queue=None, technology_results=(), model_conformance=None,
+              rule_verification=None, verified_green=None):
+    """Aggregate only independently checked Green receipts; Queue flags are not proof."""
     result=json.loads(json.dumps(document))
     items=result.get('items',[])
-    done_by_rule={}
-    if queue:
-        for q in queue.get('items',[]):
-            if q.get('status')=='done' and q.get('evidence_ref'):
-                done_by_rule.setdefault(q.get('model_ref'),[]).append(q.get('evidence_ref'))
+    # The caller must verify model/vectors hashes, pre-transition Queue SHA and
+    # the script-owned Green receipt before passing this evidence map.
+    done_by_rule=verified_green or {}
     tech=list(technology_results or [])
     tech_pass=bool(tech) and all(x.get('status')=='passed' for x in tech)
     model_pass=bool(model_conformance and model_conformance.get('status')=='passed')
@@ -147,7 +167,19 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
         source=ob.get('source_ref','')
         evidence=[]
         limitation=''
-        if method in ('generated-test','generated-test-frame'):
+        if method=='normative-rule-verifier':
+            rid=source.split('#',1)[1] if '#' in source else ''
+            record=next((r for r in (rule_verification or {}).get('results',[])
+                         if r.get('rule_id')==rid and r.get('source_artifact')==source.split('#',1)[0]),None)
+            if record and record.get('status')=='passed' and rule_verification.get('status')=='passed':
+                ob.update(status='passed',evidence='rule-verifier:'+rid)
+                ob.pop('reason',None)
+                limitation='only machine-bound checked predicates; interpretation of unrelated prose is not proved'
+            else:
+                ob.update(status='inconclusive',reason='missing or non-passing source-bound rule verification')
+                ob.pop('evidence',None)
+                limitation='normative rule cannot be discharged by TCE test selection or inventory alone'
+        elif method in ('generated-test','generated-test-frame'):
             rule=source.split('#',1)[1].split(':outcome:',1)[0] if '#' in source else ''
             evidence=done_by_rule.get(rule,[])
             if evidence:
@@ -159,15 +191,20 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
                 ob.pop('evidence',None)
                 limitation='behavior remains unverified for the current implementation state'
         elif method.startswith('technology-inspector:'):
-            if tech_pass:
-                ob.update(status='passed',evidence='technology-inspector')
+            # A global inspector success is not proof that this particular
+            # interface/capability was inspected. Require explicit coverage.
+            matched=[x for x in tech if x.get('status')=='passed'
+                     and ob['id'] in x.get('covered_obligation_ids',[])]
+            if matched:
+                ob.update(status='passed',evidence=';'.join('technology-inspector:'+x.get('technology','unknown')
+                                                         for x in matched))
                 ob.pop('reason',None)
-                limitation='bounded to configured technology inspector source/binding coverage'
+                limitation='proof is limited to the explicitly named inspector obligation and current source state'
             else:
-                ob.update(status='inconclusive',reason='technology inspector evidence is absent or non-passing')
+                ob.update(status='inconclusive',reason='technology inspection did not cover this specific obligation')
                 ob.pop('evidence',None)
-                limitation='technology-specific implementation boundary is not fully established'
-        elif method in ('model-conformance','deterministic-domain-verifier'):
+                limitation='generic inspector success does not establish the public interface/capability'
+        elif method=='model-conformance':
             if model_pass:
                 ob.update(status='passed',evidence=model_evidence or 'model-conformance')
                 ob.pop('reason',None)
@@ -176,15 +213,16 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
                 ob.update(status='inconclusive',reason='model-conformance evidence is absent or non-passing')
                 ob.pop('evidence',None)
                 limitation='semantic mapping cannot substitute for implementation evidence'
+        elif method=='deterministic-domain-verifier':
+            ob.update(status='inconclusive',reason='domain definition requires separately bound runtime verifier')
+            ob.pop('evidence',None)
+            limitation='model correspondence is not runtime domain-function verification'
         elif method=='integration-contract':
-            if model_pass and tech_pass:
-                ob.update(status='passed',evidence='model-conformance;technology-inspector')
-                ob.pop('reason',None)
-                limitation='local contract/boundary conformance only; deployment/integration evidence remains a separate Gate'
-            else:
-                ob.update(status='inconclusive',reason='cross-process local contract evidence is incomplete')
-                ob.pop('evidence',None)
-                limitation='does not establish remote peer availability or deployed integration'
+            # Two local checks cannot prove externally observable ordering,
+            # delivery, or partner Process effects.
+            ob.update(status='inconclusive',reason='independent cross-process runtime evidence required')
+            ob.pop('evidence',None)
+            limitation='model/technology inspection is not remote integration evidence'
         elif method.startswith('technology-skill:'):
             tech_name=method.split(':',1)[1]
             matched=[x for x in tech if x.get('technology')==tech_name]
@@ -210,12 +248,16 @@ def main(argv=None):
     ap.add_argument('pi')
     ap.add_argument('tce', nargs='+')
     ap.add_argument('--domain-rule')
+    ap.add_argument('--pi-extra', action='append', default=[])
+    ap.add_argument('--common-rule', action='append', default=[])
+    ap.add_argument('--domain-spec', action='append', default=[])
     ap.add_argument('--technology', action='append', default=[])
     ap.add_argument('-o', '--output', required=True)
     ap.add_argument('--check', action='store_true')
     args = ap.parse_args(argv)
     try:
-        result = generate(args.process, args.pi, args.tce, args.domain_rule, args.technology)
+        result = generate(args.process, [args.pi,*args.pi_extra], args.tce, args.domain_rule,
+                          args.technology,args.common_rule,args.domain_spec)
         content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + '\n'
         path = Path(args.output)
         if args.check:

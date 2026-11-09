@@ -12,7 +12,8 @@ class PolicyRuntimeTest(unittest.TestCase):
 
     def test_four_primary_flows_remain_independent(self):
         flows=self.routing['flows']
-        self.assertEqual(set(flows),{'spec-implementation','issue-work','code-to-spec','refactor'})
+        self.assertEqual(set(flows),{'spec-implementation','issue-work','code-to-spec','refactor','spec-test-sync'})
+        self.assertTrue(set(('spec-implementation','issue-work','code-to-spec','refactor')).issubset(flows))
         self.assertNotIn('refactor',flows['spec-implementation']['stages'])
         self.assertIn('intake',flows['issue-work']['stages'])
         self.assertIn('spec',flows['issue-work']['stages'])

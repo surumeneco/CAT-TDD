@@ -51,7 +51,7 @@ execution evidenceはRunner / Validator / Providerが生成する。AI Agentはe
 
 `passed`は実行した検査だけに有効であり、別Gateへ伝播しない。特にGreen、CI、merge、deployment、real-useは互いに独立する。process-closure / model-conformance / implementation-conformanceはScript所有のconformance evidenceを基準とし、Work本文に`passed`と記載しただけでは成立しない。deterministic verdictが`inconclusive`の場合だけ独立Review evidenceで閉じる。
 
-## 4つのflow
+## 5つのflow
 
 ### spec-implementation
 
@@ -61,9 +61,16 @@ TestModelはCompiler所有、具体vectorはdeterministic test-selector所有、
 
 current Queue item 1件ごとの標準TDD cycleで、原則必須のLLM invocationは`tdd-implementer`だけとする。Green evidenceはcurrent item IDとQueue hashへ結び付け、`cat_flow.py queue-state`だけがdone化と次current選択を行う。Red理由が機械判定不能な時だけ`tdd-checker`を起動する。
 
+
+### spec-test-sync
+
+既存productionを変更せず、Confirmed仕様から作成したTestModelと決定論的vectorsを全件rendererへ渡し、generated testsとTest Suite Manifestを同期する。過去のテスト結果・既存コード・Candidateから規範oracleを決めず、`process-closure` / `model-conformance` の現在Workに対するScript所有passed証拠を検査する。TDD Execution QueueやRedを通過させたことにしない。
+
+同期時は対象repo HEAD、選択されたtest ID、source/model/vectors/renderer/binding hash、生成所有権、現disk hashを確認する。既存の手書きテストやproduction sourceは変更せず、所有者不明・ローカル編集済み・欠落・staleをblockedとする。同期successとproject test runnerのpassed/failed/not-runを独立証拠として扱い、failedでもテスト同期自体を取り消したとは表現しない。実装修正や仕様のConfirmed昇格はこのフローの書込み権限外である。
+
 ### issue-work
 
-Issueの意味的Task/Work分解は`cycle-scope-divider`が行う。graphのcycle検出・depth・ready算出はScriptが行う。work kindにTDD不要なanalysis / documentation / verificationを含められる。
+Issueの意味的Task/Work分解は`cycle-scope-divider`が行う。graphのcycle検出・depth・ready算出はScriptが行う。work kindにTDD不要なanalysis / documentation / verificationを含められる。test-maintenanceはConfirmed仕様と新鮮なGate証拠がある場合に限りspec-test-syncへhandoffする。
 
 ### code-to-spec
 

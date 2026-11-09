@@ -29,7 +29,7 @@ CAT理論をVS Code / GitHub Copilot・Codex・Claude Code上の開発作業へ�
 
 ## 目標: CAT×TDDを組み込んだAI開発環境
 
-**対象は「開発を実行できる環境」であり、特定プロダクトのCAT変換プロジェクトではない。** CAT-TDDは単一の一本道ではなく、`spec-implementation / issue-work / code-to-spec / refactor`を独立flowとして扱う。通常の新規要求では人間がIssueを入力し、`cycle-scope-divider`がIssue→Task(Process)→Workへ意味的に分解し、依存graphのcycle/depth/ready算出はScriptへ委譲する。決定論的なmodel/Queue/test生成、Gate validation、Git inspection、evidence集約はPythonが担当し、AIは意味判断とproduction implementation等に限定する。
+**対象は「開発を実行できる環境」であり、特定プロダクトのCAT変換プロジェクトではない。** CAT-TDDは単一の一本道ではなく、`spec-implementation / issue-work / code-to-spec / refactor / spec-test-sync`を独立flowとして扱う。通常の新規要求では人間がIssueを入力し、`cycle-scope-divider`がIssue→Task(Process)→Workへ意味的に分解し、依存graphのcycle/depth/ready算出はScriptへ委譲する。決定論的なmodel/Queue/test生成、Gate validation、Git inspection、evidence集約はPythonが担当し、AIは意味判断とproduction implementation等に限定する。
 
 入口: [AI実行契約](docs/AI実行契約.md)、[開発フロー](docs/開発フロー.md)、[Issue / Task / Workを含むArtifact Markdown形式](docs/Artifact記法.md)。\n\nVS Code各Harnessへの入口・配布・初回bootstrapは [VS Codeマルチエージェント](docs/VSCodeマルチエージェント.md) を参照。いずれのHarnessも共通のruntimeとstage権限定義を使用する。
 
@@ -37,6 +37,8 @@ CAT理論をVS Code / GitHub Copilot・Codex・Claude Code上の開発作業へ�
 |---|---|---|
 | `scripts/cat_flow.py` | flow-aware routing、permissions、Git read、write guard、command evidence、conformance、structured handoff | 規範意味の決定・外部provider結果の創作 |
 | `scripts/cat_compile_v2.py` | confirmed CAT source→TestModel、TestModel→deterministic vectors、vectors→TDD Queue、current item→技術renderer | unsupported意味のAI補完・手入力Test List |
+| `scripts/cat_spec_test_sync.py` | Confirmed仕様と正式Gate証拠から全vectorのテストを生成・同期し、Manifestと独立した実行結果を記録 | TDD Queue / production source / 手書きテストの変更・規範oracleの推測 |
+| `scripts/cat_suite_manifest.py` | generated test所有権・hashの検証と差分同期 | 削除や未所有ファイルの上書き |
 | `scripts/cat_queue.py` | Queueの`pending/current/done/blocked`遷移。currentは最大1件。normative doneはGreen evidenceへ結び付ける | Scenario / Oracle等の意味記述 |
 | `scripts/cat_scope_order.py` | Work parent/depends-onのcycle、depth、ready最深scope算出 | 依存関係そのものの意味決定 |
 | `scripts/cat_promote.py` | 明示されたnormative decisionに基づくDraft/Candidate→confirmed配置の専用authority operation | 仕様意味の決定・Reviewerによる自己承認 |
@@ -79,7 +81,7 @@ CAT理論をVS Code / GitHub Copilot・Codex・Claude Code上の開発作業へ�
 
 ## 配置時の最小手順
 
-1. 起点と目的から4 flowのいずれかを選ぶ。Issueなら`cycle-scope-divider`がTask/Workへ分解し、`cat_scope_order.py`がreadyな最深scopeを選ぶ。既存Workの再開では`flow / work_kind / parent / depends_on`を使用する。
+1. 起点と目的から5 flowのいずれかを選ぶ。Issueなら`cycle-scope-divider`がTask/Workへ分解し、`cat_scope_order.py`がreadyな最深scopeを選ぶ。既存Workの再開では`flow / work_kind / parent / depends_on`を使用する。
 2. 共通`agents/`と共通Skill、`routing.json`で採用技術に対応する技術Skillだけを配置し、プロジェクト手続きがある場合だけ`extensions/<project>-adapter`を明示選択して配置する。`optional-skills/`は通常導入に含めず、対象の診断・補助作業を明示した場合だけ個別に使用する。
 3. 指示ファイルは入口と正本への参照に留め、同じルールを繰り返さない。GitHub以外のremoteでも、Copilotの`.github/agents`/`.github/skills`はワークスペースの設定パスとして使用できる。
 4. `routing.json`のexecutorを直接使い、Script / Compiler / Validatorで確定できるstageではAgentを起動しない。Validatorが`inconclusive`の時だけconditional reviewerを使う。書込みAgentは`cat_flow.py handoff`でguard baselineを開始し、終了後のguard finishがpassedになるまで次stageへ進めない。標準Lifecycle配置ではdeepest-readyもguard開始時に再検査する。

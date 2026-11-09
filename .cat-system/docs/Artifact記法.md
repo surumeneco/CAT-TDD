@@ -181,7 +181,19 @@ PIはProcess間の境界状態空間であり、実装上の型定義そのも�
 | absent | 不在 |
 | undefined | 未定義 |
 
-PresenceはCATとして有効な意味である。現行決定論コンパイラが扱えないPresenceを、別Domainへ縮約して通してはならない。production TestModel生成では `BLOCKED / unsupported` とし、Compiler / schema改善Workへ分離する。AIがproduction oracleへ補完しない。
+PresenceはCATとして有効な意味であり、Domainの`nullable`とは独立している。`optional` の欠落、`absent`、`undefined`、`null`、空文字列、0、falseを同一値に変換しない。
+
+PI全体の既定Presenceと操作別の例外を区別する場合、必要な行だけ`## 操作別存在`（英語:`## Operation presence`）に宣言する。
+
+| 操作 | 項目 | 存在 |
+| --- | --- | --- |
+| save | 入力.x | 必須 |
+
+操作IDと項目IDは同じPIに属していなければならず、重複した組を宣言してはならない。Compilerはこの表をTestModelの`operation_presence`へ出典PI付きで保存し、独立したModel Conformanceで照合する。
+
+明示的なテストベクトルでは、受付操作を`operation`で特定し、任意項目の欠落は`input`のキーを省略し、`undefined`は`{"$cat_presence":"undefined"}`と表す。提供操作に応じた出力Presenceがある場合は`output_operation`も必須となる。これらは値の同一性の規則であって、実装の動作確認結果ではない。
+
+現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作の識別や`undefined`のドライバー伝送を確立できないVitestコード生成も拒否する。補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
 
 ### 操作方向
 
@@ -389,6 +401,15 @@ TestModelでは次を明確に分ける。
 - Coverage verification: `proved / uncovered / unproven` 等の検査結果。
 
 内部IR、TestModel JSON、vectors、binding、execution evidenceは機械用派生物としてJSON等を使用できる。これらを人間向け意味正本へ昇格させない。normative vectorsは`cat_compile_v2.py vectors`のtest-selection ruleから生成される派生物であり、人間やAIが必要ケースを直接追記するTest Listとして扱わない。
+
+
+### Test Suite Manifest（spec-test-sync）
+
+既存実装向けの規範テスト整備は`flow: spec-test-sync`、`work_kind: test-maintenance`のWorkで実施する。WorkのCompilationにはConfirmed Process / PI / TCE / TestModel / Vectors / 技術Bindingを指定し、TDD Queueは指定・作成しない。Process ClosureとModel ConformanceのScript-owned passed evidenceが必要である。TDDの`current=1`制限はspec-implementationにだけ適用する。
+
+`cat-test-suite-manifest/v1`は同期した生成物の管理用Lifecycleメタデータであり、第二の仕様書ではない。`inputs`はsource/model/vectors/renderer/bindingのhashとselection rule・repo revisionを保持する。`entries`は生成相対パスをキーとしてtest ID、generated/handwritten所有者、ファイル内容SHA-256、由来hash群を保持する。TCEのCondition、Oracle、Expected Result等の意味を書き込まない。既存手書きテストとproduction sourceは不変、未選択の旧生成テストは自動削除しない。
+
+同期結果`test-suite-synced`、試験実行結果`test-execution-passed / failed / not-run`、CAT適合性Gateの証拠は相互に代用しない。詳細は[機械的変換](機械的変換.md)を参照する。
 
 ### TDD Execution Queue
 

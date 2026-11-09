@@ -5,6 +5,10 @@ description: "Run deterministic CAT-TDD execution from confirmed TestModel throu
 
 # Model → Queue → Current Test → Red → Green
 
+## Independent test maintenance
+
+This TDD Queue/current-test/Red procedure applies to `spec-implementation`. Existing-code test generation or regeneration uses independent `spec-test-sync`: confirmed Work and current conformance Gates, full deterministic vectors, generated-test/Manifest-only sync, then separate test execution. Do not manufacture Red or write TDD Queue from test maintenance. See `scripts/cat_spec_test_sync.py` and `docs/機械的変換.md`.
+
 ## Queue
 
 `cat_compile_v2.py vectors`はconfirmed TestModelから`rule-witness/v1`でdeterministic vectorsを生成し、`cat_compile_v2.py queue`がそれを`cat-tdd-queue/v1`へ変換する。normative Queue/test生成ではvector再生成一致を必須とし、手入力追加やTestModel ruleの欠落を拒否する。boolean/enum以外の非有限領域は代表値を推測せずselector改善Workへ分離する。Queue itemが保持できるのは`id / model_ref / vector_ref / order / status / evidence_ref`だけで、Scenario、Expected Result、Oracle、Condition、Effectを記述しない。
