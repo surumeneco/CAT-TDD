@@ -84,7 +84,13 @@ def _type_subset(source,target):
         return False if False in results else (True if all(x is True for x in results) else None)
     if b=='union':
         results=[_type_subset(source,x) for x in target['variants']]
-        return True if True in results else None
+        if True in results:return True
+        # A source can be covered by a union without fitting any one branch.
+        # Only exhaustive finite evidence may establish that relation.
+        values=semantic_types.finite_values(source,max_values=4096)
+        if values is None:return None
+        try:return all(semantic_types.contains(target,value) for value in values)
+        except semantic_types.DomainError:return None
     if b=='nullable':
         return _type_subset(source['of'],target['of']) if a=='nullable' else _type_subset(source,target['of'])
     if a=='nullable':
@@ -109,7 +115,18 @@ def _type_subset(source,target):
             return False  # Sequence permits duplicates; Set forbids duplicates.
         return _type_subset(source['element'],target['element'])
     if a==b=='record':
-        return None  # Non-identical closed record shapes need a dedicated proof.
+        left=source.get('fields',[]);right=target.get('fields',[])
+        if (any(x.get('presence')!='required' for x in [*left,*right])
+                or len({x['id'] for x in left})!=len(left)
+                or len({x['id'] for x in right})!=len(right)):
+            return None  # Presence-aware record inclusion is not yet proved.
+        mine={x['id']:x['domain'] for x in left}
+        theirs={x['id']:x['domain'] for x in right}
+        if set(mine)!=set(theirs):
+            return False  # Both records are closed; missing/extra keys are rejected.
+        nested=[_type_subset(mine[id_],theirs[id_]) for id_ in sorted(mine)]
+        if all(x is True for x in nested):return True
+        return False if False in nested else None
     if a=='integer' and b=='real':
         return None  # Unbounded integers need a representability proof.
     if a!=b:
