@@ -16,6 +16,7 @@ from pathlib import Path
 
 from cat_compile_v2 import Blocked, format_expr, read_artifact
 from catlib import semantic_rules
+from catlib import semantic_named_types as named_types
 
 
 def require(test, message):
@@ -102,6 +103,13 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     rule_paths=[*common_rules,*domain_specs]
     try:rule_docs=semantic_rules.load_many(rule_paths,p['process'],allow_draft)
     except semantic_rules.RuleError as exc:raise Blocked(str(exc)) from exc
+    try:
+        type_registry=named_types.registry(rule_docs)
+        named_type_definitions=named_types.resolved_definitions(type_registry)
+    except (named_types.NamedTypeError,ValueError) as exc:raise Blocked(str(exc)) from exc
+    def resolve_domain(domain):
+        try:return named_types.resolve(domain,type_registry)
+        except (named_types.NamedTypeError,ValueError) as exc:raise Blocked(str(exc)) from exc
     tce_paths = list(tce_path) if isinstance(tce_path, (list, tuple)) else [tce_path]
     require(tce_paths, 'at least one TCE artifact required')
     tces = []
@@ -125,18 +133,18 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         for item in pi['fields']:
             require(item['id'] not in fields,'duplicate PI field '+item['id'])
             fields[item['id']] = item['role']
-            domains[item['id']]=item['domain']
+            domains[item['id']]=resolve_domain(item['domain'])
             presence[item['id']]=item.get('presence','required')
             field_owners[item['id']]=pif['id']
     for item in p.get('state_fields', []):
         fields[item['id']] = 'state'
-        domains[item['id']]=item['domain']
+        domains[item['id']]=resolve_domain(item['domain'])
     for item in p.get('observations', []):
         fields[item['id']] = 'observation'
-        domains[item['id']]=item['domain']
+        domains[item['id']]=resolve_domain(item['domain'])
     for item in p.get('actions', []):
         fields[item['id']] = 'action'
-        domains[item['id']]=item['domain']
+        domains[item['id']]=resolve_domain(item['domain'])
 
     state_ids = {key for key, role in fields.items() if role == 'state'}
     emitted_ids = {key for key, role in fields.items() if role in ('output', 'action')}
@@ -189,6 +197,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'triggers': {item['id']: item['origin'] for item in p['triggers']},
         'fields': fields, 'domains':domains, 'presence':presence,'field_owners':field_owners,
         'normative_rule_inputs': {d['id']:(d['kind'],d['sha256']) for d in rule_docs},
+        'named_type_definitions':named_type_definitions,
         'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract']) for d in rule_docs for r in d['rules']},
         'constraints': tuple(format_expr(expr, language=tf.get('language', 'en')) for _,_,a in pi_docs for expr in a.get('constraints', [])),
         'definitions': definitions,
@@ -275,7 +284,7 @@ def json_model(path):
     require(isinstance(model,dict),'TestModel JSON must be an object')
     # Inventory comparisons use dictionaries; reject duplicates before their
     # last-wins normalization can conceal a corrupted or forged source entry.
-    for name in ('source_records','triggers','fields','pi_operations','rules',
+    for name in ('source_records','triggers','fields','pi_operations','rules','named_type_definitions',
                  'definitions','normative_rule_inputs','rule_obligations'):
         if name not in model:
             continue
@@ -341,6 +350,7 @@ def json_model(path):
         'triggers': {item['id']: item['origin'] for item in model.get('triggers', [])},
         'fields': fields, 'domains':domains,'presence':presence,'field_owners':field_owners,
         'normative_rule_inputs':{d['id']:(d['kind'],d['sha256']) for d in model.get('normative_rule_inputs',[])},
+        'named_type_definitions':model.get('named_type_definitions',[]),
         'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract']) for r in model.get('rule_obligations',[])},
         'constraints': tuple(format_expr(expr, language=model.get('language', 'en'))
                              for expr in model.get('pi_constraints', [])),
@@ -358,10 +368,12 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence')
+        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions')
     for key in checks:
         if actual.get(key) != expected.get(key):
             mismatches.append(key)
+    if Path(model).suffix.lower()!='.json' and expected.get('named_type_definitions'):
+        mismatches.append('named_type_definitions: Markdown renderer omits structural type provenance')
     if Path(model).suffix.lower()!='.json' and expected.get('operation_presence'):
         mismatches.append('operation_presence: Markdown renderer omits operation-specific semantics')
     return {

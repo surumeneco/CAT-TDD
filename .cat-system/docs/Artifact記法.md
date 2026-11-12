@@ -315,6 +315,25 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 
 対象例はDOM構造、視覚、accessibility、統計的性質、複数実行間の関係等。単にTCEへ書きにくい内容を未定義のまま置く分類ではなく、対象・要求・検証方法を持つ。
 
+### DomainSpec の名前付き構造Domain（宣言のある場合のみ）
+
+DomainSpecでは既存の `## 規則 / ## Rules` に加え、構造Domainを名前で参照するため、`## 型定義 / ## Types` を使用できる。型宣言だけのDomainSpecも有効である。既存の規則のみのDomainSpecとCommonRuleの解釈は変えない。
+
+~~~md
+## Types
+| ID | Domain |
+| --- | --- |
+| User | record<name:string,active:boolean> |
+| Change | record<owner:record<User>,mode:nullable<enum{A,B}>> |
+~~~
+
+- PI/ProcessのDomain欄では `record<Change>`（日本語なら`レコード<Change>`）と参照する。定義の本体は同じProcess、または適用可能な祖先スコープのDomainSpecに置き、実際のCompiler呼出しへ明示的に `--domain-spec` を渡す。
+- Resolverは**明示的なDomainSpec内の構造定義だけ**を使用する。未定義の名前からフィールドを推測しない。型名重複、循環する型定義、構造として解決できない宣言はエラーまたは未解決としてfail closedとする。
+- 変換後のJSON TestModelには、各参照の実際のフィールド構造と、出典Artifact ID、出典SHA-256を保存する。JSONに対する独立 `model-conformance` はこれらをソースから再解決して比較する。
+- 現時点のMarkdown TestModel rendererは型定義の詳細構造・出典を完全表現しないため、**名前付き構造型があるときのMarkdown Model Conformanceを合格証拠としない**。JSONの正式比較を使用する。
+- 型定義はデータ構造の形だけを決める。RuleのVerification（自然言語）を機械的にprovedにしたり、非有限ConditionのProcess Closureを自動証明するものではない。
+- 構造定義はプロダクト固有の規範入力であるため、そのDomainSpecを `confirmed` に昇格するには通常どおり正当な `decision_ref` が必要である。型宣言があるだけで未承認のプロダクト仕様はconfirmedとならない。
+
 ## 12. Issue / Task / Work
 
 Issue / Task / Workは開発Lifecycleを段階的に具体化するArtifactである。通常運用では**人間が直接入力する開発要求の単位はIssue**とし、人間にTaskやWorkの手作成を要求しない。

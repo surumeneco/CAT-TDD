@@ -21,6 +21,7 @@ import tokenize
 from catlib.markdown import parse_frontmatter
 from catlib import semantic_types as typed
 from catlib import semantic_rules
+from catlib import semantic_named_types as named_types
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -735,6 +736,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     try:rule_docs=semantic_rules.load_many(rule_paths,p['process'],allow_draft)
     except semantic_rules.RuleError as exc:raise Blocked(str(exc)) from exc
     rule_obligations=[x for d in rule_docs for x in d['rules']]
+    try:
+        type_registry=named_types.registry(rule_docs)
+        resolved_type_definitions=named_types.resolved_definitions(type_registry)
+    except (named_types.NamedTypeError,typed.DomainError) as exc:raise Blocked(str(exc)) from exc
+    def resolve_domain_types(domain):
+        try:return named_types.resolve(domain,type_registry)
+        except (named_types.NamedTypeError,typed.DomainError) as exc:raise Blocked(str(exc)) from exc
     pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
     require(bool(pi_paths),'at least one PI required')
     pi_docs=[]
@@ -831,6 +839,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 ident(field['id'],'PI field');require(field['role'] in ('input','state','output'),'PI field role invalid')
                 require(field['id'].startswith(field['role']+'.'),'PI field ID must start with role')
             require(field['id'] not in fields,'duplicate PI field '+field['id'])
+            field['domain']=resolve_domain_types(field['domain'])
             validate_domain(field['domain'])
             # Preserve PI ownership in the compiled TestModel, not just the
             # flat field name. Cross-Process bindings must not borrow a field
@@ -867,6 +876,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 require(field['role']==role,f'Process {name} role invalid')
                 semantic_ident(field['id'],f'Process {name} ID')
                 require(field['id'] not in fields,f'duplicate specification field {field["id"]}')
+                field['domain']=resolve_domain_types(field['domain'])
                 validate_domain(field['domain']);fields[field['id']]=field
 
     definitions={}
@@ -996,6 +1006,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     result['pi_artifacts']=[fm['id'] for _,fm,_ in pi_docs]
     result['rule_obligations']=rule_obligations
     result['normative_rule_inputs']=[{'id':d['id'],'kind':d['kind'],'sha256':d['sha256']} for d in rule_docs]
+    result['named_type_definitions']=resolved_type_definitions
     result['unverified_rule_ids']=sorted({r['id'] for r in rule_obligations})
     tce_map=[]
     for _,tce_fm,_ in tce_docs:
@@ -1020,6 +1031,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         'tce':tce_map,
         'common_rules':[d['id'] for d in rule_docs if d['kind']=='common-rule'],
         'domain_specs':[d['id'] for d in rule_docs if d['kind']=='domain-spec'],
+        'type_definitions':[d['id'] for d in resolved_type_definitions],
         'domain_rule':{
             'artifact':dfile['id'] if dfile else None,
             'definitions':sorted(definitions)}}
