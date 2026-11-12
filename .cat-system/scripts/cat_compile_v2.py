@@ -1439,7 +1439,9 @@ def main(argv=None):
             result=load(args.process,[args.pi,*getattr(args,'pi_extra',[])],args.tce,args.domain_rule,args.allow_draft,args.common_rule,args.domain_spec,args.allow_partial)
             write(args.output,_model_content(result,args.output),args.check)
         else:
-            fresh=load(args.process,args.pi,args.tce,args.domain_rule,args.allow_draft)
+            fresh=load(args.process,[args.pi,*args.pi_extra],args.tce,
+                       args.domain_rule,args.allow_draft,args.common_rule,
+                       args.domain_spec,args.allow_partial)
             model_bytes=Path(args.model).read_bytes()
             if Path(args.model).suffix.lower()=='.md':
                 require(model_bytes.decode('utf-8')==render_model_markdown(fresh),
