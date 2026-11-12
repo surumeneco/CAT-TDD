@@ -144,11 +144,18 @@ def validate(d):
             raise DomainError('union needs >=2 variants')
         for v in d['variants']:validate(v)
     elif t=='record':
-        _keys(d,{'type','resolved'},{'name','fields'})
-        if 'name' in d:
-            if not isinstance(d['name'],str) or not d['name'] or d.get('resolved') is not False:
+        _keys(d,{'type','resolved'},{'name','fields','definition_source','definition_sha256'})
+        if 'name' in d and not d.get('resolved',False):
+            if not isinstance(d['name'],str) or not d['name'] or 'fields' in d:
                 raise DomainError('unresolved nominal record required')
         else:
+            if 'name' in d:
+                if not isinstance(d['name'],str) or not d['name'] or not d.get('resolved'):
+                    raise DomainError('invalid resolved nominal record')
+                for name in ('definition_source','definition_sha256'):
+                    if not isinstance(d.get(name),str) or not d[name]:
+                        raise DomainError('missing named type provenance')
+                _keys(d,{'type','resolved','name','fields','definition_source','definition_sha256'})
             if not isinstance(d.get('fields'),list) or not d['fields']:
                 raise DomainError('record fields required')
             names=set()
