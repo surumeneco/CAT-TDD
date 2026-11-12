@@ -36,7 +36,8 @@ CODE = re.compile(r'(?ms)^```cat-machine\s*\n(.*?)\n```\s*$')
 INT = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')
 SAFE_INT = 9007199254740991
 OPS = {'eq','ne','lt','le','gt','ge','and','or','not','add','sub','mul',
-       'div','floor','abs','length','concat','to-int','set-add','set-remove','call'}
+       'div','floor','abs','length','concat','to-int','set-add','set-remove','call',
+       'is-missing','is-undefined','is-present'}
 
 class Blocked(ValueError):
     pass
@@ -254,7 +255,8 @@ def parse_expr_text(text, params=()):
     try:root=ast.parse(text,mode='eval').body
     except SyntaxError as exc:raise Blocked('invalid CAT expression '+repr(text)) from exc
     builtin={'length':'length','len':'length','abs':'abs','floor':'floor','to_int':'to-int',
-             'concat':'concat','set_add':'set-add','set_remove':'set-remove','not_fn':'not'}
+             'concat':'concat','set_add':'set-add','set_remove':'set-remove','not_fn':'not',
+             'is_missing':'is-missing','is_undefined':'is-undefined','is_present':'is-present'}
     compare={ast.Eq:'eq',ast.NotEq:'ne',ast.Lt:'lt',ast.LtE:'le',ast.Gt:'gt',ast.GtE:'ge'}
     binary={ast.Add:'add',ast.Sub:'sub',ast.Mult:'mul',ast.Div:'div'}
     def cv(n):
@@ -626,6 +628,13 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     check_keys(expr,['op','args'],['name'],where='operator expression')
     op=expr['op']; require(op in OPS,'unsupported operator '+str(op))
     args=expr['args']; require(isinstance(args,list),'operator args must be array')
+    if op in ('is-missing','is-undefined','is-present'):
+        require(len(args)==1 and isinstance(args[0],dict) and set(args[0])=={'ref'},
+                op+' requires exactly one direct PI field reference')
+        ref=args[0]['ref']
+        require(ref in fields and fields[ref]['role']=='input',
+                op+' is only defined for declared PI input fields')
+        return 'boolean'
     if op=='call':
         check_keys(expr,['op','name','args'],where='domain-rule invocation')
         name=expr['name']; require(name in definitions,'unknown DomainRule '+str(name))
@@ -672,8 +681,28 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
 def eval_expr(expr, env, definitions, params=None):
     if 'literal' in expr:return deepcopy(expr['literal'])
     if 'ref' in expr:
-        v=expr['ref'];return deepcopy((params or {})[v[6:]] if v.startswith('param.') else env[v])
-    op=expr['op'];xs=[eval_expr(x,env,definitions,params) for x in expr['args']]
+        v=expr['ref']
+        if v.startswith('param.'):return deepcopy((params or {})[v[6:]])
+        require(v in env and env[v] is not typed.MISSING and env[v] is not typed.UNDEFINED,
+                'ordinary expression cannot read missing/undefined field '+v)
+        return deepcopy(env[v])
+    op=expr['op']
+    if op in ('is-missing','is-undefined','is-present'):
+        require(len(expr['args'])==1 and set(expr['args'][0])=={'ref'},
+                'invalid Presence predicate shape')
+        ref=expr['args'][0]['ref']
+        value=env.get(ref,typed.MISSING)
+        if op=='is-missing':return value is typed.MISSING
+        if op=='is-undefined':return value is typed.UNDEFINED
+        return value is not typed.MISSING and value is not typed.UNDEFINED
+    if op in ('and','or'):
+        for part in expr['args']:
+            value=eval_expr(part,env,definitions,params)
+            require(type(value) is bool,op+' requires boolean')
+            if op=='and' and not value:return False
+            if op=='or' and value:return True
+        return op=='and'
+    xs=[eval_expr(x,env,definitions,params) for x in expr['args']]
     if op=='call':
         f=definitions[expr['name']];return eval_expr(f['body'],env,definitions,dict(zip(f['params'],xs)))
     try:
@@ -1346,6 +1375,8 @@ def format_expr(expr, params=(), language='en'):
         word={'and':('かつ' if language=='ja' else 'and'),'or':('または' if language=='ja' else 'or')}[op]
         return '('+(' '+word+' ').join(args)+')'
     if op=='not':return ('否定('+args[0]+')') if language=='ja' else '(not '+args[0]+')'
+    if op in ('is-missing','is-undefined','is-present'):
+        return op.replace('-','_')+'('+args[0]+')'
     funcs_en={'floor':'floor','abs':'abs','length':'length','concat':'concat','to-int':'to_int','set-add':'set_add','set-remove':'set_remove'}
     funcs_ja={'floor':'floor','abs':'abs','length':'長さ','concat':'連結','to-int':'整数化','set-add':'集合追加','set-remove':'集合削除'}
     if op=='call':return expr['name']+'('+', '.join(args)+')'
