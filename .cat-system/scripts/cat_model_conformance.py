@@ -178,6 +178,13 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                 format_expr(item['body'], item['params'], tf.get('language', 'en')),
             )
 
+    intrinsic_proofs=_intrinsic_source_proofs(
+        rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
+    intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
+    all_rule_ids={rule['id'] for doc in rule_docs for rule in doc['rules']}
+    source_all_confirmed=(all(fm.get('status')=='confirmed'
+                              for _,fm in files if fm['kind'] not in ('common-rule','domain-spec'))
+                          and all(doc['status']=='confirmed' for doc in rule_docs))
     return {
         'sources': {
             fm['id']: (fm['kind'], hashlib.sha256(Path(path).read_bytes()).hexdigest())
@@ -198,9 +205,12 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'fields': fields, 'domains':domains, 'presence':presence,'field_owners':field_owners,
         'normative_rule_inputs': {d['id']:(d['kind'],d['sha256']) for d in rule_docs},
         'named_type_definitions':named_type_definitions,
-        'intrinsic_rule_proofs':_intrinsic_source_proofs(
-            rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects),
-        'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'], 'intrinsic-proved' if r['id'] in {p['rule_id'] for p in _intrinsic_source_proofs(rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)} else 'unverified') for d in rule_docs for r in d['rules']},
+        'intrinsic_rule_proofs':intrinsic_proofs,
+        'unverified_rule_ids':sorted(all_rule_ids-intrinsic_ids),
+        'source_all_confirmed':source_all_confirmed,
+        'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],
+                                    'intrinsic-proved' if r['id'] in intrinsic_ids else 'unverified')
+                             for d in rule_docs for r in d['rules']},
         'constraints': tuple(format_expr(expr, language=tf.get('language', 'en')) for _,_,a in pi_docs for expr in a.get('constraints', [])),
         'definitions': definitions,
         'rules': rules,
@@ -394,6 +404,9 @@ def json_model(path):
         'named_type_definitions':model.get('named_type_definitions',[]),
         'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],r.get('verification_status','unverified')) for r in model.get('rule_obligations',[])},
         'intrinsic_rule_proofs':model.get('intrinsic_rule_proofs',[]),
+        'unverified_rule_ids':model.get('unverified_rule_ids',[]),
+        'status':model.get('status'),
+        'coverage_requirement':model.get('coverage_requirement'),
         'constraints': tuple(format_expr(expr, language=model.get('language', 'en'))
                              for expr in model.get('pi_constraints', [])),
         'definitions': definitions,
@@ -410,10 +423,17 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs')
+        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids')
     for key in checks:
         if actual.get(key) != expected.get(key):
             mismatches.append(key)
+    if Path(model).suffix.lower()=='.json':
+        if actual.get('status') not in ('draft','confirmed'):
+            mismatches.append('model_status_invalid')
+        if actual.get('status')=='confirmed' and (
+                not expected['source_all_confirmed'] or expected['unverified_rule_ids']
+                or actual.get('coverage_requirement')!='closed'):
+            mismatches.append('normative_status_unjustified')
     if Path(model).suffix.lower()!='.json' and expected.get('intrinsic_rule_proofs'):
         mismatches.append('intrinsic_rule_proofs: Markdown renderer omits source-bound proof evidence')
     if Path(model).suffix.lower()!='.json' and expected.get('named_type_definitions'):
