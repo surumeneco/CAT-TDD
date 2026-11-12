@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 import json
+import ast
 
 class DomainError(ValueError):
     pass
@@ -11,18 +12,43 @@ MISSING=object()
 UNDEFINED=object()
 
 def _parts(value):
-    depth=0;start=0;out=[]
+    """Split generic/enum items, ignoring commas or delimiters in literals."""
+    depth=0; start=0; out=[]; quote=None; escaped=False
     for i,ch in enumerate(value):
-        if ch in '<{[':depth+=1
+        if quote:
+            if escaped:escaped=False
+            elif ch=='\\':escaped=True
+            elif ch==quote:quote=None
+            continue
+        if ch in ('"',"'"):
+            quote=ch
+        elif ch in '<{[':depth+=1
         elif ch in '>}]':
             depth-=1
             if depth<0:raise DomainError('unbalanced domain delimiters')
         elif ch==',' and depth==0:
             out.append(value[start:i].strip());start=i+1
+    if quote:raise DomainError('unclosed quoted domain literal')
     if depth:raise DomainError('unbalanced domain delimiters')
     out.append(value[start:].strip())
     if not all(out):raise DomainError('empty domain component')
     return out
+
+
+def _enum_scalar(token):
+    token=token.strip()
+    if token.startswith(('"',"'")):
+        try:value=ast.literal_eval(token)
+        except (SyntaxError,ValueError) as exc:raise DomainError('invalid quoted enum literal') from exc
+        if type(value) is not str:raise DomainError('enum quoted literal must be string')
+        return value
+    if token.lower()=='true' or token=='真':return True
+    if token.lower()=='false' or token=='偽':return False
+    if re.fullmatch(r'[+-]?(?:0|[1-9][0-9]*)',token):return int(token)
+    if not token or '\\' in token or any(ch in token for ch in ('"',"'",'{','}','<','>')):
+        raise DomainError('invalid enum literal')
+    return token
+
 
 def parse(text):
     if not isinstance(text,str) or not text.strip():raise DomainError('empty domain')
@@ -32,6 +58,14 @@ def parse(text):
     text=aliases.get(text,text)
     if text in ('string','integer','boolean','bytes','real'):return {'type':text}
     if text=='string<safe-signed-integer>':return {'type':'string','format':'safe-signed-integer'}
+    if (text.startswith('enum{') or text.startswith('列挙{')) and text.endswith('}'):
+        opening=text.index('{')
+        values=[_enum_scalar(item) for item in _parts(text[opening+1:-1])]
+        result={'type':'enum','values':values}
+        validate(result)
+        return result
+    if text.endswith('|null'):
+        return {'type':'nullable','of':parse(text[:-len('|null')].strip())}
     if text.endswith('またはnull'):
         return {'type':'nullable','of':parse(text[:-len('またはnull')].strip())}
     for prefix in ('nullable<','Nullable<'):
@@ -89,6 +123,13 @@ def validate(d):
                 raise DomainError('invalid numeric bound')
         if 'min' in d and 'max' in d and d['min']>d['max']:
             raise DomainError('empty numeric domain')
+    elif t=='enum':
+        _keys(d,{'type','values'})
+        values=d['values']
+        if not isinstance(values,list) or not values or any(type(v) not in (str,int,bool) for v in values):
+            raise DomainError('enum requires nonempty scalar values')
+        if len({_signature(v) for v in values})!=len(values):
+            raise DomainError('duplicate enum value')
     elif t=='string':
         _keys(d,{'type'},{'format'})
         if d.get('format','any') not in ('any','safe-signed-integer'):
@@ -153,6 +194,7 @@ def contains(d,value):
                 unknown=exc
         if unknown is not None:raise unknown
         return False
+    if t=='enum':return any(same(value,v) for v in d['values'])
     if t=='integer':
         return type(value) is int and (d.get('min') is None or value>=d['min']) and (d.get('max') is None or value<=d['max'])
     if t=='real':
