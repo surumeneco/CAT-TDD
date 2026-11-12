@@ -206,6 +206,11 @@ def _scalar_token(token):
 
 def parse_domain_text(text):
     text=_unquote_code(text).strip()
+    # Recursive enum parsing must precede legacy substitutions, which would
+    # corrupt quoted enum values such as "整数".
+    if 'enum{' in text or '列挙{' in text:
+        try:return typed.parse(text)
+        except typed.DomainError as exc:raise Blocked(str(exc)) from exc
     aliases={'真偽':'boolean','整数':'integer','文字列':'string','安全符号付き整数':'safe-signed-integer'}
     for ja,en in aliases.items():text=text.replace(ja,en)
     text=text.replace('集合<','set<').replace('列<','sequence<').replace('列挙{','enum{')
@@ -958,7 +963,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
                        
                        and not presence_unproven and not (unresolved_interfaces if contract=='markdown-v2' else [])
-                       and not rule_obligations)
+                       )
     if not coverage_proved:
         require(allow_draft or allow_partial,
                 'assembled Process closed-world coverage requirement not proved: '+json.dumps({'closed_world':p['closed_world'],'tce':local_coverage_requirements,'presence':presence_unproven,'triggers':per_trigger},ensure_ascii=False)[:700])
@@ -972,7 +977,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         hashes[key]=digest
     authority={'markdown-v2':'cat-markdown/v2','markdown-v1':'cat-markdown/v1','machine-only':'cat-machine/v2'}[contract]
     unresolved_domains=sorted(x['id'] for x in fields.values() if _unresolved_domain(x['domain']))
-    normative_model = all(fm['status']=='confirmed' for _,fm in files) and coverage_proved and not unresolved_domains
+    # Local TCE closure does not discharge CommonRule/DomainSpec obligations.
+    normative_model = (all(fm['status']=='confirmed' for _,fm in files)
+                       and coverage_proved and not unresolved_domains and not rule_obligations)
     result={'schema':M,'process':p['process'],'status':('confirmed' if normative_model else 'draft'),
             'semantic_authority':authority,'language':tf.get('language','en') if contract=='markdown-v2' else 'en',
             'source_artifacts':[fm['id'] for _,fm in files],
