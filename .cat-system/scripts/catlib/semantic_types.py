@@ -241,6 +241,53 @@ def contains(d,value):
         return True
     raise DomainError('cannot validate type '+repr(t))
 
+
+def finite_values(domain,max_values=65536):
+    """Enumerate an exact finite domain, or return None; never guess witnesses."""
+    if type(max_values) is not int or max_values<1:
+        raise DomainError('finite-domain cap must be positive integer')
+    validate(domain)
+    t=domain['type']
+    if t=='boolean':return [False,True] if max_values>=2 else None
+    if t=='enum':
+        return list(domain['values']) if len(domain['values'])<=max_values else None
+    if t=='integer':
+        low=domain.get('min');high=domain.get('max')
+        if low is None or high is None or high-low+1>max_values:return None
+        return list(range(low,high+1))
+    if t=='nullable':
+        values=finite_values(domain['of'],max_values-1) if max_values>1 else None
+        return [None,*values] if values is not None else None
+    if t=='union':
+        values=[]
+        for v in domain['variants']:
+            part=finite_values(v,max_values)
+            if part is None:return None
+            for item in part:
+                if not any(same(item,old) for old in values):
+                    values.append(item)
+                    if len(values)>max_values:return None
+        return values
+    if t=='record':
+        if not domain.get('resolved') or any(f['presence']!='required' for f in domain['fields']):
+            return None
+        from itertools import product
+        dimensions=[]
+        capacity=1
+        for field in domain['fields']:
+            cases=finite_values(field['domain'],max_values)
+            if cases is None:return None
+            capacity*=len(cases)
+            if capacity>max_values:return None
+            dimensions.append(cases)
+        return [{f['id']:v for f,v in zip(domain['fields'],values)}
+                for values in product(*dimensions)]
+    # Arbitrary-length sequences, real, text, bytes and unbounded sets
+    # remain unproven, even when a representative sample could be constructed.
+    return None
+
+
+
 def set_add(values,element):
     out=list(values)
     if not any(same(v,element) for v in out):out.append(element)
