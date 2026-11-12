@@ -43,7 +43,7 @@ def source_paths(work_path, work):
 def render_suite(work_path, work, prefix):
     paths, tces, domain = source_paths(work_path, work)
     model = compiler.load(paths["process"], paths["pi"], tces, domain, False,
-                          domain_specs=paths["domain_specs"])
+                          domain_specs=paths.get("domain_specs", []))
     if model.get("rule_obligations"):
         raise Blocked("rule-bearing DomainSpec requires separate normative verification; type-only sources are supported")
     if model.get("status") != "confirmed":
@@ -76,7 +76,7 @@ def render_suite(work_path, work, prefix):
         desired.append({"test_id": identity, "model_ref": case["source_tce"],
                         "vector_ref": identity, "path": name,
                         "content_sha256": digest(data)})
-    sources = [paths["process"], paths["pi"], *tces, *paths["domain_specs"],
+    sources = [paths["process"], paths["pi"], *tces, *paths.get("domain_specs", []),
                *([domain] if domain else [])]
     hashes = [digest(Path(name).read_bytes()) for name in sources]
     scripts = [Path(compiler.__file__),
