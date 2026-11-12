@@ -760,6 +760,38 @@ def _unresolved_domain(d):
     if t=='union':return any(_unresolved_domain(x) for x in d['variants'])
     return False
 
+def _presence_cases(domain,presence):
+    """Exact PI input-state enumeration, not a fabricated ordinary value."""
+    require(presence in ('required','optional','absent','undefined'),'invalid input Presence')
+    if presence=='absent':return [typed.MISSING]
+    if presence=='undefined':return [typed.UNDEFINED]
+    values=typed.finite_values(domain)
+    if values is None:return None
+    return ([typed.MISSING,*values] if presence=='optional' else values)
+
+
+def _presence_accepted_operation(operations,trigger):
+    matches=[op for op in operations if op['direction']=='accept' and op.get('trigger')==trigger]
+    if len(matches)>1:
+        return None,'ambiguous accepted PI operations for Presence closure'
+    return (matches[0] if matches else None),None
+
+
+def _presence_for_field(field,operation,overrides):
+    result=field.get('presence','required')
+    if operation is not None and operation['source_pi']==field.get('source_pi'):
+        entries=[x for x in overrides if x['operation']==operation['id'] and x['field']==field['id']]
+        require(len(entries)<=1,'duplicate operation Presence override')
+        if entries:result=entries[0]['presence']
+    return result
+
+
+def _debug_presence_env(env):
+    return {key:({'$cat_presence':'missing'} if value is typed.MISSING else
+                 {'$cat_presence':'undefined'} if value is typed.UNDEFINED else value)
+            for key,value in env.items()}
+
+
 def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common_rules=(),domain_specs=(),allow_partial=False):
     pf,p=read_artifact(process_path,'process',allow_draft)
     rule_paths=[*common_rules,*domain_specs]
@@ -975,32 +1007,84 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     unique([r['id'] for r in rules],'TCE behaviors')
 
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
+    output_presence_unproven={
+        f['id'] for f in pi_fields.values()
+        if f['role']=='output' and f.get('presence','required')!='required'
+    }
+    output_presence_unproven.update(
+        x['operation']+':'+x['field'] for x in operation_presence
+        if fields[x['field']]['role']=='output' and x['presence']!='required')
+    presence_unproven=set(output_presence_unproven)
     for trigger in triggers:
         rr=[r for r in rules if r['trigger']==trigger]
-        relevant=set().union(*(used_refs(r['when'],definitions) for r in rr),*(used_refs(c,definitions) for c in constraints)) if rr or constraints else set()
-        domainvalues=[typed.finite_values(fields[f]['domain']) for f in sorted(relevant)]
-        if any(values is None for values in domainvalues):
-            per_trigger[trigger]={'result':'unproven','reason':'guard reads non-finite or too-large domain','guard_refs':sorted(relevant)}
+        operation,ambiguous=_presence_accepted_operation(pi_operations,trigger)
+        if ambiguous:
+            per_trigger[trigger]={'result':'unproven','reason':ambiguous}
+            presence_unproven.update(
+                f['id'] for f in pi_fields.values() if f['role']=='input')
             continue
-        require(__import__('math').prod(len(x) for x in domainvalues)<=65536,'finite closure exceeds configured 65536 combinations')
-        gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr)
+        input_presence={
+            field_id:_presence_for_field(field,operation,operation_presence)
+            for field_id,field in pi_fields.items() if field['role']=='input'
+        }
+        special={field_id for field_id,presence in input_presence.items() if presence!='required'}
+        relevant=set().union(
+            *(used_refs(r['when'],definitions) for r in rr),
+            *(used_refs(c,definitions) for c in constraints)) if rr or constraints else set()
+        relevant.update(special)
+        # An Effect reading a missing/undefined input cannot be proved total
+        # merely because the guards cover all states; keep such a contract open.
+        effect_reads=set().union(
+            *(used_refs(w['expr'],definitions) for r in rr for outcome in r['allowed']
+              for w in outcome['write'])) if rr else set()
+        if effect_reads & special:
+            per_trigger[trigger]={'result':'unproven','reason':'Effect reads a non-required PI input',
+                                  'guard_refs':sorted(relevant)}
+            presence_unproven.update(effect_reads & special)
+            continue
+        ordered=sorted(relevant)
+        domainvalues=[]
+        for field_id in ordered:
+            field=fields[field_id]
+            values=(_presence_cases(field['domain'],input_presence[field_id])
+                    if field_id in input_presence else typed.finite_values(field['domain']))
+            domainvalues.append(values)
+        if any(values is None for values in domainvalues):
+            per_trigger[trigger]={'result':'unproven',
+                                  'reason':'guard reads non-finite or too-large domain/Presence',
+                                  'guard_refs':ordered}
+            presence_unproven.update(special)
+            continue
+        require(__import__('math').prod(len(x) for x in domainvalues)<=65536,
+                'finite closure exceeds configured 65536 combinations')
+        gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr);unknown=None
         for values in itertools.product(*domainvalues):
-            env=dict(zip(sorted(relevant),values))
-            if not all(eval_expr(c,env,definitions) for c in constraints):
-                continue
-            hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
-            if not hit:gaps.append(env)
-            if len(hit)>1:overlaps.append({'state':env,'rules':hit})
+            env=dict(zip(ordered,values))
+            try:
+                if not all(eval_expr(c,env,definitions) for c in constraints):
+                    continue
+                hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
+            except Blocked as exc:
+                unknown=str(exc)
+                break
+            if not hit:gaps.append(_debug_presence_env(env))
+            if len(hit)>1:overlaps.append({'state':_debug_presence_env(env),'rules':hit})
             unreachable-=set(hit)
+        if unknown:
+            per_trigger[trigger]={'result':'unproven','reason':unknown,
+                                  'guard_refs':ordered}
+            presence_unproven.update(special)
+            continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
-        per_trigger[trigger]={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered','guard_refs':sorted(relevant),
-                              'overlap_count':len(overlaps),'overlaps':overlaps[:16],
-                              'uncovered':gaps[:64],'uncovered_count':len(gaps),'unreachable_rules':sorted(unreachable),
+        per_trigger[trigger]={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered',
+                              'guard_refs':ordered,'overlap_count':len(overlaps),
+                              'overlaps':overlaps[:16],'uncovered':gaps[:64],
+                              'uncovered_count':len(gaps),
+                              'unreachable_rules':sorted(unreachable),
                               'excluded_by_pi_constraints':True if constraints else False}
         require(allow_draft or not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
-    presence_unproven=sorted(f['id'] for f in pi_fields.values() if f.get('presence','required')!='required')
+    presence_unproven=sorted(presence_unproven)
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
-                       
                        and not presence_unproven and not (unresolved_interfaces if contract=='markdown-v2' else [])
                        )
     if not coverage_proved:
