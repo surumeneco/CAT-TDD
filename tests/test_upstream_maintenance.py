@@ -100,9 +100,9 @@ class UpstreamMaintenanceTests(unittest.TestCase):
             root=Path(tmp)
             p,pi,t=write_v2(root,False)
             pi.write_text(pi.read_text(encoding='utf-8').replace(
-                'input.enabled | receive | boolean | required',
-                'input.enabled | receive | boolean | required'+'\n'
-                '| input.mode | receive | nullable<enum{A,B}> | required'),encoding='utf-8')
+                '| input.enabled | receive | boolean | required |',
+                '| input.enabled | receive | boolean | required |'+'\n'
+                '| input.mode | receive | nullable<enum{A,B}> | required |'),encoding='utf-8')
             model=load(p,pi,t,allow_draft=True)
             path=root/'model.json'
             path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
