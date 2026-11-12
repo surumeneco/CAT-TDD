@@ -107,4 +107,39 @@ class IntrinsicRuleProofTests(unittest.TestCase):
             self.assertIn('intrinsic_rule_proofs',result['mismatches'])
 
 
+    def test_unverified_source_cannot_forge_confirmed_status_or_proof_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p,pi,t,r=build(root,
+                requirement='Notify Discord users',
+                verification='discord')
+            model=load(p,pi,t,common_rules=[r],allow_draft=True)
+            self.assertEqual(model['status'],'draft')
+            target=root/'Model.json'
+            model['status']='confirmed'
+            target.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            result=independent.validate(p,pi,[t],target,common_rules=[r],allow_draft=True)
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('normative_status_unjustified',result['mismatches'])
+            model['status']='draft'
+            model['unverified_rule_ids']=[]
+            target.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            result=independent.validate(p,pi,[t],target,common_rules=[r],allow_draft=True)
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('unverified_rule_ids',result['mismatches'])
+
+    def test_draft_sources_cannot_forge_confirmed_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p,pi,t,r=build(root,confirmed=False)
+            model=load(p,pi,t,common_rules=[r],allow_draft=True)
+            self.assertEqual(model['status'],'draft')
+            target=root/'Model.json'
+            model['status']='confirmed'
+            target.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            result=independent.validate(p,pi,[t],target,common_rules=[r],allow_draft=True)
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('normative_status_unjustified',result['mismatches'])
+
+
 if __name__=='__main__':unittest.main()
