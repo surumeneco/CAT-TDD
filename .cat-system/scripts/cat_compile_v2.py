@@ -21,6 +21,7 @@ import tokenize
 from catlib.markdown import parse_frontmatter
 from catlib import semantic_types as typed
 from catlib import semantic_rules
+from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -986,9 +987,19 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         hashes[key]=digest
     authority={'markdown-v2':'cat-markdown/v2','markdown-v1':'cat-markdown/v1','machine-only':'cat-machine/v2'}[contract]
     unresolved_domains=sorted(x['id'] for x in fields.values() if _unresolved_domain(x['domain']))
-    # Local TCE closure does not discharge CommonRule/DomainSpec obligations.
+    # A rule can be proved here only when the *authorized source itself*
+    # declares one of the exact, fully decidable model predicates.
+    # Runtime fixtures and free-text Rule verification do not qualify.
+    intrinsic_proofs=semantic_intrinsic_rules.evaluate(
+        rule_docs,list(fields.values()),p['triggers'],rules)
+    proven_rule_ids={proof['rule_id'] for proof in intrinsic_proofs}
+    for rule in rule_obligations:
+        if rule['id'] in proven_rule_ids:
+            rule['verification_status']='intrinsic-proved'
+    unverified_rule_ids=sorted({r['id'] for r in rule_obligations}-proven_rule_ids)
     normative_model = (all(fm['status']=='confirmed' for _,fm in files)
-                       and coverage_proved and not unresolved_domains and not rule_obligations)
+                       and coverage_proved and not unresolved_domains
+                       and not unverified_rule_ids)
     result={'schema':M,'process':p['process'],'status':('confirmed' if normative_model else 'draft'),
             'semantic_authority':authority,'language':tf.get('language','en') if contract=='markdown-v2' else 'en',
             'source_artifacts':[fm['id'] for _,fm in files],
@@ -1006,7 +1017,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     result['rule_obligations']=rule_obligations
     result['normative_rule_inputs']=[{'id':d['id'],'kind':d['kind'],'sha256':d['sha256']} for d in rule_docs]
     result['named_type_definitions']=resolved_type_definitions
-    result['unverified_rule_ids']=sorted({r['id'] for r in rule_obligations})
+    result['unverified_rule_ids']=unverified_rule_ids
+    result['intrinsic_rule_proofs']=intrinsic_proofs
     tce_map=[]
     for _,tce_fm,_ in tce_docs:
         owned=[x for x in rules if x.get('source_artifact')==tce_fm['id']]
