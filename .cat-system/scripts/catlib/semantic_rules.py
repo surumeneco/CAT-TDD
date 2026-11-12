@@ -3,6 +3,8 @@
 A textual contract creates an unresolved obligation, not a verified predicate.
 """
 import hashlib
+import re
+from catlib import semantic_types
 from pathlib import Path
 from catlib.markdown import parse_frontmatter
 
@@ -33,11 +35,28 @@ def load(path, process, allow_draft=False):
     if not isinstance(fm.get('source_refs'),list) or not fm['source_refs']:
         raise RuleError('source_refs required')
     raw=path.read_bytes()
-    rules=[];heading=False;header=None
+    rules=[];types=[];heading=False;header=None;type_heading=False;type_header=None
     for line in raw.decode('utf-8-sig').splitlines():
         line=line.strip()
         if line.startswith('## '):
             heading=line[3:] in ('規則','Rules');header=None
+            type_heading=line[3:] in ('型定義','Types') and fm['kind']=='domain-spec';type_header=None
+            continue
+        if type_heading and line.startswith('|'):
+            cells=_row(line)
+            if all(c.replace(':','').strip('-')=='' for c in cells):continue
+            if type_header is None:type_header=cells;continue
+            if len(cells)!=len(type_header):raise RuleError('type table width mismatch')
+            item={k.lower():v for k,v in zip(type_header,cells)}
+            name=item.get('id');shape=item.get('domain') or item.get('型')
+            if not isinstance(name,str) or not re.fullmatch(r'[\w.-]+',name) or not shape:
+                raise RuleError('named type requires ID and Domain')
+            if any(t['name']==name for t in types):raise RuleError('duplicate named type '+name)
+            try:domain=semantic_types.parse(shape)
+            except semantic_types.DomainError as exc:raise RuleError('named type domain: '+str(exc)) from exc
+            if domain['type']!='record' or 'fields' not in domain:
+                raise RuleError('named type must declare an inline record shape: '+name)
+            types.append({'name':name,'domain':domain})
             continue
         if not heading or not line.startswith('|'):continue
         cells=_row(line)
@@ -56,13 +75,16 @@ def load(path, process, allow_draft=False):
         rules.append({'id':rid,'condition':condition,'requirement':requirement,
                       'verification_contract':verification,'verification_status':'unverified',
                       'source_artifact':fm['id'],'source_kind':fm['kind']})
-    if not rules:raise RuleError('no rules found')
+    if not rules and not (fm['kind']=='domain-spec' and types):raise RuleError('no rules or type definitions found')
     scope=fm.get('process')
     if not isinstance(scope,str) or not scope:raise RuleError('missing scope')
+    source_sha=hashlib.sha256(raw).hexdigest()
+    for definition in types:
+        definition.update(source_artifact=fm['id'],source_sha256=source_sha)
     return {'id':fm['id'],'kind':fm['kind'],'process':scope,
             'scope_verified':process==scope or process.startswith(scope+'.'),
             'status':fm['status'],'source_refs':fm['source_refs'],
-            'sha256':hashlib.sha256(raw).hexdigest(),'rules':rules}
+            'sha256':source_sha,'rules':rules,'types':types}
 
 def load_many(paths, process, allow_draft=False):
     result=[];ids=set();seen={}
