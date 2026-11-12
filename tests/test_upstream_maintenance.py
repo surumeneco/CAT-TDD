@@ -4,9 +4,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+import json
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'.cat-system'/'scripts'))
+import cat_model_conformance as conformance
 from cat_compile_v2 import load,parse_domain_text
 from catlib import semantic_types
 from cat_promote import promote,Blocked
@@ -91,6 +93,26 @@ class UpstreamMaintenanceTests(unittest.TestCase):
             with self.assertRaises(Blocked):promote(src,dst,'decision:approved')
             self.assertEqual(src.read_text(),original)
             self.assertFalse(dst.exists())
+
+
+    def test_nested_enum_model_conformance_rejects_forged_domain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p,pi,t=write_v2(root,False)
+            pi.write_text(pi.read_text(encoding='utf-8').replace(
+                '| input.enabled | receive | boolean | required |',
+                '| input.enabled | receive | boolean | required |'+'\n'
+                '| input.mode | receive | nullable<enum{A,B}> | required |'),encoding='utf-8')
+            model=load(p,pi,t,allow_draft=True)
+            path=root/'model.json'
+            path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            self.assertEqual(conformance.validate(p,pi,[t],path,allow_draft=True)['status'],'passed')
+            field=next(x for x in model['fields'] if x['id']=='input.mode')
+            field['domain']['of']['values']=['A','C']
+            path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            result=conformance.validate(p,pi,[t],path,allow_draft=True)
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('domains',result['mismatches'])
 
 
 if __name__=='__main__':unittest.main()
