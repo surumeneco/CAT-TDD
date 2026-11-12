@@ -948,11 +948,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     for trigger in triggers:
         rr=[r for r in rules if r['trigger']==trigger]
         relevant=set().union(*(used_refs(r['when'],definitions) for r in rr),*(used_refs(c,definitions) for c in constraints)) if rr or constraints else set()
-        finite=all(fields[f]['domain']['type'] in ('enum','boolean') for f in relevant)
-        if not finite:
-            per_trigger[trigger]={'result':'unproven','reason':'guard reads non-finite-domain field','guard_refs':sorted(relevant)}
+        domainvalues=[typed.finite_values(fields[f]['domain']) for f in sorted(relevant)]
+        if any(values is None for values in domainvalues):
+            per_trigger[trigger]={'result':'unproven','reason':'guard reads non-finite or too-large domain','guard_refs':sorted(relevant)}
             continue
-        domainvalues=[fields[f]['domain'].get('values',[False,True]) for f in sorted(relevant)]
         require(__import__('math').prod(len(x) for x in domainvalues)<=65536,'finite closure exceeds configured 65536 combinations')
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr)
         for values in itertools.product(*domainvalues):
@@ -1176,12 +1175,9 @@ def selection_vectors(model, strategy='rule-witness/v1'):
     domains=[]
     for field_id in variable_ids:
         domain=fields[field_id]['domain']
-        if domain['type']=='boolean':
-            values=[False,True]
-        elif domain['type']=='enum':
-            values=list(domain['values'])
-        else:
-            raise Blocked('rule-witness/v1 requires finite boolean/enum input/state domains; add a deterministic selector extension for '+field_id)
+        values=typed.finite_values(domain)
+        if values is None:
+            raise Blocked('rule-witness/v1 requires an exactly enumerable finite input/state domain; unsupported for '+field_id)
         require(values, 'test-selection domain is empty: '+field_id)
         domains.append(values)
     require(__import__('math').prod(len(x) for x in domains)<=65536,
