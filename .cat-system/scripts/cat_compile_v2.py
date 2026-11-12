@@ -684,7 +684,7 @@ def eval_expr(expr, env, definitions, params=None):
         v=expr['ref']
         if v.startswith('param.'):return deepcopy((params or {})[v[6:]])
         require(v in env and env[v] is not typed.MISSING and env[v] is not typed.UNDEFINED,
-                'ordinary expression cannot read missing/undefined field '+v)
+                'ordinary expression reads missing/undefined field '+v)
         return deepcopy(env[v])
     op=expr['op']
     if op in ('is-missing','is-undefined','is-present'):
@@ -1290,6 +1290,17 @@ def selection_vectors(model, strategy='rule-witness/v1'):
     require(strategy == 'rule-witness/v1','unsupported test-selection rule: '+str(strategy))
     require(model.get('status')=='confirmed','normative vector selection requires confirmed TestModel')
     fields={f['id']:f for f in model['fields']}
+    presence_inputs=[f['id'] for f in fields.values() if f['role']=='input'
+                     and f.get('presence','required')!='required']
+    presence_inputs.extend(x['operation']+':'+x['field']
+                           for x in model.get('operation_presence',[])
+                           if fields[x['field']]['role']=='input' and x['presence']!='required')
+    if presence_inputs:
+        checks=model.get('coverage_checks',{})
+        require(model.get('coverage_requirement')=='closed'
+                and not model.get('presence_unproven',[*presence_inputs])
+                and bool(checks) and all(c.get('result')=='proved' for c in checks.values()),
+                'non-required operation Presence lacks a source-backed finite closure proof')
     output_unsupported=sorted(f['id'] for f in fields.values()
                               if f['role']=='output' and f.get('presence','required')!='required')
     output_unsupported+=sorted(x['operation']+':'+x['field'] for x in model.get('operation_presence',[])
