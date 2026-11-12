@@ -1256,10 +1256,8 @@ def expand_cases(model, vectors):
             require(in_domain(fields[name]['domain'],val),f'{test["id"]}: {name} out of declared domain')
             env[name]=val
         defs={d['id']:d for d in model['definitions']}
-        reads=set().union(*(used_refs(x,defs) for x in model['pi_constraints']),
-                          *(used_refs(r['when'],defs) for r in model['rules'] if r['trigger']==test['trigger']))
-        require(all(name in env and env[name] is not typed.UNDEFINED for name in reads),
-                'TCE/PI expression reads missing or undefined field; presence-aware guard is required')
+        # Presence-aware expressions may inspect missing/undefined inputs. An
+        # ordinary read still fails inside eval_expr and cannot become an oracle.
         require(all(eval_expr(c,env,defs) for c in model['pi_constraints']),f'{test["id"]}: violates PI combination constraint')
         rule=match_rules(model,test['trigger'],env)
         defs={d['id']:d for d in model['definitions']}
@@ -1289,47 +1287,58 @@ def expand_cases(model, vectors):
     return cases
 
 def selection_vectors(model, strategy='rule-witness/v1'):
-    require(strategy == 'rule-witness/v1', 'unsupported test-selection rule: ' + str(strategy))
-    require(model.get('status') == 'confirmed', 'normative vector selection requires confirmed TestModel')
+    require(strategy == 'rule-witness/v1','unsupported test-selection rule: '+str(strategy))
+    require(model.get('status')=='confirmed','normative vector selection requires confirmed TestModel')
     fields={f['id']:f for f in model['fields']}
-    unsupported_presence=sorted(f['id'] for f in fields.values() if f['role']=='input' and f.get('presence','required')!='required')
-    unsupported_presence+=sorted(x['operation']+':'+x['field'] for x in model.get('operation_presence',[]) if x['presence']!='required')
-    require(not unsupported_presence,
-            'rule-witness/v1 cannot automatically enumerate non-required operation Presence: '+str(unsupported_presence))
+    output_unsupported=sorted(f['id'] for f in fields.values()
+                              if f['role']=='output' and f.get('presence','required')!='required')
+    output_unsupported+=sorted(x['operation']+':'+x['field'] for x in model.get('operation_presence',[])
+                               if fields[x['field']]['role']=='output' and x['presence']!='required')
+    require(not output_unsupported,
+            'output Presence requires a proved output-operation transport: '+str(output_unsupported))
     variable_ids=sorted(f for f in fields if fields[f]['role'] in ('input','state'))
-    domains=[]
-    for field_id in variable_ids:
-        domain=fields[field_id]['domain']
-        values=typed.finite_values(domain)
-        if values is None:
-            raise Blocked('rule-witness/v1 requires an exactly enumerable finite input/state domain; unsupported for '+field_id)
-        require(values, 'test-selection domain is empty: '+field_id)
-        domains.append(values)
-    require(__import__('math').prod(len(x) for x in domains)<=65536,
-            'test-selection exceeds configured 65536 combinations')
     defs={d['id']:d for d in model['definitions']}
     witnesses={}
-    for values in itertools.product(*domains):
-        env=dict(zip(variable_ids,values))
-        if not all(eval_expr(c,env,defs) for c in model['pi_constraints']):
-            continue
-        for trigger in sorted(t['id'] for t in model['triggers']):
-            hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
-            require(len(hit)==1, f'confirmed TestModel selection found {len(hit)} rules at {trigger}')
-            rule=hit[0]
-            if rule['id'] in witnesses:
+    for trigger in sorted(t['id'] for t in model['triggers']):
+        operation,ambiguous=_presence_accepted_operation(model.get('pi_operations',[]),trigger)
+        require(ambiguous is None,ambiguous or 'ambiguous operation')
+        presence={
+            fid:_presence_for_field(field,operation,model.get('operation_presence',[]))
+            for fid,field in fields.items() if field['role']=='input'
+        }
+        domains=[]
+        for field_id in variable_ids:
+            field=fields[field_id]
+            values=(_presence_cases(field['domain'],presence[field_id])
+                    if field_id in presence else typed.finite_values(field['domain']))
+            require(values is not None,
+                    'rule-witness/v1 cannot enumerate domain or Presence of '+field_id)
+            require(values,'test-selection domain is empty: '+field_id)
+            domains.append(values)
+        require(__import__('math').prod(len(x) for x in domains)<=65536,
+                'test-selection exceeds configured 65536 combinations')
+        for values in itertools.product(*domains):
+            env=dict(zip(variable_ids,values))
+            if not all(eval_expr(c,env,defs) for c in model['pi_constraints']):
                 continue
-            witnesses[rule['id']]={
-                'id':'case.'+rule['id'],
-                'trigger':trigger,
-                'input':{k:env[k] for k in variable_ids if fields[k]['role']=='input'},
-                'state':{k:env[k] for k in variable_ids if fields[k]['role']=='state'},
+            hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
+            require(len(hit)==1,f'confirmed TestModel selection found {len(hit)} rules at {trigger}')
+            rule=hit[0]
+            if rule['id'] in witnesses:continue
+            sample={
+                'id':'case.'+rule['id'],'trigger':trigger,
+                'input':{key:({'$cat_presence':'undefined'} if env[key] is typed.UNDEFINED else env[key])
+                         for key in variable_ids if fields[key]['role']=='input'
+                         and env[key] is not typed.MISSING},
+                'state':{key:env[key] for key in variable_ids if fields[key]['role']=='state'}
             }
+            if operation is not None and any(value!='required' for value in presence.values()):
+                sample['operation']=operation['id']
+            witnesses[rule['id']]=sample
     missing=[r['id'] for r in model['rules'] if r['id'] not in witnesses]
-    require(not missing, 'test-selection produced no witness for TestModel rule(s): '+str(missing))
+    require(not missing,'test-selection produced no witness for TestModel rule(s): '+str(missing))
     return {'schema':V,'process':model['process'],'selection_rule':strategy,
             'cases':[witnesses[r['id']] for r in model['rules']]}
-
 
 def _vitest_renderer():
     import importlib.util
