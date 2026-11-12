@@ -558,7 +558,7 @@ def conformance_work(wpath, w, kind):
                         'reason':'closed-world declaration exists but closure proof is incomplete'}
             return {'gate':kind,'status':'passed','evidence':str(runtime/'process-closure.model.json'),
                     'verifier_evidence':verifier_evidence,
-                    'reason':'supported finite closed-world coverage compiled from confirmed sources and executed rule verifiers'}
+                    'reason':'finite closed-world coverage and all declared normative rules discharged by source-bound intrinsic proofs or executed verifiers'}
         msg=(p.stderr or p.stdout).strip()
         inconclusive_markers=('currently supports','unproven','non-finite','requires a technology','unsupported')
         status='inconclusive' if any(x in msg for x in inconclusive_markers) else 'blocked'
