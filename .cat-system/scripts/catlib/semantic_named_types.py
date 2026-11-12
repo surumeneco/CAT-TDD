@@ -31,7 +31,7 @@ def resolve(domain,definitions,stack=()):
             definition=definitions[name]
             body=resolve(definition['domain'],definitions,(*stack,name))
             if body['type']!='record' or not body.get('resolved',False):
-                raise NamedTypeError('named type is not a fully resolved record: '+name)
+                raise NamedTypeError('unresolved named type definition: '+name)
             result={'type':'record','name':name,'resolved':True,
                     'fields':deepcopy(body['fields']),
                     'definition_source':definition['source_artifact'],
