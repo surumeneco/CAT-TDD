@@ -198,13 +198,54 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'fields': fields, 'domains':domains, 'presence':presence,'field_owners':field_owners,
         'normative_rule_inputs': {d['id']:(d['kind'],d['sha256']) for d in rule_docs},
         'named_type_definitions':named_type_definitions,
-        'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract']) for d in rule_docs for r in d['rules']},
+        'intrinsic_rule_proofs':_intrinsic_source_proofs(
+            rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects),
+        'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'], 'intrinsic-proved' if r['id'] in {p['rule_id'] for p in _intrinsic_source_proofs(rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)} else 'unverified') for d in rule_docs for r in d['rules']},
         'constraints': tuple(format_expr(expr, language=tf.get('language', 'en')) for _,_,a in pi_docs for expr in a.get('constraints', [])),
         'definitions': definitions,
         'rules': rules,
         'effects': effects,
         'frames': frames,
     }
+
+
+
+# Independently reconstruct intrinsic model-rule evidence from the source.
+# This module deliberately does not invoke the Compiler's proof function.
+def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects):
+    def resolved(d):
+        if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
+        t=d['type']
+        if t=='record':
+            return d.get('resolved') is True and all(resolved(f['domain']) for f in d.get('fields',[]))
+        if t in ('set','sequence'):return resolved(d['element'])
+        if t=='nullable':return resolved(d['of'])
+        if t=='union':return bool(d.get('variants')) and all(resolved(x) for x in d['variants'])
+        return True
+    predicates={
+        '@cat:effect-targets-declared/v1':all(
+            e[2] is None or fields.get(e[2]) in ('output','state','action')
+            for e in effects),
+        '@cat:tce-triggers-declared/v1':all(value[1] in triggers for value in tce_rules.values()),
+        '@cat:field-domains-resolved/v1':all(resolved(d) for d in domains.values()),
+    }
+    proofs=[]
+    for document in rule_docs:
+        if document.get('status')!='confirmed' or not document.get('scope_verified'):
+            continue
+        for rule in document.get('rules',[]):
+            token=rule.get('requirement')
+            if (rule.get('condition')=='assembled-process'
+                    and rule.get('verification_contract')=='cat:intrinsic-model/v1'
+                    and predicates.get(token) is True):
+                proofs.append({
+                    'rule_id':rule['id'],'source_artifact':document['id'],
+                    'source_sha256':document['sha256'],'requirement':token,
+                    'verification_contract':'cat:intrinsic-model/v1',
+                    'proof_method':'cat:intrinsic-model/v1',
+                    'scope':'assembled-process','status':'passed',
+                })
+    return sorted(proofs,key=lambda item:item['rule_id'])
 
 
 ROLE_ALIASES = {'受信': 'input', '送信': 'output', '状態': 'state', '観測': 'observation', '作用': 'action'}
@@ -351,7 +392,8 @@ def json_model(path):
         'fields': fields, 'domains':domains,'presence':presence,'field_owners':field_owners,
         'normative_rule_inputs':{d['id']:(d['kind'],d['sha256']) for d in model.get('normative_rule_inputs',[])},
         'named_type_definitions':model.get('named_type_definitions',[]),
-        'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract']) for r in model.get('rule_obligations',[])},
+        'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],r.get('verification_status','unverified')) for r in model.get('rule_obligations',[])},
+        'intrinsic_rule_proofs':model.get('intrinsic_rule_proofs',[]),
         'constraints': tuple(format_expr(expr, language=model.get('language', 'en'))
                              for expr in model.get('pi_constraints', [])),
         'definitions': definitions,
@@ -368,10 +410,12 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions')
+        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs')
     for key in checks:
         if actual.get(key) != expected.get(key):
             mismatches.append(key)
+    if Path(model).suffix.lower()!='.json' and expected.get('intrinsic_rule_proofs'):
+        mismatches.append('intrinsic_rule_proofs: Markdown renderer omits source-bound proof evidence')
     if Path(model).suffix.lower()!='.json' and expected.get('named_type_definitions'):
         mismatches.append('named_type_definitions: Markdown renderer omits structural type provenance')
     if Path(model).suffix.lower()!='.json' and expected.get('operation_presence'):
