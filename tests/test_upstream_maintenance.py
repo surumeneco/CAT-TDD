@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 import json
-import cat_model_conformance as conformance
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'.cat-system'/'scripts'))
+import cat_model_conformance as conformance
 from cat_compile_v2 import load,parse_domain_text
 from catlib import semantic_types
 from cat_promote import promote,Blocked
