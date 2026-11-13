@@ -50,7 +50,10 @@ def _rebase_markdown_links(body: str, source: Path, output: Path, frontmatter: d
         require(target==root or root in target.parents,
                 'promotion reference escapes source/output workspace: '+parts.path)
         require(target.is_file(), 'promotion reference does not resolve: '+parts.path)
-        rebased=Path(os.path.relpath(target,output.parent)).as_posix()
+        # A link to this Artifact must follow its promotion. Rebase to the
+        # newly written document, not the old source path that will be deleted.
+        referent=output if target==source else target
+        rebased=Path(os.path.relpath(referent,output.parent)).as_posix()
         rebuilt=rebased+('?' + parts.query if parts.query else '')+('#'+parts.fragment if parts.fragment else '')
         if angle:rebuilt='<'+rebuilt+'>'
         return match.group('prefix')+rebuilt+(match.groupdict().get('suffix') or '')
