@@ -54,6 +54,33 @@ class RequiredOutputClosureTests(unittest.TestCase):
             self.assertIn('source_output_presence',result['mismatches'])
             self.assertIn('normative_status_unjustified',result['mismatches'])
 
+    def test_source_output_gap_cannot_be_substituted_with_another_valid_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p,pi,tce=self.setup_sources(Path(tmp),True)
+            model=load(p,pi,tce,allow_partial=True)
+            self.assertIn('output.accepted',model['presence_unproven'])
+            model['presence_unproven']=['state.ready']
+            target=Path(tmp)/'Model.json'
+            target.write_text(json.dumps(model),encoding='utf-8')
+            result=validate(p,pi,tce,target)
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('source_output_presence',result['mismatches'])
+
+    def test_source_output_gap_does_not_accept_forged_or_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p,pi,tce=self.setup_sources(Path(tmp),True)
+            original=load(p,pi,tce,allow_partial=True)
+            target=Path(tmp)/'Model.json'
+            for pending in (['imaginary.output'],
+                            ['output.accepted','output.accepted']):
+                with self.subTest(pending=pending):
+                    forged=dict(original)
+                    forged['presence_unproven']=pending
+                    target.write_text(json.dumps(forged),encoding='utf-8')
+                    result=validate(p,pi,tce,target)
+                    self.assertEqual(result['status'],'blocked',result)
+                    self.assertIn('source_output_presence',result['mismatches'])
+
     def test_required_outputs_without_provide_operation_remain_valid_when_emitted(self):
         with tempfile.TemporaryDirectory() as tmp:
             p,pi,tce=self.setup_sources(Path(tmp),False)
