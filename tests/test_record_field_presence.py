@@ -21,8 +21,7 @@ class RecordFieldPresenceTests(unittest.TestCase):
         typed.validate(d)
         self.assertEqual([x['presence'] for x in d['fields']],
                          ['required','optional','absent','undefined'])
-        self.assertTrue(typed.contains(d,{'name':'Ada'} if False else
-                       {'name':'Ada','flag':typed.UNDEFINED}))
+        self.assertTrue(typed.contains(d,{'name':'Ada','flag':typed.UNDEFINED}))
         self.assertTrue(typed.contains(d,{'name':'Ada','note':None,
                                           'flag':typed.UNDEFINED}))
         self.assertFalse(typed.contains(d,{'name':'Ada','note':False,
