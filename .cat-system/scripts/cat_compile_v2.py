@@ -1039,7 +1039,14 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                     or typed.contains(fields[e['target']]['domain'],e['expr']['literal']))
                                 or 'ref' in e['expr'] and e['expr']['ref'] in fields
                                  and (fields[e['expr']['ref']]['domain']==fields[e['target']]['domain']
-                                    or fields[e['expr']['ref']]['domain']==fields[e['target']]['domain']['of']))),
+                                    or fields[e['expr']['ref']]['domain']==fields[e['target']]['domain']['of'])))
+                            # A direct field reference of the *same Domain*
+                            # as one declared union branch is a valid member.
+                            # Unknown aliases still leave the Model Draft.
+                            or (expected=='union' and set(e['expr'])=={'ref'}
+                                and e['expr']['ref'] in fields
+                                and any(fields[e['expr']['ref']]['domain']==variant
+                                        for variant in fields[e['target']]['domain']['variants'])),
                             f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
                     if expected=='enum':
                         expr=e['expr']
