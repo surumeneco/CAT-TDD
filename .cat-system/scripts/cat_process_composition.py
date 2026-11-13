@@ -73,13 +73,15 @@ def _link(binding,models):
     fields=binding.get('field_links')
     if not isinstance(fields,list) or not fields:
         raise CompositionError('connection requires typed field links')
-    seen=set();checks=[]
+    seen=set();seen_targets=set();checks=[]
     for mapping in fields:
         if not isinstance(mapping,dict) or set(mapping)!={'source_field','target_field'}:
             raise CompositionError('field link must identify both endpoints')
         pair=(mapping['source_field'],mapping['target_field'])
         if pair in seen:raise CompositionError('duplicate field binding')
-        seen.add(pair)
+        if pair[1] in seen_targets:
+            raise CompositionError('ambiguous target field binding')
+        seen.add(pair);seen_targets.add(pair[1])
         f=_field(source,pair[0],'output',a)
         t=_field(target,pair[1],'input',b)
         inclusion=_type_subset(f['domain'],t['domain'])
@@ -98,10 +100,19 @@ def _link(binding,models):
         checks.append({'source_field':f['id'],'target_field':t['id'],
                        'type':f['domain'],'target_type':t['domain'],
                        'presence':(f_presence,t_presence),'status':proof})
+    # Partial field links cannot prove the receiver PI boundary. There is no
+    # authorized operation-to-field projection in this schema; any value-
+    # capable receiver field left unmapped remains inconclusive.
+    unmapped_target_fields=sorted(f['id'] for f in target.get('fields',[])
+        if f.get('role')=='input' and f.get('source_pi')==b
+        and f.get('presence','required')!='absent'
+        and f.get('id') not in seen_targets)
     return {'source_process':source['process'],'target_process':target['process'],
             'source_pi':a,'target_pi':b,'source_operation':source_op,
             'target_operation':target_op,'field_links':checks,
-            'status':'structurally-matched' if all(c['status']=='matched' for c in checks) else 'inconclusive',
+            'unmapped_target_fields':unmapped_target_fields,
+            'status':'structurally-matched' if not unmapped_target_fields
+                    and all(c['status']=='matched' for c in checks) else 'inconclusive',
             'external_effects_verified':False}
 
 def _effect_claim_consistent(model):
