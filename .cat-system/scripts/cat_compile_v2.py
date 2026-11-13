@@ -23,6 +23,7 @@ from catlib import semantic_types as typed
 from catlib import semantic_rules
 from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
+from catlib import semantic_subtyping
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -1033,21 +1034,39 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     require(e['target'] in fields and fields[e['target']]['role'] in ('state','output','action'),'Effect target not declared/actuable '+str(e['target']))
                     produced=inspect_expr(e['expr'],fields,definitions)
                     expected=fields[e['target']]['domain']['type']
-                    require(produced==expected or (expected=='enum' and produced in ('string','boolean','integer'))
-                            or (expected=='nullable' and (
-                                'literal' in e['expr'] and (e['expr']['literal'] is None
-                                    or typed.contains(fields[e['target']]['domain'],e['expr']['literal']))
-                                or 'ref' in e['expr'] and e['expr']['ref'] in fields
-                                 and (fields[e['expr']['ref']]['domain']==fields[e['target']]['domain']
-                                    or fields[e['expr']['ref']]['domain']==fields[e['target']]['domain']['of'])))
-                            # A direct field reference of the *same Domain*
-                            # as one declared union branch is a valid member.
-                            # Unknown aliases still leave the Model Draft.
-                            or (expected=='union' and set(e['expr'])=={'ref'}
-                                and e['expr']['ref'] in fields
-                                and any(fields[e['expr']['ref']]['domain']==variant
-                                        for variant in fields[e['target']]['domain']['variants'])),
-                            f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    # Direct references preserve their full declared Domain, not only
+                    # the top-level type. Python == would equate enum true with 1.
+                    # A partial or unbounded subtype proof cannot license an Effect.
+                    # Identical unresolved aliases retain Draft status (never Confirmed).
+                    expression=e['expr'];target_domain=fields[e['target']]['domain']
+                    if set(expression)=={'ref'} and expression['ref'] in fields:
+                        source_domain=fields[expression['ref']]['domain']
+                        inclusion=semantic_subtyping.subset(source_domain,target_domain)
+                        if inclusion is None and _unresolved_domain(source_domain):
+                            # Deferred name resolution is permitted only for an
+                            # identical unresolved alias or an exact union arm.
+                            inclusion=(typed.same(source_domain,target_domain)
+                                or (expected=='union' and any(
+                                    typed.same(source_domain,variant)
+                                    for variant in target_domain['variants']))
+                                or (expected=='nullable' and
+                                    typed.same(source_domain,target_domain['of'])))
+                        require(inclusion is True,
+                                f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    elif 'literal' in expression:
+                        # A literal that has the right broad kind may still fall
+                        # outside a range, format, collection, or enum Domain.
+                        try:
+                            literal_accepted=typed.contains(target_domain,expression['literal'])
+                        except typed.DomainError as exc:
+                            raise Blocked(f'Effect {e["target"]}: unresolved domain: {exc}') from exc
+                        require(literal_accepted,
+                                f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    else:
+                        # Legacy operator expressions retain their independent
+                        # expression type check; runtime range proof is separate.
+                        require(produced==expected,
+                                f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
                     if expected=='enum':
                         expr=e['expr']
                         if 'literal' in expr:
