@@ -55,17 +55,71 @@ def _rebase_markdown_links(body: str, source: Path, output: Path, frontmatter: d
         if angle:rebuilt='<'+rebuilt+'>'
         return match.group('prefix')+rebuilt+match.group('suffix')
 
-    lines=body.splitlines(keepends=True);result=[];fence=None
+    def escaped(text,position):
+        slash_count=0
+        while position>0 and text[position-1]==chr(92):
+            slash_count+=1;position-=1
+        return bool(slash_count%2)
+
+    def rebase_prose(text):
+        # Find literal inline code spans (including multiline and multi-tick)
+        # before looking for Markdown links. Unpaired ticks remain ordinary
+        # prose; code samples cannot create fake path dependencies.
+        runs=list(re.finditer(r'\x60+',text))
+        code_spans=[];i=0
+        while i<len(runs):
+            opening=runs[i]
+            if escaped(text,opening.start()):
+                i+=1;continue
+            close=next((j for j in range(i+1,len(runs))
+                        if len(runs[j].group())==len(opening.group())
+                        and not escaped(text,runs[j].start())),None)
+            if close is None:
+                i+=1;continue
+            code_spans.append((opening.start(),runs[close].end()))
+            i=close+1
+
+        matches=[]
+        for pattern in (INLINE_LINK,REFERENCE_LINK):
+            for match in pattern.finditer(text):
+                if escaped(text,match.start()):
+                    continue
+                if any(left<match.end() and match.start()<right
+                       for left,right in code_spans):
+                    continue
+                matches.append(match)
+        matches.sort(key=lambda m:m.start())
+        chunks=[];cursor=0
+        for match in matches:
+            if match.start()<cursor:
+                raise Blocked('ambiguous overlapping Markdown references')
+            chunks.append(text[cursor:match.start()])
+            chunks.append(rebase(match))
+            cursor=match.end()
+        chunks.append(text[cursor:])
+        return ''.join(chunks)
+
+    lines=body.splitlines(keepends=True);result=[];prose=[];fence=None
+    def flush_prose():
+        if prose:
+            result.append(rebase_prose(''.join(prose)))
+            prose.clear()
     for line in lines:
         fence_match=re.match(r'^[ \t]{0,3}((?:\x60){3,}|~{3,})',line)
         if fence_match:
+            flush_prose()
             marker=fence_match.group(1)
             if fence is None:fence=marker
             elif marker[0]==fence[0] and len(marker)>=len(fence):fence=None
             result.append(line);continue
         if fence is not None:
             result.append(line);continue
-        result.append(REFERENCE_LINK.sub(rebase,INLINE_LINK.sub(rebase,line)))
+        # Indented code is also literal Markdown, not a real reference.
+        if line.startswith(('    ','\t')):
+            flush_prose()
+            result.append(line);continue
+        prose.append(line)
+    flush_prose()
     return ''.join(result)
 
 
