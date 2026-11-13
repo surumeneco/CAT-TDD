@@ -20,6 +20,7 @@ def _resolved(domain):
     if not isinstance(domain,dict):return False
     kind=domain.get('type')
     if kind in (None,'unknown'):return False
+    if kind=='reference':return bool(domain.get('resolved')) and _resolved(domain['of'])
     if kind=='record':
         return (domain.get('resolved') is True
                 and all(_resolved(f.get('domain')) for f in domain.get('fields',[])))
