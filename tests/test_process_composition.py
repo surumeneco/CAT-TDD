@@ -63,6 +63,16 @@ class CompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
                 composer.compose([a,b],links)
 
+    def test_boolean_enum_cannot_bind_to_integer_enum(self):
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            consumer=model('p.two','p.one','receive')
+            producer['fields'][0]['domain']={'type':'enum','values':[True]}
+            consumer['fields'][0]['domain']={'type':'enum','values':[1]}
+            a,b,links=self.write(Path(td),first=producer,second=consumer)
+            with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
+                composer.compose([a,b],links)
+
     def test_optional_producer_cannot_satisfy_required_input(self):
         with tempfile.TemporaryDirectory() as td:
             outgoing=model('p.one','p.two','send')
