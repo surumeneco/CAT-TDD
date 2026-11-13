@@ -356,6 +356,17 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 
 対象例はDOM構造、視覚、accessibility、統計的性質、複数実行間の関係等。単にTCEへ書きにくい内容を未定義のまま置く分類ではなく、対象・要求・検証方法を持つ。
 
+### Record内部のPresence記法
+
+構造Recordのフィールドでは、名前の直後に `[optional]`、`[absent]`、`[undefined]` を明示できる。指定しない場合のPresenceは `required`。外側のPIフィールドPresenceと内側のRecordフィールドPresenceは別々に保持する。
+
+~~~text
+レコード<name:文字列,note[optional]:文字列またはnull>
+record<id:integer,note[optional]:nullable<string>>
+record<x[absent]:boolean,y[undefined]:boolean>
+~~~
+
+`note[optional]` はキー欠落を許すが、明示nullを許すかどうかは記述されたDomainで決まる。`[absent]` はキーの不在のみ、`[undefined]` は明示的な未定義状態のみを許す。異なるPresence属性で同一名を2回宣言することも重複として拒否する。ParserはRecord内部のPresenceを型付きIRに保持し、Markdown formatterは同属性を再出力する。JSONでの未定義値のwire符号化や実装テストのtransport証明をこの構文だけで完了とみなさない。
 ### DomainSpec の名前付き構造Domain（宣言のある場合のみ）
 
 DomainSpecでは既存の `## 規則 / ## Rules` に加え、構造Domainを名前で参照するため、`## 型定義 / ## Types` を使用できる。型宣言だけのDomainSpecも有効である。既存の規則のみのDomainSpecとCommonRuleの解釈は変えない。
