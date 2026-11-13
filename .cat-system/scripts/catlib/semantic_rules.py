@@ -54,8 +54,9 @@ def load(path, process, allow_draft=False):
             if any(t['name']==name for t in types):raise RuleError('duplicate named type '+name)
             try:domain=semantic_types.parse(shape)
             except semantic_types.DomainError as exc:raise RuleError('named type domain: '+str(exc)) from exc
-            if domain['type']!='record' or 'fields' not in domain:
-                raise RuleError('named type must declare an inline record shape: '+name)
+            # Scalar/enum/union aliases are allowed only as explicit,
+            # provenance-bound type declarations. The declaration alone
+            # does not justify extra UUID/Delta/wire constraints.
             types.append({'name':name,'domain':domain})
             continue
         if not heading or not line.startswith('|'):continue

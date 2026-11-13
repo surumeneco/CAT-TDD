@@ -226,6 +226,7 @@ def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, ef
     def resolved(d):
         if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
         t=d['type']
+        if t=='reference':return bool(d.get('resolved')) and resolved(d['of'])
         if t=='record':
             return d.get('resolved') is True and all(resolved(f['domain']) for f in d.get('fields',[]))
         if t in ('set','sequence'):return resolved(d['element'])

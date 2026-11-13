@@ -56,6 +56,8 @@ def _unresolved_domain(domain):
     kind=domain.get('type')
     if kind in (None,'unknown'):
         return True
+    if kind=='reference':
+        return not domain.get('resolved') or _unresolved_domain(domain.get('of'))
     if kind=='record':
         return domain.get('resolved') is not True or any(
             _unresolved_domain(f.get('domain')) for f in domain.get('fields',[]))
@@ -74,6 +76,10 @@ def _type_subset(source,target):
         return None
     if source==target:
         return True
+    if isinstance(source,dict) and source.get('type')=='reference':
+        return _type_subset(source['of'],target)
+    if isinstance(target,dict) and target.get('type')=='reference':
+        return _type_subset(source,target['of'])
     if isinstance(source,str):
         source={'type':source}
     if isinstance(target,str):

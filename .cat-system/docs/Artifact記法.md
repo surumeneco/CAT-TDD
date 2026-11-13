@@ -367,6 +367,22 @@ record<x[absent]:boolean,y[undefined]:boolean>
 ~~~
 
 `note[optional]` はキー欠落を許すが、明示nullを許すかどうかは記述されたDomainで決まる。`[absent]` はキーの不在のみ、`[undefined]` は明示的な未定義状態のみを許す。異なるPresence属性で同一名を2回宣言することも重複として拒否する。ParserはRecord内部のPresenceを型付きIRに保持し、Markdown formatterは同属性を再出力する。JSONでの未定義値のwire符号化や実装テストのtransport証明をこの構文だけで完了とみなさない。
+### 汎用型参照（明示的に定義されたDomainへの参照）
+
+`型参照<UUID>` / `ref<UUID>` はRecord型への決め打ちではなく、DomainSpecの `## 型定義 / ## Types` 内に同名で宣言されたDomainを引用する**汎用型参照**である。型本体を創作せず、同名の実定義がないときは `resolved: false` を保持して規範完了に進めない。
+
+~~~md
+## Types
+| ID | Domain |
+| --- | --- |
+| UUID | string |
+| Edition | enum{JE,BE} |
+| Identity | record<edition:型参照<Edition>,username:string> |
+~~~
+
+ここで `UUID | string` は**宣言された型が文字列である**という構造上の契約に過ぎず、UUIDの妥当な形式、値の同一性、認可条件やwire表現を保証しない。そのような追加制約は独立した規範RuleやDomainSpecへ明記・証明する必要がある。`型参照<UUID>` のような曖昧な既存仕様を、**自動で** `string` に置き換えてはならない。
+
+Resolverは参照先の構造・宣言Artifact ID・SHA-256を型付きIRへ保持し、独立Model Conformanceでソースから照合する。Unknown/循環参照/宣言重複を証明済みとして扱わない。既存の `record<Name>` 記法は引き続き **Recordの形状のみ**参照可能であり、一般の `型参照<Name>` と混同しない。
 ### DomainSpec の名前付き構造Domain（宣言のある場合のみ）
 
 DomainSpecでは既存の `## 規則 / ## Rules` に加え、構造Domainを名前で参照するため、`## 型定義 / ## Types` を使用できる。型宣言だけのDomainSpecも有効である。既存の規則のみのDomainSpecとCommonRuleの解釈は変えない。
