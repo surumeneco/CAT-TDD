@@ -72,7 +72,7 @@ class ConformanceRuntimeTest(unittest.TestCase):
             status = flow.status_work(path, work)
             self.assertEqual(status['gates']['process-closure']['status'], 'blocked')
 
-    def test_inconclusive_machine_gate_may_be_closed_by_explicit_review(self):
+    def test_inconclusive_machine_gate_stays_inconclusive_despite_review_claim(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             work = base_work()
@@ -91,8 +91,78 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 'supporting_evidence': None,
             }))
             status = flow.status_work(path, work)
-            self.assertEqual(status['gates']['process-closure']['status'], 'passed')
-            self.assertEqual(status['gates']['process-closure']['deterministic_status'], 'inconclusive')
+            self.assertEqual(status['gates']['process-closure']['status'], 'inconclusive')
+            self.assertEqual(status['gates']['process-closure']['evidence'],
+                             str(target / 'process-closure.json'))
+            self.assertEqual(status['review_claims']['process-closure']['status'], 'unverified-claim')
+            self.assertEqual(status['review_claims']['process-closure']['reference'],
+                             'review:independent')
+            self.assertIn('process-closure', status['independent_unverified_gates'])
+
+    def test_all_conformance_gates_never_promote_review_reference(self):
+        for gid in flow.CONFORMANCE_GATES:
+            with self.subTest(gate=gid), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                work = base_work()
+                work['gates'] = [{'id': gid, 'status': 'passed',
+                                  'evidence': 'review:independent'}]
+                path = self.write_work(root, work)
+                target = root / '.cat-flow' / 'conformance'
+                target.mkdir(parents=True)
+                (target / (gid + '.json')).write_bytes(flow.json_bytes({
+                    'schema': 'cat-conformance-evidence/v1',
+                    'work_id': work['id'], 'gate': gid,
+                    'context_sha256': flow.conformance_context_sha(work),
+                    'input_sha256': {},
+                    'verdict': 'inconclusive', 'reason': 'unproved meaning',
+                }))
+                status = flow.status_work(path, work)
+                self.assertEqual(status['gates'][gid]['status'], 'inconclusive')
+                self.assertEqual(status['review_claims'][gid]['reference'],
+                                 'review:independent')
+                self.assertEqual(status['overall'], 'not-complete')
+
+    def test_false_review_claim_remains_separate_when_machine_evidence_is_stale(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            work = base_work()
+            work['gates'] = [{'id': 'model-conformance',
+                              'status': 'passed',
+                              'evidence': 'review:missing-or-other-work'}]
+            path = self.write_work(root, work)
+            evidence_dir = root / '.cat-flow' / 'conformance'
+            evidence_dir.mkdir(parents=True)
+            (evidence_dir / 'model-conformance.json').write_bytes(flow.json_bytes({
+                'schema': 'cat-conformance-evidence/v1',
+                'work_id': 'unrelated.work',
+                'gate': 'model-conformance',
+                'context_sha256': flow.conformance_context_sha(work),
+                'input_sha256': {}, 'verdict': 'inconclusive',
+            }))
+            report = flow.status_work(path, work)
+            self.assertEqual(report['gates']['model-conformance']['status'], 'stale')
+            self.assertEqual(report['review_claims']['model-conformance']['status'],
+                             'unverified-claim')
+
+    def test_machine_pass_remains_pass_with_separate_review_claim(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            work = base_work()
+            work['gates'] = [{'id': 'model-conformance', 'status': 'passed',
+                              'evidence': 'review:unverified'}]
+            path = self.write_work(root, work)
+            evidence_dir = root / '.cat-flow' / 'conformance'
+            evidence_dir.mkdir(parents=True)
+            (evidence_dir / 'model-conformance.json').write_bytes(flow.json_bytes({
+                'schema': 'cat-conformance-evidence/v1',
+                'work_id': work['id'], 'gate': 'model-conformance',
+                'context_sha256': flow.conformance_context_sha(work),
+                'input_sha256': {}, 'verdict': 'passed',
+            }))
+            report = flow.status_work(path, work)
+            self.assertEqual(report['gates']['model-conformance']['status'], 'passed')
+            self.assertEqual(report['review_claims']['model-conformance']['status'],
+                             'unverified-claim')
 
     def test_partial_local_tce_cannot_pass_process_closure_by_itself(self):
         with tempfile.TemporaryDirectory() as td:
