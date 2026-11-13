@@ -50,6 +50,25 @@ class ModelConformanceTest(unittest.TestCase):
             self.assertEqual(result['status'], 'blocked')
             self.assertIn('effects', result['mismatches'])
 
+    def test_enum_boolean_to_integer_tampering_is_detected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,t=self.confirmed_fixture(root)
+            p.write_text(p.read_text(encoding='utf-8').replace(
+                '| 状態.準備 | 真偽 |','| 状態.準備 | enum{true} |'),encoding='utf-8')
+            model=compiler.load(p,pi,t)
+            target=next(f for f in model['fields'] if f['id']=='状態.準備')
+            self.assertEqual(target['domain'],{'type':'enum','values':[True]})
+            path=root/'Model.json'
+            path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            self.assertEqual(validator.validate(p,pi,t,path)['status'],'passed')
+            # Python's normal list/dict == wrongly equates [True] and [1].
+            target['domain']['values']=[1]
+            path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            result=validator.validate(p,pi,t,path)
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('domains',result['mismatches'])
+
     def test_extra_model_outcome_is_detected(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
