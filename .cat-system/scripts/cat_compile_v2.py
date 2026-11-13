@@ -1282,8 +1282,11 @@ def expand_cases(model, vectors):
                     require(pres!='absent' or field['id'] not in emitted,
                             'absent output emitted by operation '+output_operation['id']+': '+field['id'])
             allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs']})
-        cases.append({'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
-                      'input':test['input'],'initial_state':test['state'],'allowed':allowed})
+        case_data={'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
+                   'input':test['input'],'initial_state':test['state'],'allowed':allowed}
+        if output_operation is not None:
+            case_data['output_operation']=output_operation['id']
+        cases.append(case_data)
     unique([t['id'] for t in cases],'vector IDs')
     return cases
 
@@ -1318,6 +1321,17 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             fid:_presence_for_field(field,operation,model.get('operation_presence',[]))
             for fid,field in fields.items() if field['role']=='input'
         }
+        output_overrides=[x for x in model.get('operation_presence',[])
+                          if fields[x['field']]['role']=='output']
+        provide_operation=None
+        if output_overrides:
+            candidates=[op for op in model.get('pi_operations',[])
+                        if op['direction']=='provide'
+                        and (op.get('trigger') is None or op['trigger']==trigger)]
+            require(len(candidates)==1 and
+                    all(x['operation']==candidates[0]['id'] for x in output_overrides),
+                    'ambiguous provided output operation for deterministic vectors')
+            provide_operation=candidates[0]
         domains=[]
         for field_id in variable_ids:
             field=fields[field_id]
@@ -1346,6 +1360,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             }
             if operation is not None and any(value!='required' for value in presence.values()):
                 sample['operation']=operation['id']
+            if provide_operation is not None:
+                sample['output_operation']=provide_operation['id']
             witnesses[rule['id']]=sample
     missing=[r['id'] for r in model['rules'] if r['id'] not in witnesses]
     require(not missing,'test-selection produced no witness for TestModel rule(s): '+str(missing))
@@ -1367,12 +1383,17 @@ def emit_vitest(model,vectors,binding_path):
     require(not any(f['role'] in ('observation','action') for f in model['fields']),
             'test-code generation for explicit observation/action capabilities requires a technology binding extension; TestModel remains valid')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
-    check_keys(binding,['schema','process','driver'],optional=('undefined_transport',),where='driver binding')
+    check_keys(binding,['schema','process','driver'],
+               optional=('undefined_transport','output_operation_transport'),
+               where='driver binding')
     require(binding['schema']==D and binding['process']==model['process'],'driver binding incompatible')
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     cases=expand_cases(model,vectors)
-    if any(x.get('output_operation') for x in vectors['cases']):
+    uses_output_operation=any(x.get('output_operation') for x in cases)
+    if binding.get('output_operation_transport') not in (None,'js-driver-provide/v1'):
+        raise Blocked('unsupported output-operation transport binding')
+    if uses_output_operation and binding.get('output_operation_transport')!='js-driver-provide/v1':
         raise Blocked('Vitest renderer lacks output-operation identity transport; cannot assert provider operation')
     uses_undefined=any(any(v=={'$cat_presence':'undefined'} for v in c['input'].values()) for c in cases)
     if binding.get('undefined_transport') not in (None,'js-undefined/v1'):
