@@ -158,6 +158,31 @@ class CompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
                 composer.compose([a,b],links)
 
+    def test_missing_reciprocal_pi_boundary_has_distinct_diagnostic(self):
+        with tempfile.TemporaryDirectory() as td:
+            first=model('p.one','p.two','send')
+            second=model('p.two','p.external','receive')
+            links={'schema':'cat-process-bindings/v1','links':[]}
+            a,b,bindings=self.write(Path(td),first=first,second=second,links=links)
+            result=composer.compose([a,b],bindings)
+            internal=[x for x in result['unresolved_connections']
+                      if x['source_process']=='p.one']
+            external=[x for x in result['unresolved_connections']
+                      if x['source_process']=='p.two']
+            self.assertEqual([x['reason'] for x in internal],
+                             ['counterpart PI lacks reciprocal boundary'])
+            self.assertEqual([x['reason'] for x in external],
+                             ['peer outside assembled Process set'])
+
+    def test_declared_reciprocal_boundary_without_binding_is_distinct(self):
+        with tempfile.TemporaryDirectory() as td:
+            links={'schema':'cat-process-bindings/v1','links':[]}
+            a,b,bindings=self.write(Path(td),links=links)
+            result=composer.compose([a,b],bindings)
+            self.assertEqual(len(result['unresolved_connections']),2)
+            self.assertEqual({x['reason'] for x in result['unresolved_connections']},
+                             {'PI connection/effect lacks explicit binding'})
+
     def test_bidirectional_pi_needs_reverse_direction_binding(self):
         with tempfile.TemporaryDirectory() as td:
             first=model('p.one','p.two','send')
@@ -229,6 +254,8 @@ class CompositionTests(unittest.TestCase):
             self.assertEqual(result['bindings'][0]['status'],'inconclusive')
             self.assertEqual(result['bindings'][0]['field_links'][0]['status'],'inconclusive')
             self.assertTrue(result['unresolved_connections'])
+            self.assertEqual({x['reason'] for x in result['unresolved_connections']},
+                             {'PI binding exists but structural proof is inconclusive'})
 
     def test_nullable_source_does_not_satisfy_nonnullable_consumer(self):
         with tempfile.TemporaryDirectory() as td:
