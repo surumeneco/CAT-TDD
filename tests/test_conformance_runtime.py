@@ -114,6 +114,8 @@ class ConformanceRuntimeTest(unittest.TestCase):
                     'work_id': work['id'], 'gate': gid,
                     'context_sha256': flow.conformance_context_sha(work),
                     'input_sha256': {},
+                    **({'repo_state_sha256': flow.sha(flow.json_bytes(flow._repo_state(path, work)))}
+                       if gid == 'implementation-conformance' else {}),
                     'verdict': 'inconclusive', 'reason': 'unproved meaning',
                 }))
                 status = flow.status_work(path, work)
