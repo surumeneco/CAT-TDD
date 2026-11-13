@@ -38,6 +38,53 @@ class CompositionTests(unittest.TestCase):
         r.write_text(json.dumps(links if links is not None else binding()))
         return p,q,r
 
+    def test_claimed_confirmed_without_closure_receipt_stays_inconclusive(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            paths=[]
+            for name in ('p.one','p.two'):
+                m=model(name,'outside','send')
+                m['pi_boundaries']=[]
+                # A status string alone is not local-closure evidence.
+                p=root/(name+'.json');p.write_text(json.dumps(m));paths.append(p)
+            result=composer.compose(paths)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertEqual(set(result['unproved_local_processes']),{'p.one','p.two'})
+
+    def test_unproved_coverage_and_unresolved_interface_are_not_silently_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            paths=[]
+            for name in ('p.one','p.two'):
+                m=model(name,'outside','send')
+                m['pi_boundaries']=[]
+                m['coverage_claim']='closed'
+                m['coverage_checks']={'trigger':{'result':'proved'}}
+                m['unresolved_interfaces']=[]
+                if name=='p.one':m['coverage_checks']['trigger']['result']='unproven'
+                if name=='p.two':m['unresolved_interfaces']=['unbound.pi']
+                p=root/(name+'.json');p.write_text(json.dumps(m));paths.append(p)
+            result=composer.compose(paths)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertEqual(set(result['unproved_local_processes']),{'p.one','p.two'})
+
+    def test_consistent_local_claims_without_boundaries_can_be_structurally_closed(self):
+        # This test only checks the composition protocol's local-claim input
+        # contract; independent Source->Model Conformance remains separate.
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            paths=[]
+            for name in ('p.one','p.two'):
+                m=model(name,'outside','send')
+                m['pi_boundaries']=[]
+                m['coverage_claim']='closed'
+                m['coverage_checks']={'trigger':{'result':'proved'}}
+                m['unresolved_interfaces']=[]
+                p=root/(name+'.json');p.write_text(json.dumps(m));paths.append(p)
+            result=composer.compose(paths)
+            self.assertEqual(result['status'],'passed')
+            self.assertEqual(result['unproved_local_processes'],[])
+
     def test_matching_pi_does_not_prove_external_effects(self):
         with tempfile.TemporaryDirectory() as td:
             a,b,links=self.write(Path(td))
