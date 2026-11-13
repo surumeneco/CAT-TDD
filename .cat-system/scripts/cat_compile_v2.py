@@ -211,7 +211,7 @@ def parse_domain_text(text):
     text=_unquote_code(text).strip()
     # Recursive enum parsing must precede legacy substitutions, which would
     # corrupt quoted enum values such as "整数".
-    if 'enum{' in text or '列挙{' in text:
+    if any(marker in text for marker in ('enum{','列挙{','型参照<','ref<','Ref<')):
         try:return typed.parse(text)
         except typed.DomainError as exc:raise Blocked(str(exc)) from exc
     aliases={'真偽':'boolean','整数':'integer','文字列':'string','安全符号付き整数':'safe-signed-integer'}
@@ -753,6 +753,7 @@ def used_refs(expr, definitions, result=None, stack=()):
 
 def _unresolved_domain(d):
     t=d['type']
+    if t=='reference':return (not d.get('resolved') or _unresolved_domain(d['of']))
     if t=='record':
         return not d.get('resolved',False) or any(_unresolved_domain(f['domain']) for f in d.get('fields',[]))
     if t in ('set','sequence'):return isinstance(d['element'],dict) and _unresolved_domain(d['element'])
@@ -1434,6 +1435,7 @@ def current_vectors(model, vectors, queue, model_bytes, vector_bytes):
 
 def format_domain(d, language='en'):
     t=d['type']
+    if t=='reference':return ('型参照<' if language=='ja' else 'ref<')+d['name']+'>'
     names={'ja':{'boolean':'真偽','integer':'整数','string':'文字列','set':'集合','sequence':'列','enum':'列挙'},
            'en':{'boolean':'boolean','integer':'integer','string':'string','set':'set','sequence':'sequence','enum':'enum'}}[language]
     if t=='boolean':return names['boolean']
