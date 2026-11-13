@@ -56,6 +56,8 @@ def _unresolved_domain(domain):
     kind=domain.get('type')
     if kind in (None,'unknown'):
         return True
+    if kind=='reference':
+        return not domain.get('resolved') or _unresolved_domain(domain.get('of'))
     if kind=='record':
         return domain.get('resolved') is not True or any(
             _unresolved_domain(f.get('domain')) for f in domain.get('fields',[]))
