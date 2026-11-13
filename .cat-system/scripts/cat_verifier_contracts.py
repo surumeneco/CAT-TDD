@@ -136,8 +136,31 @@ def evaluate(model_file,registry_file):
     entries=registry.get('entries')
     if not isinstance(entries,list):
         raise VerifierError('registry entries must be a list')
-    rules={x['id']:x for x in model.get('rule_obligations',[])}
-    docs={x['id']:x for x in model.get('normative_rule_inputs',[])}
+    # The registry's model hash binds the bytes, not the uniqueness or
+    # authenticity of the model inventory. A re-hashed malformed model must
+    # never collapse two distinct normative obligations into one rule ID.
+    def unique_inventory(items,label):
+        if not isinstance(items,list):
+            raise VerifierError(label+' inventory must be a list')
+        found={}
+        for item in items:
+            if not isinstance(item,dict) or not isinstance(item.get('id'),str) or not item['id']:
+                raise VerifierError(label+' inventory ID missing')
+            if item['id'] in found:
+                raise VerifierError('duplicate '+label+' ID '+item['id'])
+            found[item['id']]=item
+        return found
+    rules=unique_inventory(model.get('rule_obligations',[]),'normative rule')
+    docs=unique_inventory(model.get('normative_rule_inputs',[]),'normative source')
+    records=model.get('source_records')
+    if records is not None:
+        recorded=unique_inventory(records,'source record')
+        for source_id,doc in docs.items():
+            if source_id not in recorded or recorded[source_id].get('sha256')!=doc.get('sha256'):
+                raise VerifierError('source record hash mismatch for '+source_id)
+    for rid,rule in rules.items():
+        if rule.get('source_artifact') not in docs:
+            raise VerifierError('unbound normative rule source '+rid)
     seen=set();out=[]
     for e in entries:
         if not isinstance(e,dict) or not {'rule_id','source_artifact','source_sha256','subject','verifier_id','fixture','assertions'}<=set(e):
