@@ -27,16 +27,52 @@ def render_vitest(model, cases, binding):
         "",
         "describe(" + _ts(model["process"] + " CAT symbolic contract") + ", () => {",
     ]
+    uses_undefined=any(
+        any(v=={'$cat_presence':'undefined'} for v in c['input'].values())
+        for c in cases)
+    if uses_undefined:
+        # This helper is injected only for the explicit JS-undefined binding;
+        # a JSON sentinel must never be delivered as an ordinary input value.
+        lines[-1:-1]=[
+            "function decodeUndefinedInput(raw: Record<string,unknown>): Record<string,unknown> {",
+            "  const decoded: Record<string,unknown> = {...raw};",
+            "  for (const id of Object.keys(decoded)) {",
+            "    const marker = decoded[id];",
+            "    if (marker !== null && typeof marker === 'object' && !Array.isArray(marker)",
+            "        && Object.keys(marker as Record<string,unknown>).length === 1",
+            "        && (marker as Record<string,unknown>)[\"$cat_presence\"] === \"undefined\") {",
+            "      decoded[id] = undefined;",
+            "    }",
+            "  }",
+            "  return decoded;",
+            "}",
+            "",
+        ]
     declared=[f["id"] for f in model["fields"] if f["role"]=="state"]
     set_fields=[f["id"] for f in model["fields"] if f["role"]=="state" and f["domain"]["type"]=="set"]
     for c in cases:
         alt=[{"state":a["state"],"output":a["output"]} for a in c["allowed"]]
+        undefined_fields=sorted(
+            id_ for id_,v in c['input'].items() if v=={'$cat_presence':'undefined'})
+        if undefined_fields:
+            input_lines=[
+                "    expect((driver as {undefinedTransport?: string}).undefinedTransport).toBe(\"js-undefined/v1\")",
+                "    const rawInput = " + _ts(c["input"]) + " as Record<string,unknown>",
+                "    const input = decodeUndefinedInput(rawInput)",
+            ]
+            for id_ in undefined_fields:
+                input_lines += [
+                    "    expect(Object.prototype.hasOwnProperty.call(input, " + _ts(id_) + ")).toBe(true)",
+                    "    expect(input[" + _ts(id_) + "]).toBeUndefined()",
+                ]
+        else:
+            input_lines=["    const input = " + _ts(c["input"]) + " as Record<string,unknown>"]
         lines.extend([
             "  it(" + _ts(c["id"]) + ", async () => {",
             "    // TCE: " + c["source_tce"],
             "    const driver = createDriver()",
             "    const pre = " + _ts(c["initial_state"]) + " as Record<string,unknown>",
-            "    const input = " + _ts(c["input"]) + " as Record<string,unknown>",
+            *input_lines,
             "    await driver.prepare(pre, input)",
             "    const before = await driver.observeState()",
             "    for (const id of " + _ts(declared) + ") { const normalized = (v: unknown) => (" + _ts(set_fields) + " as string[]).includes(id) && Array.isArray(v) ? [...v].sort() : v; expect(normalized(before[id])).toEqual(normalized(pre[id])); }",
