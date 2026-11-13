@@ -471,6 +471,21 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                        or actual_guards[k].get('result')!=v['result']
                        for k,v in source_guard['triggers'].items())):
             mismatches.append('source_guard_coverage')
+        # Proof diagnostics are evidence, not free-form UI labels: validate
+        # finite counterexample witnesses, counts, reachability and Guard refs.
+        receipt_keys=('guard_refs','overlap_count','overlaps','uncovered',
+                      'uncovered_count','unreachable_rules',
+                      'excluded_by_pi_constraints')
+        if isinstance(actual_guards,dict):
+            for trigger,expected_receipt in source_guard['triggers'].items():
+                if expected_receipt['result'] in ('proved','uncovered','conflict'):
+                    observed=actual_guards.get(trigger)
+                    if (not isinstance(observed,dict) or any(
+                            not semantic_types.same(observed.get(k),expected_receipt[k])
+                            for k in receipt_keys)):
+                        if 'source_guard_coverage' not in mismatches:
+                            mismatches.append('source_guard_coverage')
+                        break
         guard_proved=(bool(source_guard['triggers'])
                       and all(c['result']=='proved' and not c['unreachable_rules']
                               for c in source_guard['triggers'].values())

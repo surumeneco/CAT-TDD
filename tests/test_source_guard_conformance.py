@@ -40,6 +40,40 @@ class SourceGuardConformanceTests(unittest.TestCase):
             target.write_text(json.dumps(m),encoding='utf-8')
             self.assertIn('source_guard_coverage',validate(p,pi,tce,target)['mismatches'])
 
+    def test_uncovered_counterexamples_counts_and_unreachable_ids_are_source_bound(self):
+        with tempfile.TemporaryDirectory() as td:
+            p,pi,tce=self.prepare(Path(td),uncovered=True)
+            m=load(p,pi,tce,allow_partial=True)
+            target=Path(td)/'Model.json'
+            key='submit'
+            actual=m['coverage_checks'][key]
+            self.assertEqual(actual['result'],'uncovered')
+            self.assertGreater(actual['uncovered_count'],0)
+            for field,corrupted in (
+                ('uncovered_count',0),
+                ('uncovered',[]),
+                ('unreachable_rules',['phantom.rule']),
+                ('guard_refs',[]),
+                ('excluded_by_pi_constraints',True),
+            ):
+                with self.subTest(field=field):
+                    forged=json.loads(json.dumps(m))
+                    forged['coverage_checks'][key][field]=corrupted
+                    target.write_text(json.dumps(forged),encoding='utf-8')
+                    result=validate(p,pi,tce,target)
+                    self.assertEqual(result['status'],'blocked',result)
+                    self.assertIn('source_guard_coverage',result['mismatches'])
+
+    def test_confirmed_guard_receipt_cannot_add_undocumented_witness(self):
+        with tempfile.TemporaryDirectory() as td:
+            p,pi,tce=self.prepare(Path(td),uncovered=False)
+            m=load(p,pi,tce)
+            m['coverage_checks']['submit']['uncovered']=[{'input.enabled':False}]
+            target=Path(td)/'Model.json';target.write_text(json.dumps(m))
+            result=validate(p,pi,tce,target)
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('source_guard_coverage',result['mismatches'])
+
     def test_valid_source_model_remains_confirmed(self):
         with tempfile.TemporaryDirectory() as td:
             p,pi,tce=self.prepare(Path(td),uncovered=False)
