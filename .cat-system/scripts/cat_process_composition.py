@@ -104,6 +104,46 @@ def _link(binding,models):
             'status':'structurally-matched' if all(c['status']=='matched' for c in checks) else 'inconclusive',
             'external_effects_verified':False}
 
+def _effect_claim_consistent(model):
+    """Require exact declared Effect receipts before accepting local closure.
+
+    This checks internal receipt consistency only, not independent source-to-
+    model or implementation conformance. Missing/foreign/extra proof keys are
+    not evidence of a locally closed Process.
+    """
+    rules=model.get('rules',[])
+    if not isinstance(rules,list):
+        return False
+    expected=[]
+    for rule in rules:
+        if not isinstance(rule,dict) or not isinstance(rule.get('source_artifact'),str) or not isinstance(rule.get('id'),str):
+            return False
+        outcomes=rule.get('allowed')
+        if not isinstance(outcomes,list):
+            return False
+        for outcome_number,outcome in enumerate(outcomes,1):
+            if not isinstance(outcome,dict):
+                return False
+            writes=outcome.get('write',[])
+            if not isinstance(writes,list):
+                return False
+            for write_number,write in enumerate(writes,1):
+                if not isinstance(write,dict) or not isinstance(write.get('target'),str):
+                    return False
+                expected.append(f"{rule['source_artifact']}#{rule['id']}:{outcome_number}:{write_number}:{write['target']}")
+    if len(expected)!=len(set(expected)):
+        return False
+    proofs=model.get('effect_checks')
+    unresolved=model.get('unverified_effect_ids')
+    if not expected and proofs is None and unresolved is None:
+        return True  # legacy synthetic models with no declared Effects
+    return (isinstance(proofs,dict)
+            and set(proofs)==set(expected)
+            and all(isinstance(proofs[key],dict) and proofs[key].get('result')=='proved'
+                    for key in expected)
+            and unresolved==[])
+
+
 def _local_claim_consistent(model):
     """Check local closure receipts for internal contradictions, not Source conformance.
 
@@ -118,13 +158,7 @@ def _local_claim_consistent(model):
             and all(isinstance(v,dict) and v.get('result')=='proved'
                     for v in checks.values())
             and model.get('unverified_rule_ids')==[]
-            # New Compiler receipts also require total Effect proofs. This
-            # structural check does not independently certify their sources.
-            and (model.get('effect_checks') is None or
-                 (isinstance(model['effect_checks'],dict) and
-                  all(isinstance(v,dict) and v.get('result')=='proved'
-                      for v in model['effect_checks'].values())))
-            and model.get('unverified_effect_ids',[])==[]
+            and _effect_claim_consistent(model)
             and model.get('unresolved_domains')==[]
             and model.get('unresolved_interfaces',[])==[]
             and model.get('presence_unproven')==[])
