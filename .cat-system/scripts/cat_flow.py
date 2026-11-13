@@ -1164,20 +1164,24 @@ def status_work(wpath, w):
     spec = w['specification']
     declared_gates = {g['id']: {'status': g['status'], 'evidence': g.get('evidence', '')} for g in w.get('gates', [])}
     gate_map = dict(declared_gates)
+    review_claims = {}
     for gid in ALL_GATES:
         gate_map.setdefault(gid, {'status': 'not-run', 'evidence': ''})
     for gid in CONFORMANCE_GATES:
         machine = conformance_evidence_status(wpath, w, gid)
         declared = declared_gates.get(gid, {'status': 'not-run', 'evidence': ''})
-        if machine['status'] == 'passed':
-            gate_map[gid] = machine
-        elif machine['status'] == 'inconclusive' and declared['status'] == 'passed' and declared.get('evidence'):
-            gate_map[gid] = {'status': 'passed', 'evidence': declared['evidence'],
-                             'deterministic_status': 'inconclusive',
-                             'deterministic_evidence': machine['evidence'],
-                             'reason': 'deterministic validator was inconclusive; explicit review evidence supplied'}
-        else:
-            gate_map[gid] = machine
+        # Work.gates is a claim, not authority to revise the script-owned
+        # Conformance verdict. In particular, a review:* string is neither
+        # resolved evidence nor a source-bound normative decision.
+        gate_map[gid] = machine
+        if declared['status'] == 'passed' and declared.get('evidence'):
+            review_claims[gid] = {
+                'status': 'unverified-claim',
+                'reference': declared['evidence'],
+                'declared_status': declared['status'],
+                'machine_status': machine['status'],
+                'reason': 'Work-declared evidence is not a verified machine Gate result',
+            }
     spec_gate = 'reported-confirmed/unverified' if spec['status'] == 'confirmed' else spec['status']
     next_actions = []
     if spec['status'] != 'confirmed':
@@ -1208,6 +1212,7 @@ def status_work(wpath, w):
     overall = 'reported-complete/unverified-external-evidence' if reported_complete else 'not-complete'
     return {'work_id': w['id'], 'entry': w['entry'], 'mode': w['mode'],
             'specification': spec_gate, 'checks': evidence, 'gates': gate_map,
+            'review_claims': review_claims,
             'git': git, 'next_actions': next_actions,
             'external_evidence_verification': 'required',
             'independent_unverified_gates': [g for g in required_gates if gate_map[g]['status'] not in ('passed', 'not-applicable')],
