@@ -1454,7 +1454,10 @@ def format_domain(d, language='en'):
     if t=='union':return 'Union<'+', '.join(format_domain(x,language) for x in d['variants'])+'>'
     if t=='record':
         if 'name' in d:return ('レコード<' if language=='ja' else 'record<')+d['name']+'>'
-        return ('レコード<' if language=='ja' else 'record<')+','.join(f['id']+(':'+format_domain(f['domain'],language) if f['domain']['type']!='unknown' else '') for f in d['fields'])+'>'
+        return ('レコード<' if language=='ja' else 'record<')+','.join(
+            f['id']+('['+f['presence']+']' if f.get('presence','required')!='required' else '')+
+            (':'+format_domain(f['domain'],language) if f['domain']['type']!='unknown' else '')
+            for f in d['fields'])+'>'
     raise Blocked('unknown domain for rendering')
 
 
