@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-from cat_compile_v2 import Blocked, format_expr, read_artifact
+from cat_compile_v2 import Blocked, format_expr, read_artifact, _effect_totality_checks
 from catlib import semantic_rules
 from catlib import semantic_types
 from catlib import semantic_named_types as named_types
@@ -179,6 +179,17 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                 format_expr(item['body'], item['params'], tf.get('language', 'en')),
             )
 
+    # Effect proof inventory is derived from independent normative TCE/PI/Process
+    # reads rather than trusting the submitted JSON TestModel's claimed proofs.
+    effect_fields={ident:{'id':ident,'role':role,'domain':domains[ident],
+                          'presence':presence.get(ident,'required')}
+                   for ident,role in fields.items()}
+    effect_rules=[{**rule,'source_artifact':fm['id']}
+                  for _,fm,tce in tces for rule in tce['rules']]
+    effect_definitions={item['id']:item for item in domain['definitions']} if domain else {}
+    effect_checks=_effect_totality_checks(effect_rules,effect_fields,effect_definitions)
+    unverified_effect_ids=sorted(ident for ident,check in effect_checks.items()
+                                 if check['result']!='proved')
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
     intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
@@ -210,6 +221,8 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'named_type_definitions':named_type_definitions,
         'intrinsic_rule_proofs':intrinsic_proofs,
         'unverified_rule_ids':sorted(all_rule_ids-intrinsic_ids),
+        'effect_checks':effect_checks,
+        'unverified_effect_ids':unverified_effect_ids,
         'source_all_confirmed':source_all_confirmed,
         'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],
                                     'intrinsic-proved' if r['id'] in intrinsic_ids else 'unverified')
@@ -410,6 +423,8 @@ def json_model(path):
         'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],r.get('verification_status','unverified')) for r in model.get('rule_obligations',[])},
         'intrinsic_rule_proofs':model.get('intrinsic_rule_proofs',[]),
         'unverified_rule_ids':model.get('unverified_rule_ids',[]),
+        'effect_checks':model.get('effect_checks'),
+        'unverified_effect_ids':model.get('unverified_effect_ids'),
         'status':model.get('status'),
         'coverage_requirement':model.get('coverage_requirement'),
         'coverage_claim':model.get('coverage_claim'),
@@ -433,7 +448,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids')
+        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids')
     for key in checks:
         # Python structural == conflates bool with int (True == 1). Domains
         # and named type definitions contain typed literal values and must
@@ -463,9 +478,11 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                 not expected['source_all_confirmed']
                 or not expected['process_closed_world']
                 or expected['unverified_rule_ids']
+                or expected['unverified_effect_ids']
                 or not exact_claim
                 or actual.get('coverage_requirement')!='closed'
                 or not complete_checks
+                or actual.get('unverified_effect_ids')!=[]
                 or actual.get('presence_unproven')!=[]
                 or actual.get('unresolved_domains')!=[]
                 or actual.get('unresolved_interfaces')!=[]):

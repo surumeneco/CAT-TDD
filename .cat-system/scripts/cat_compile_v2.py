@@ -765,6 +765,71 @@ def _unresolved_domain(d):
     if t=='union':return any(_unresolved_domain(x) for x in d['variants'])
     return False
 
+def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
+    """Prove Effect target containment separately from Guard closure.
+
+    A direct reference uses structural Domain inclusion. Operator expressions
+    require an exact bounded enumeration of every referenced field's Domain.
+    The proof does not assume a Guard, runtime driver, or external Effect.
+    Unsupported, nonfinite or exhausted cases remain unproven.
+    """
+    checks={}
+    for rule in rules:
+        for outcome_number,outcome in enumerate(rule['allowed'],1):
+            for write_number,write in enumerate(outcome['write'],1):
+                target=write['target'];expr=write['expr']
+                ident=f"{rule['source_artifact']}#{rule['id']}:{outcome_number}:{write_number}:{target}"
+                domain=fields[target]['domain']
+                if _unresolved_domain(domain):
+                    checks[ident]={'result':'unproven','reason':'Effect target Domain unresolved'}
+                    continue
+                if 'literal' in expr:
+                    checks[ident]={'result':'proved'}  # checked against full Domain during parsing
+                    continue
+                if 'ref' in expr and expr['ref'] in fields:
+                    source_field=fields[expr['ref']]
+                    if source_field['role'] in ('output','action'):
+                        checks[ident]={'result':'unproven','reason':'Effect reads an unavailable source field'}
+                    elif (source_field['role']=='input' and
+                          source_field.get('presence','required')!='required'):
+                        checks[ident]={'result':'unproven','reason':'Effect reads nonrequired input without a Presence proof'}
+                    else:
+                        proof=semantic_subtyping.subset(source_field['domain'],domain)
+                        checks[ident]=({'result':'proved'} if proof is True
+                                      else {'result':'unproven','reason':'Effect source Domain unresolved or inclusion unproved'})
+                    continue
+                refs=sorted(used_refs(expr,definitions))
+                values=[];reason=None
+                for ref in refs:
+                    f=fields.get(ref)
+                    if f is None or f['role'] in ('output','action'):
+                        reason='Effect expression reads an unavailable field';break
+                    if f['role']=='input' and f.get('presence','required')!='required':
+                        reason='Effect expression reads nonrequired input without a Presence proof';break
+                    try:
+                        vals=typed.finite_values(f['domain'],max_values=max_combinations)
+                    except typed.DomainError:
+                        vals=None
+                    if vals is None:
+                        reason='Effect expression depends on nonfinite or unresolved Domain';break
+                    values.append(vals)
+                if reason is None and __import__('math').prod(len(v) for v in values)>max_combinations:
+                    reason='Effect expression proof exceeds finite enumeration limit'
+                if reason is None:
+                    for concrete in itertools.product(*values):
+                        env=dict(zip(refs,concrete))
+                        try:
+                            output=eval_expr(expr,env,definitions)
+                            accepted=typed.contains(domain,output)
+                        except (Blocked,typed.DomainError,ValueError,TypeError):
+                            reason='Effect expression totality or output Domain unproved';break
+                        if not accepted:
+                            reason='Effect expression can produce a value outside the declared Domain';break
+                checks[ident]=({'result':'proved'} if reason is None
+                               else {'result':'unproven','reason':reason})
+    return checks
+
+
 def _presence_cases(domain,presence):
     """Exact PI input-state enumeration, not a fabricated ordinary value."""
     require(presence in ('required','optional','absent','undefined'),'invalid input Presence')
@@ -1197,9 +1262,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if rule['id'] in proven_rule_ids:
             rule['verification_status']='intrinsic-proved'
     unverified_rule_ids=sorted({r['id'] for r in rule_obligations}-proven_rule_ids)
+    # Guard coverage does not prove all Effect expressions total and in Domain.
+    effect_checks=_effect_totality_checks(rules,fields,definitions)
+    unverified_effect_ids=sorted(key for key,proof in effect_checks.items()
+                                 if proof['result']!='proved')
     normative_model = (all(fm['status']=='confirmed' for _,fm in files)
                        and coverage_proved and not unresolved_domains
-                       and not unverified_rule_ids)
+                       and not unverified_rule_ids and not unverified_effect_ids)
     result={'schema':M,'process':p['process'],'status':('confirmed' if normative_model else 'draft'),
             'semantic_authority':authority,'language':tf.get('language','en') if contract=='markdown-v2' else 'en',
             'source_artifacts':[fm['id'] for _,fm in files],
@@ -1218,6 +1287,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     result['normative_rule_inputs']=[{'id':d['id'],'kind':d['kind'],'sha256':d['sha256']} for d in rule_docs]
     result['named_type_definitions']=resolved_type_definitions
     result['unverified_rule_ids']=unverified_rule_ids
+    result['effect_checks']=effect_checks
+    result['unverified_effect_ids']=unverified_effect_ids
     result['intrinsic_rule_proofs']=intrinsic_proofs
     tce_map=[]
     for _,tce_fm,_ in tce_docs:
