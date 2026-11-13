@@ -596,7 +596,10 @@ def in_domain(d, value):
     if t=='boolean':return type(value) is bool
     if t=='integer':return type(value) is int and (d.get('min') is None or value>=d['min']) and (d.get('max') is None or value<=d['max'])
     if t=='string':return isinstance(value,str) and (d.get('format','any')=='any' or safe_integer_text(value))
-    if t in ('set','sequence'):
+    if t in ('set','sequence') and isinstance(d.get('element'),str):
+        # Legacy machine-only format used a scalar element type name. Current
+        # recursive typed IR stores a Domain node instead; never treat its
+        # dictionary as a signal that collection elements must be integers.
         return isinstance(value,list) and all(type(v) is (str if d['element']=='string' else int) for v in value) and (t!='set' or len(set(value))==len(value))
     try:return typed.contains(d,value)
     except typed.DomainError as exc:raise Blocked(str(exc)) from exc
