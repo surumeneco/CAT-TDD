@@ -84,7 +84,6 @@ def _link(binding,models):
         seen.add(pair);seen_targets.add(pair[1])
         f=_field(source,pair[0],'output',a)
         t=_field(target,pair[1],'input',b)
-        inclusion=_type_subset(f['domain'],t['domain'])
         f_presence=f.get('presence','required')
         t_presence=t.get('presence','required')
         # Presence is independent of type/nullability: a producer's possible
@@ -94,12 +93,19 @@ def _link(binding,models):
         if f_presence not in states or t_presence not in states:
             raise CompositionError('unsupported boundary presence')
         presences_ok=states[f_presence].issubset(states[t_presence])
+        # Absence-only/undefined-only sources have no value to type-check.
+        # Their declared Domains are irrelevant, not mutually incompatible.
+        transfers_value='value' in states[f_presence]
+        inclusion=_type_subset(f['domain'],t['domain']) if transfers_value else True
         if inclusion is False or not presences_ok:
             raise CompositionError('typed/presence mismatch on '+pair[0]+' -> '+pair[1])
         proof='matched' if inclusion is True else 'inconclusive'
         checks.append({'source_field':f['id'],'target_field':t['id'],
                        'type':f['domain'],'target_type':t['domain'],
-                       'presence':(f_presence,t_presence),'status':proof})
+                       'presence':(f_presence,t_presence),'status':proof,
+                       'value_domain_proof':('proved' if transfers_value and inclusion is True
+                                             else 'not-applicable' if not transfers_value
+                                             else 'inconclusive')})
     # Partial field links cannot prove the receiver PI boundary. There is no
     # authorized operation-to-field projection in this schema; any value-
     # capable receiver field left unmapped remains inconclusive.
