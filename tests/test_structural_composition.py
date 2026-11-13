@@ -73,8 +73,8 @@ class StructuralSubsetTests(unittest.TestCase):
         self.assertIs(_type_subset(narrow,strict),False)
         unknown=parse('record<owner:record<id:string,level[optional]:string<safe-signed-integer>>>')
         # Any string is not proved to be a safe signed integer string.
-        self.assertIsNone(_type_subset(
-            parse('record<owner:record<id:string,level[optional]:string>>'),unknown))
+        self.assertIs(_type_subset(
+            parse('record<owner:record<id:string,level[optional]:string>>'),unknown),False)
 
     def test_closed_records_are_order_independent(self):
         a=parse('record<x[optional]:boolean,y[absent]:integer>')
