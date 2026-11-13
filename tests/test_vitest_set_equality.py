@@ -32,7 +32,7 @@ class SetRendererTests(unittest.TestCase):
         content=render_vitest(model,cases,binding)
         self.assertIn('function sameCATSet(',content)
         self.assertIn('function equalCATValue(',content)
-        self.assertIn('isDeepStrictEqual(item, expected[i])',content)
+        self.assertIn('isDeepStrictEqual(item, candidate)',content)
         self.assertIn('equalCATValue(id,after[id],expected.state[id],stateSetFields)',content)
         self.assertIn('equalCATValue(id,output[id],expected.output[id],outputSetFields)',content)
         self.assertIn('"output.events"',content)
