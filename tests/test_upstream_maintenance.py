@@ -82,6 +82,35 @@ class UpstreamMaintenanceTests(unittest.TestCase):
             self.assertFalse(src.exists())
             self.assertIn('[requirements](../../docs/requirements.md)',dst.read_text())
 
+    def test_promotion_rebases_inline_and_reference_self_links_to_new_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            source=root/'Lifecycle'/'CAT'/'Draft'/'Source.md'
+            dest=root/'Docs'/'Processes'/'Confirmed.md'
+            source.parent.mkdir(parents=True)
+            raw=(fm('tce','demo.process.tce',[],language='en')+
+                 '\n# Contract\n[inline](Source.md#contract)\n[reference]: Source.md#contract\n')
+            source.write_text(raw,encoding='utf-8')
+            result=promote(source,dest,'decision:approved')
+            self.assertEqual(result['status'],'passed')
+            content=dest.read_text(encoding='utf-8')
+            self.assertIn('[inline](Confirmed.md#contract)',content)
+            self.assertIn('[reference]: Confirmed.md#contract',content)
+            self.assertFalse(source.exists())
+            self.assertTrue((dest.parent/'Confirmed.md').exists())
+            self.assertNotIn('Lifecycle/CAT/Draft/Source.md',content)
+
+    def test_promotion_preserves_local_fragment_self_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            source=root/'Draft'/'Source.md'
+            dest=root/'Confirmed'/'Final.md'
+            source.parent.mkdir()
+            source.write_text(fm('tce','demo.process.tce',[],language='en')+
+                              '\n[here](#contract)\n',encoding='utf-8')
+            promote(source,dest,'decision:approved')
+            self.assertIn('[here](#contract)',dest.read_text(encoding='utf-8'))
+
     def test_promotion_missing_local_link_is_non_destructive(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
