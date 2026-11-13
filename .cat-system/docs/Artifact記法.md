@@ -209,7 +209,9 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 明示的なテストベクトルでは、受付操作を`operation`で特定し、任意項目の欠落は`input`のキーを省略し、`undefined`は`{"$cat_presence":"undefined"}`と表す。提供操作に応じた出力Presenceがある場合は`output_operation`も必須となる。これらは値の同一性の規則であって、実装の動作確認結果ではない。
 
-現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作の識別や、明示的な`js-undefined/v1` Driver Bindingが存在しない`undefined`入力のVitestコード生成は拒否する。補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
+現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作が明示されたVectorsは、Driver Bindingの`output_operation_transport: "js-driver-provide/v1"`を必須とし、生成VitestはDriverの`outputOperationTransport`と`triggerProvidedOperation(operationId, triggerId, input)`の実在を検証して、指定された提供操作を呼び出す。宣言がない・未知の方法・曖昧な提供操作はblockedを維持する。`undefined`入力も明示的な`js-undefined/v1` Bindingがなければ拒否する。**これらのBindingは検査可能なDriver契約であり、現実の外部送信や複数Processの相互作用の証明ではない。**補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
+
+複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。単一Triggerに対して提供操作が1件であり、`## Operation presence`で出力の操作が明示され、出力がrequiredである範囲のみ、決定論的Vectorsの`output_operation`を導出する。非required出力の意味的証明は依然として未対応。
 
 ### 操作方向
 
