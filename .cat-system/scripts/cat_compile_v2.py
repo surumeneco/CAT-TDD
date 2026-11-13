@@ -1367,14 +1367,17 @@ def emit_vitest(model,vectors,binding_path):
     require(not any(f['role'] in ('observation','action') for f in model['fields']),
             'test-code generation for explicit observation/action capabilities requires a technology binding extension; TestModel remains valid')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
-    check_keys(binding,['schema','process','driver'],where='driver binding')
+    check_keys(binding,['schema','process','driver'],optional=('undefined_transport',),where='driver binding')
     require(binding['schema']==D and binding['process']==model['process'],'driver binding incompatible')
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     cases=expand_cases(model,vectors)
     if any(x.get('output_operation') for x in vectors['cases']):
         raise Blocked('Vitest renderer lacks output-operation identity transport; cannot assert provider operation')
-    if any(any(v=={'$cat_presence':'undefined'} for v in c['input'].values()) for c in cases):
+    uses_undefined=any(any(v=={'$cat_presence':'undefined'} for v in c['input'].values()) for c in cases)
+    if binding.get('undefined_transport') not in (None,'js-undefined/v1'):
+        raise Blocked('unsupported undefined transport binding')
+    if uses_undefined and binding.get('undefined_transport')!='js-undefined/v1':
         raise Blocked('Vitest renderer has no source-backed undefined transport binding; cannot generate a false oracle')
     return _vitest_renderer()(model,cases,binding)
 

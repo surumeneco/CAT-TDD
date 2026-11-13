@@ -197,7 +197,7 @@ PresenceはCATとして有効な意味であり、Domainの`nullable`とは独�
 
 正規Compilerは、閉じた有限Domainの`optional`に欠落＋各値、`absent`に欠落のみ、`undefined`に明示undefinedのみ、`required`に各値を割り当てる。単一の受付Operationに対する操作別Presenceも適用する。受付Operationが曖昧な場合、出力のnonrequired Presence、無限・列挙上限超のDomain、nonrequired入力を直接読むEffectなどはまだ完全証明しない。
 
-決定論的Vectorsでは欠落をキー省略、undefinedを `{"$cat_presence":"undefined"}` として区別する。undefinedの生成Vitestには実装依存のtransport契約が未定義のため、テストコード生成は引き続きblockedとし、undefinedをnullや値に自動置換しない。
+決定論的Vectorsでは欠落をキー省略、undefinedを `{"$cat_presence":"undefined"}` として区別する。undefinedをVitestで伝送する場合は、実装側のDriver Bindingに`undefined_transport: "js-undefined/v1"`を明示した場合だけ生成を許可する。生成されたテストはJSONの一時マーカーを**実際のJavaScript `undefined`**に変換してDriverへ渡し、Driverの`undefinedTransport`属性が同じプロトコルを申告することを実行時に確認する。未設定・別プロトコルはblockedを維持し、nullや通常値への置換を認めない。この契約は**Driverが実際に外部境界まで同値転送した証明ではなく**、正規の実テスト実行・Implementation Conformanceが別途必要。
 
 PI全体の既定Presenceと操作別の例外を区別する場合、必要な行だけ`## 操作別存在`（英語:`## Operation presence`）に宣言する。
 
@@ -209,7 +209,7 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 明示的なテストベクトルでは、受付操作を`operation`で特定し、任意項目の欠落は`input`のキーを省略し、`undefined`は`{"$cat_presence":"undefined"}`と表す。提供操作に応じた出力Presenceがある場合は`output_operation`も必須となる。これらは値の同一性の規則であって、実装の動作確認結果ではない。
 
-現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作の識別や`undefined`のドライバー伝送を確立できないVitestコード生成も拒否する。補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
+現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作の識別や、明示的な`js-undefined/v1` Driver Bindingが存在しない`undefined`入力のVitestコード生成は拒否する。補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
 
 ### 操作方向
 

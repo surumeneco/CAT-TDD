@@ -115,4 +115,40 @@ class ExplicitPresenceVectorTest(unittest.TestCase):
                 compiler.emit_vitest(m,v,p)
 
 
+    def test_explicit_js_undefined_transport_generates_real_undefined_input(self):
+        m=model('undefined');v=vectors(case({'input.flag':{'$cat_presence':'undefined'}}))
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/'binding.json'
+            p.write_text(json.dumps({'schema':compiler.D,'process':'demo.process',
+                'driver':'./driver','undefined_transport':'js-undefined/v1'}))
+            content=compiler.emit_vitest(m,v,p)
+            self.assertIn('decodeUndefinedInput(rawInput)',content)
+            self.assertIn('decoded[id] = undefined',content)
+            self.assertIn('driver as {undefinedTransport?: string}',content)
+            self.assertIn('toBe("js-undefined/v1")',content)
+            self.assertIn('hasOwnProperty.call(input, "input.flag")',content)
+            self.assertIn('input["input.flag"]).toBeUndefined()',content)
+            self.assertEqual(content,compiler.emit_vitest(m,v,p))
+
+    def test_wrong_undefined_transport_is_blocked_even_with_correct_presence(self):
+        m=model('undefined');v=vectors(case({'input.flag':{'$cat_presence':'undefined'}}))
+        for transport in (None,'json-null/v1','fake',''):
+            with self.subTest(transport=transport),tempfile.TemporaryDirectory() as td:
+                binding={'schema':compiler.D,'process':'demo.process','driver':'./driver'}
+                if transport is not None:binding['undefined_transport']=transport
+                p=Path(td)/'binding.json'
+                p.write_text(json.dumps(binding))
+                with self.assertRaises(compiler.Blocked):
+                    compiler.emit_vitest(m,v,p)
+
+    def test_ordinary_presence_does_not_require_undefined_transport(self):
+        m=model('required');v=vectors(case({'input.flag':True}))
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/'binding.json'
+            p.write_text(json.dumps({'schema':compiler.D,'process':'demo.process','driver':'./driver'}))
+            rendered=compiler.emit_vitest(m,v,p)
+            self.assertNotIn('decodeUndefinedInput',rendered)
+            self.assertNotIn('undefinedTransport',rendered)
+
+
 if __name__=='__main__':unittest.main()
