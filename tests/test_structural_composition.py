@@ -35,7 +35,51 @@ class StructuralSubsetTests(unittest.TestCase):
         self.assertIsNone(_type_subset(unknown,resolved))
         optional=parse('record<x:boolean>')
         optional['fields'][0]['presence']='optional'
-        self.assertIsNone(_type_subset(optional,resolved))
+        self.assertIs(_type_subset(optional,resolved),False)
+        self.assertIs(_type_subset(optional,optional),True)
+
+    def test_presence_compatible_record_fields_are_proved(self):
+        required=parse('record<name:string,flag[required]:boolean>')
+        optional=parse('record<name:string,flag[optional]:boolean>')
+        missing_only=parse('record<name:string,flag[absent]:boolean>')
+        undefined_only=parse('record<name:string,flag[undefined]:boolean>')
+        self.assertIs(_type_subset(required,optional),True)
+        self.assertIs(_type_subset(optional,required),False)
+        self.assertIs(_type_subset(missing_only,optional),True)
+        self.assertIs(_type_subset(optional,missing_only),False)
+        self.assertIs(_type_subset(undefined_only,undefined_only),True)
+        self.assertIs(_type_subset(undefined_only,optional),False)
+        self.assertIs(_type_subset(optional,undefined_only),False)
+
+    def test_closed_record_omitted_fields_respect_absent_presence(self):
+        source=parse('record<name:string>')
+        target_optional=parse('record<name:string,age[optional]:integer>')
+        target_absent=parse('record<name:string,age[absent]:integer>')
+        target_required=parse('record<name:string,age:integer>')
+        target_undefined=parse('record<name:string,age[undefined]:integer>')
+        source_absent=parse('record<name:string,age[absent]:integer>')
+        self.assertIs(_type_subset(source,target_optional),True)
+        self.assertIs(_type_subset(source,target_absent),True)
+        self.assertIs(_type_subset(source,target_required),False)
+        self.assertIs(_type_subset(source,target_undefined),False)
+        self.assertIs(_type_subset(source_absent,source),True)
+
+    def test_nested_record_presence_and_value_domain_must_both_include(self):
+        narrow=parse('record<owner:record<id:string,level[optional]:integer[0..2]>>')
+        broad=parse('record<owner:record<id:string,level[optional]:integer[0..5]>>')
+        strict=parse('record<owner:record<id:string,level:integer[0..5]>>')
+        self.assertIs(_type_subset(narrow,broad),True)
+        self.assertIs(_type_subset(broad,narrow),False)
+        self.assertIs(_type_subset(narrow,strict),False)
+        unknown=parse('record<owner:record<id:string,level[optional]:string<safe-signed-integer>>>')
+        # Any string is not proved to be a safe signed integer string.
+        self.assertIs(_type_subset(
+            parse('record<owner:record<id:string,level[optional]:string>>'),unknown),False)
+
+    def test_closed_records_are_order_independent(self):
+        a=parse('record<x[optional]:boolean,y[absent]:integer>')
+        b=parse('record<y[absent]:integer,x[optional]:boolean>')
+        self.assertIs(_type_subset(a,b),True)
 
     def test_union_members_can_jointly_cover_finite_source(self):
         self.assertIs(_type_subset(parse('integer[0..2]'),
