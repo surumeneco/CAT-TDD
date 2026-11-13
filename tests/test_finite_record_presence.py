@@ -59,6 +59,9 @@ class FiniteRecordPresenceTests(unittest.TestCase):
                 '| state.ready | boolean |',
                 '| state.ready | record<active:boolean,note[optional]:boolean> |')
             p.write_text(process_text,encoding='utf-8')
+            t.write_text(t.read_text(encoding='utf-8').replace(
+                'state.ready = true; output.accepted = true',
+                'output.accepted = true'),encoding='utf-8')
             model=load(p,pi,t)
             self.assertEqual(model['status'],'confirmed')
             self.assertEqual(model['coverage_requirement'],'closed')
