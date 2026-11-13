@@ -1507,6 +1507,7 @@ def current_vectors(model, vectors, queue, model_bytes, vector_bytes):
 def format_domain(d, language='en'):
     t=d['type']
     if t=='reference':return ('型参照<' if language=='ja' else 'ref<')+d['name']+'>'
+    if t=='null':return '明示null' if language=='ja' else 'null'
     names={'ja':{'boolean':'真偽','integer':'整数','string':'文字列','set':'集合','sequence':'列','enum':'列挙'},
            'en':{'boolean':'boolean','integer':'integer','string':'string','set':'set','sequence':'sequence','enum':'enum'}}[language]
     if t=='boolean':return names['boolean']
