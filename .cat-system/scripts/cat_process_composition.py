@@ -274,15 +274,26 @@ def compose(model_paths,binding_path=None):
     # Each validated link discharges both the sender's outgoing declaration
     # and the receiver's incoming declaration; neither proves external effects.
     bound_pairs=set()
+    pending_pairs=set()
     for x in proven:
-        if x['status']!='structurally-matched':
-            continue
-        bound_pairs.add((x['source_process'],x['source_pi'],x['target_process'],'send'))
-        bound_pairs.add((x['target_process'],x['target_pi'],x['source_process'],'receive'))
+        pairs=((x['source_process'],x['source_pi'],x['target_process'],'send'),
+               (x['target_process'],x['target_pi'],x['source_process'],'receive'))
+        if x['status']=='structurally-matched':
+            bound_pairs.update(pairs)
+        else:
+            pending_pairs.update(pairs)
+    peer_edge_pairs={(x['source_process'],x['target_process'],x['direction'])
+                     for x in edges}
     for edge in edges:
         key=edge['source_process'],edge['source_pi'],edge['target_process'],edge['direction']
+        reverse='receive' if edge['direction']=='send' else 'send'
+        reciprocal=(edge['target_process'],edge['source_process'],reverse)
         if edge['target_process'] not in models:
             unresolved.append({**edge,'reason':'peer outside assembled Process set'})
+        elif reciprocal not in peer_edge_pairs:
+            unresolved.append({**edge,'reason':'counterpart PI lacks reciprocal boundary'})
+        elif key in pending_pairs:
+            unresolved.append({**edge,'reason':'PI binding exists but structural proof is inconclusive'})
         elif key not in bound_pairs:
             unresolved.append({**edge,'reason':'PI connection/effect lacks explicit binding'})
     unproved_local=[]
