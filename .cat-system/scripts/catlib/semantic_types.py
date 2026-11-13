@@ -53,10 +53,10 @@ def _enum_scalar(token):
 def parse(text):
     if not isinstance(text,str) or not text.strip():raise DomainError('empty domain')
     text=text.strip().strip(chr(96))
-    aliases={'文字列':'string','整数':'integer','真偽':'boolean','バイト列':'bytes',
+    aliases={'文字列':'string','整数':'integer','真偽':'boolean','バイト列':'bytes','明示null':'null',
              '実数':'real','安全符号付き整数':'string<safe-signed-integer>'}
     text=aliases.get(text,text)
-    if text in ('string','integer','boolean','bytes','real'):return {'type':text}
+    if text in ('string','integer','boolean','bytes','real','null'):return {'type':text}
     if text=='string<safe-signed-integer>':return {'type':'string','format':'safe-signed-integer'}
     if (text.startswith('enum{') or text.startswith('列挙{')) and text.endswith('}'):
         opening=text.index('{')
@@ -126,7 +126,7 @@ def _keys(d,required,optional=frozenset()):
 def validate(d):
     if not isinstance(d,dict):raise DomainError('domain object required')
     t=d.get('type')
-    if t in ('boolean','bytes'):_keys(d,{'type'})
+    if t in ('boolean','bytes','null'):_keys(d,{'type'})
     elif t in ('integer','real'):
         _keys(d,{'type'},{'min','max'})
         for key in ('min','max'):
@@ -219,6 +219,7 @@ def contains(d,value):
         if not d.get('resolved'):
             raise DomainError('unresolved named type reference: '+d['name'])
         return contains(d['of'],value)
+    if t=='null':return value is None
     if t=='nullable':return value is None or contains(d['of'],value)
     if t=='union':
         unknown=None
@@ -278,6 +279,7 @@ def finite_values(domain,max_values=65536):
     t=domain['type']
     if t=='reference':
         return finite_values(domain['of'],max_values) if domain.get('resolved') else None
+    if t=='null':return [None]
     if t=='boolean':return [False,True] if max_values>=2 else None
     if t=='enum':
         return list(domain['values']) if len(domain['values'])<=max_values else None
@@ -286,8 +288,14 @@ def finite_values(domain,max_values=65536):
         if low is None or high is None or high-low+1>max_values:return None
         return list(range(low,high+1))
     if t=='nullable':
-        values=finite_values(domain['of'],max_values-1) if max_values>1 else None
-        return [None,*values] if values is not None else None
+        values=finite_values(domain['of'],max_values)
+        if values is None:return None
+        result=[None]
+        for value in values:
+            if not any(same(value,item) for item in result):
+                result.append(value)
+                if len(result)>max_values:return None
+        return result
     if t=='union':
         values=[]
         for v in domain['variants']:
