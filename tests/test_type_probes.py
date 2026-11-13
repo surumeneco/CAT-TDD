@@ -63,4 +63,23 @@ class TypeProbeTests(unittest.TestCase):
         invalid=next(x for x in d['fields'][0]['cases'] if x['kind']=='invalid-octet')
         self.assertFalse(invalid['type_accepts'])
 
+
+# Probeability is not a normative Conformance or implementation claim.
+class NominalResolvedDomainTests(unittest.TestCase):
+    def test_resolved_reference_and_null_are_probeable(self):
+        domains=[
+            {'type':'reference','name':'MaybeInt','resolved':True,
+             'of':{'type':'nullable','of':{'type':'integer','min':1,'max':1}}},
+            {'type':'null'},
+            {'type':'union','variants':[{'type':'null'},{'type':'boolean'}]},
+        ]
+        for domain in domains:
+            with self.subTest(domain=domain):
+                model={'process':'example','fields':[{'id':'in.a','role':'input',
+                       'presence':'required','domain':domain}]}
+                result=probes.diagnostics(model,json.dumps(model).encode())
+                self.assertEqual(result['unresolved_fields'],[])
+                self.assertTrue(next(x for x in result['fields'][0]['cases']
+                         if x['kind']=='representative-value')['type_accepts'])
+
 if __name__=='__main__':unittest.main()
