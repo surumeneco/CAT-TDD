@@ -76,6 +76,28 @@ class EffectTotalityTests(unittest.TestCase):
             self.assertEqual(result['status'],'blocked',result)
             self.assertIn('effect_checks',result['mismatches'])
 
+    def test_implementation_obligations_preserve_effect_gaps(self):
+        from cat_implementation_obligations import generate
+        with tempfile.TemporaryDirectory() as td:
+            p,pi,tce=self.fixture(Path(td))
+            obligations=generate(p,pi,[tce])
+            self.assertEqual(obligations['model_status'],'draft')
+            self.assertTrue(obligations['unresolved_effect_ids'])
+            self.assertEqual(obligations['unresolved_rule_ids'],[])
+
+    def test_markdown_model_cannot_hide_unproved_effect_totality(self):
+        from cat_compile_v2 import render_model_markdown
+        from cat_model_conformance import validate
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=self.fixture(root)
+            model=load(p,pi,tce,allow_partial=True)
+            path=root/'Model.md'
+            path.write_text(render_model_markdown(model),encoding='utf-8')
+            result=validate(p,pi,tce,path)
+            self.assertEqual(result['status'],'blocked')
+            self.assertTrue(any('effect_totality' in x for x in result['mismatches']))
+
     def test_output_from_nonrequired_input_needs_presence_proof(self):
         with tempfile.TemporaryDirectory() as td:
             p,pi,tce=self.fixture(Path(td),effect='input.score')
