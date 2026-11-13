@@ -486,6 +486,9 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                         if 'source_guard_coverage' not in mismatches:
                             mismatches.append('source_guard_coverage')
                         break
+        if (not source_guard['output_presence_proved']
+                and actual.get('presence_unproven')==[]):
+            mismatches.append('source_output_presence')
         guard_proved=(bool(source_guard['triggers'])
                       and all(c['result']=='proved' and not c['unreachable_rules']
                               for c in source_guard['triggers'].values())

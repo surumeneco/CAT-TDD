@@ -885,21 +885,25 @@ def _provided_output_operation(fields,operations,overrides,trigger):
 
 
 def _unproved_output_presence(fields,operations,overrides,rules,triggers):
+    """Audit required output emission independently of nonrequired fields.
+
+    No provide operation is needed for the legacy direct TCE output frame,
+    but a nonrequired field still needs its explicit operation Presence.
+    """
     special=_nonrequired_output_ids(fields,overrides)
-    if not special:
-        return set()
+    outputs=[f for f in fields.values() if f['role']=='output']
     errors=set()
     for trigger in triggers:
         operation=_provided_output_operation(fields,operations,overrides,trigger)
         if operation is None:
             errors.update(special)
-            continue
         for rule in (r for r in rules if r['trigger']==trigger):
             for outcome in rule['allowed']:
                 emitted={w['target'] for w in outcome['write']}
-                for field in (f for f in fields.values() if f['role']=='output'):
+                for field in outputs:
                     name=field['id']
-                    presence=_presence_for_field(field,operation,overrides)
+                    presence=(_presence_for_field(field,operation,overrides)
+                              if operation is not None else field.get('presence','required'))
                     if (presence=='undefined'
                             or (presence=='required' and name not in emitted)
                             or (presence=='absent' and name in emitted)):
