@@ -1585,21 +1585,41 @@ def validate_queue(queue, model, vectors, model_bytes, vector_bytes):
     require(queue['model_sha256'] == hashlib.sha256(model_bytes).hexdigest(), 'Queue is stale: TestModel changed')
     require(queue['vectors_sha256'] == hashlib.sha256(vector_bytes).hexdigest(), 'Queue is stale: vectors changed')
     require(isinstance(queue['items'], list), 'Queue items must be array')
-    vector_ids = {x['id'] for x in vectors.get('cases', [])}
-    model_rules = {x['id'] for x in model.get('rules', [])}
+    # Re-derive source TCE identity from every concrete vector, including
+    # pending/done items. The SHA of the vector file authenticates the vector
+    # set, but must not be used to trust the Queue's mutable references.
+    expected_cases = expand_cases(model, vectors)
+    expected_by_id = {case['id']:case['source_tce'] for case in expected_cases}
+    require(len(queue['items']) == len(expected_cases),
+            'Queue vectors do not match complete test selection')
+    seen_vectors = set()
     seen = set(); current = []
     last_order = 0
     for item in queue['items']:
         check_keys(item, ['id','model_ref','vector_ref','order','status','evidence_ref'], where='Queue item')
         ident(item['id'], 'Queue item ID')
         require(item['id'] not in seen, 'duplicate Queue item ID'); seen.add(item['id'])
-        require(item['vector_ref'] in vector_ids, 'Queue item references unknown vector')
-        require(item['model_ref'] in model_rules, 'Queue item references unknown TestModel rule')
-        require(isinstance(item['order'], int) and item['order'] > last_order, 'Queue order must be strictly increasing')
+        require(item['vector_ref'] in expected_by_id, 'Queue item references unknown vector')
+        require(item['vector_ref'] not in seen_vectors,
+                'Queue vectors do not match: duplicate vector_ref')
+        seen_vectors.add(item['vector_ref'])
+        require(item['model_ref'] == expected_by_id[item['vector_ref']],
+                'Queue model_ref does not match vector-derived TestModel rule')
+        require(item['id'] == item['vector_ref'],
+                'Queue item ID must equal its vector_ref')
+        require(type(item['order']) is int and item['order'] > last_order,
+                'Queue order must be strictly increasing integers')
         last_order = item['order']
         require(item['status'] in ('pending','current','done','blocked'), 'Queue status invalid')
         require(item['evidence_ref'] is None or isinstance(item['evidence_ref'], str), 'Queue evidence_ref invalid')
         if item['status'] == 'current': current.append(item)
+    require(seen_vectors == set(expected_by_id),
+            'Queue vectors do not match complete test selection')
+    require([item['vector_ref'] for item in queue['items']] ==
+            [case['id'] for case in expected_cases] and
+            [item['order'] for item in queue['items']] ==
+            list(range(1, len(expected_cases)+1)),
+            'Queue order or vector sequence differs from deterministic selection')
     require(len(current) <= 1, 'Queue may contain at most one current item')
     return current[0] if current else None
 
