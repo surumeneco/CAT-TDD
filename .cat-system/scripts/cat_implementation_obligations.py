@@ -33,6 +33,9 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
     pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
     pi_docs=[read_artifact(path, 'pi', False) for path in pi_paths]
     obligations = []
+    # Alternative frames are source-to-model correspondence metadata.
+    # They are NOT independent runtime reachability obligations.
+    model_outcome_frames = []
 
     for pif,pi in pi_docs:
         operations = pi.get('operations', [])
@@ -72,13 +75,19 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
             source + '#' + rule['id'],
             'generated-test',
         ))
+        obligations.append(item(
+            'invariant.' + rule['id'] + '.allowed-set',
+            'invariant',
+            source + '#' + rule['id'],
+            'generated-test-allowed-set',
+        ))
         for n, _ in enumerate(rule['allowed'], 1):
-            obligations.append(item(
-                'invariant.' + rule['id'] + '.' + str(n),
-                'invariant',
-                source + '#' + rule['id'] + ':outcome:' + str(n),
-                'generated-test-frame',
-            ))
+            model_outcome_frames.append({
+                'rule_id': rule['id'],
+                'outcome': n,
+                'source_ref': source + '#' + rule['id'] + ':outcome:' + str(n),
+                'semantic_role': 'source-to-model-frame-correspondence',
+            })
 
     for pif,pi in pi_docs:
         boundary=pi.get('boundary')
@@ -148,6 +157,7 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
         # Script-owned, source-digest-bound structural proofs. Observed runner
         # assertions are separate evidence and cannot self-promote free text.
         'intrinsic_rule_proofs': model.get('intrinsic_rule_proofs',[]),
+        'model_outcome_frames': model_outcome_frames,
         'items': obligations,
     }
 
@@ -194,17 +204,33 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
                 ob.update(status='inconclusive',reason=detail)
                 ob.pop('evidence',None)
                 limitation='fixture/runner evidence cannot discharge free-text semantics without a source-bound proof'
-        elif method in ('generated-test','generated-test-frame'):
-            rule=source.split('#',1)[1].split(':outcome:',1)[0] if '#' in source else ''
+        elif method in ('generated-test','generated-test-allowed-set'):
+            rule=source.split('#',1)[1] if '#' in source else ''
             evidence=done_by_rule.get(rule,[])
-            if evidence:
-                ob.update(status='passed',evidence=';'.join(sorted(set(evidence))))
+            if evidence and (method=='generated-test' or model_pass):
+                proof=';'.join(sorted(set(evidence)))
+                if method=='generated-test-allowed-set':
+                    proof+=';'+(model_evidence or 'model-conformance')
+                ob.update(status='passed',evidence=proof)
                 ob.pop('reason',None)
-                limitation='finite deterministic selected-vector evidence; not a general proof over all executions'
+                limitation=('observed output was a member of the declared allowed set for a selected vector; '
+                            'neither every alternative being reached nor all executions is proved'
+                            if method=='generated-test-allowed-set' else
+                            'finite deterministic selected-vector evidence; not a general proof over all executions')
             else:
-                ob.update(status='inconclusive',reason='no completed Queue evidence for referenced TestModel rule')
+                detail=('independent source-to-model conformance and a verified selected-vector Green required'
+                        if method=='generated-test-allowed-set' else
+                        'no completed Queue evidence for referenced TestModel rule')
+                ob.update(status='inconclusive',reason=detail)
                 ob.pop('evidence',None)
-                limitation='behavior remains unverified for the current implementation state'
+                limitation='absence of an outcome observation is not a proof of impossibility or a reachability requirement'
+        elif method=='generated-test-frame':
+            # Historical v1 skeletons must not self-upgrade each alternative
+            # to a separate observed/reachable outcome on rule-level Green.
+            ob.update(status='inconclusive',
+                      reason='legacy per-outcome invariant cannot be discharged by rule-level Green')
+            ob.pop('evidence',None)
+            limitation='alternative frame source mapping belongs to Model Conformance; occurrence was not established'
         elif method.startswith('technology-inspector:'):
             # A global inspector success is not proof that this particular
             # interface/capability was inspected. Require explicit coverage.
