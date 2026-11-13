@@ -17,6 +17,7 @@ from pathlib import Path
 from cat_compile_v2 import Blocked, format_expr, read_artifact, _effect_totality_checks
 from catlib import semantic_rules
 from catlib import semantic_types
+from catlib import independent_coverage
 from catlib import semantic_named_types as named_types
 
 
@@ -190,6 +191,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     effect_checks=_effect_totality_checks(effect_rules,effect_fields,effect_definitions)
     unverified_effect_ids=sorted(ident for ident,check in effect_checks.items()
                                  if check['result']!='proved')
+    source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
     intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
@@ -200,6 +202,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     return {
         'process':p['process'],
         'process_closed_world':p['closed_world'],
+        'source_guard_audit':source_guard_audit,
         'sources': {
             fm['id']: (fm['kind'], hashlib.sha256(Path(path).read_bytes()).hexdigest())
             for path, fm in files
@@ -459,6 +462,22 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
         if not same:
             mismatches.append(key)
     if Path(model).suffix.lower()=='.json':
+        # Independently recompute Source Guard partitions, not Compiler receipts.
+        source_guard=expected['source_guard_audit']
+        actual_guards=actual.get('coverage_checks')
+        if (not isinstance(actual_guards,dict)
+                or set(actual_guards)!=set(source_guard['triggers'])
+                or any(not isinstance(actual_guards.get(k),dict)
+                       or actual_guards[k].get('result')!=v['result']
+                       for k,v in source_guard['triggers'].items())):
+            mismatches.append('source_guard_coverage')
+        guard_proved=(bool(source_guard['triggers'])
+                      and all(c['result']=='proved' and not c['unreachable_rules']
+                              for c in source_guard['triggers'].values())
+                      and source_guard['output_presence_proved'])
+        if actual.get('coverage_requirement')=='closed' and not guard_proved:
+            if 'source_guard_coverage' not in mismatches:
+                mismatches.append('source_guard_coverage')
         if actual.get('status') not in ('draft','confirmed'):
             mismatches.append('model_status_invalid')
         # Claims of complete closure must be coherent with both the source
@@ -476,6 +495,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
             mismatches.append('closed_world_claim_unjustified')
         if actual.get('status')=='confirmed' and (
                 not expected['source_all_confirmed']
+                or not guard_proved
                 or not expected['process_closed_world']
                 or expected['unverified_rule_ids']
                 or expected['unverified_effect_ids']
