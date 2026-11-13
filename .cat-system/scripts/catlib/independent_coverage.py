@@ -36,6 +36,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                           if ov['field'] in outputs and ov['presence']!='required')
     result={}
     output_ok=True
+    output_unproved=set()
     for trigger in process['triggers']:
         ident=trigger['id']
         applicable=[r for r in rules if r['trigger']==ident]
@@ -113,6 +114,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                 or any(info['owner']!=provider['source_pi'] for info in outputs.values())
                 or any(ov['operation']!=provider['id'] for ov in overrides if ov['field'] in outputs)):
                 output_ok=False
+                output_unproved.update(output_special)
             for rule in applicable:
                 for outcome in rule['allowed']:
                     emitted={x['target'] for x in outcome['write']}
@@ -124,4 +126,6 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                         if (presence=='undefined' or (presence=='required' and field not in emitted)
                                 or (presence=='absent' and field in emitted)):
                             output_ok=False
-    return {'triggers':result,'output_presence_proved':output_ok}
+                            output_unproved.add(field)
+    return {'triggers':result,'output_presence_proved':output_ok,
+            'unproved_output_fields':sorted(output_unproved)}
