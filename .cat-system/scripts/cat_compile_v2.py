@@ -797,7 +797,8 @@ def _nonrequired_output_ids(fields,overrides):
 def _provided_output_operation(fields,operations,overrides,trigger):
     """A single source-owned provider is required for optional output proof."""
     special=_nonrequired_output_ids(fields,overrides)
-    if not special:
+    declared=any(fields[item['field']]['role']=='output' for item in overrides)
+    if not special and not declared:
         return None
     candidates=[op for op in operations if op['direction']=='provide'
                 and (op.get('trigger') is None or op['trigger']==trigger)]
