@@ -16,6 +16,7 @@ from pathlib import Path
 
 from cat_compile_v2 import Blocked, format_expr, read_artifact
 from catlib import semantic_rules
+from catlib import semantic_types
 from catlib import semantic_named_types as named_types
 
 
@@ -434,7 +435,13 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids')
     for key in checks:
-        if actual.get(key) != expected.get(key):
+        # Python structural == conflates bool with int (True == 1). Domains
+        # and named type definitions contain typed literal values and must
+        # retain scalar identity throughout their nested inventory.
+        same=(semantic_types.same(actual.get(key),expected.get(key))
+              if key in ('domains','named_type_definitions')
+              else actual.get(key)==expected.get(key))
+        if not same:
             mismatches.append(key)
     if Path(model).suffix.lower()=='.json':
         if actual.get('status') not in ('draft','confirmed'):
