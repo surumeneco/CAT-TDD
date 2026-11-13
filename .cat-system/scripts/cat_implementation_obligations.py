@@ -145,6 +145,9 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
         'model_semantic_authority': model.get('semantic_authority'),
         'model_status': model.get('status'),
         'unresolved_rule_ids': model.get('unverified_rule_ids',[]),
+        # Script-owned, source-digest-bound structural proofs. Observed runner
+        # assertions are separate evidence and cannot self-promote free text.
+        'intrinsic_rule_proofs': model.get('intrinsic_rule_proofs',[]),
         'items': obligations,
     }
 
@@ -168,17 +171,29 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
         evidence=[]
         limitation=''
         if method=='normative-rule-verifier':
-            rid=source.split('#',1)[1] if '#' in source else ''
-            record=next((r for r in (rule_verification or {}).get('results',[])
-                         if r.get('rule_id')==rid and r.get('source_artifact')==source.split('#',1)[0]),None)
-            if record and record.get('status')=='passed' and rule_verification.get('status')=='passed':
-                ob.update(status='passed',evidence='rule-verifier:'+rid)
+            source_artifact,rid=(source.split('#',1)+[''])[:2]
+            source_hash=result.get('source_sha256',{}).get(source_artifact)
+            proofs=[p for p in result.get('intrinsic_rule_proofs',[])
+                    if p.get('rule_id')==rid
+                    and p.get('source_artifact')==source_artifact
+                    and p.get('source_sha256')==source_hash
+                    and p.get('proof_method')=='cat:intrinsic-model/v1'
+                    and p.get('verification_contract')=='cat:intrinsic-model/v1'
+                    and p.get('scope')=='assembled-process'
+                    and p.get('status')=='passed']
+            if model_pass and source_hash and len(proofs)==1:
+                ob.update(status='passed',evidence='cat:intrinsic-model/v1:'+rid)
                 ob.pop('reason',None)
-                limitation='only machine-bound checked predicates; interpretation of unrelated prose is not proved'
+                limitation='source-bound model predicate only; no external implementation effect is proved'
             else:
-                ob.update(status='inconclusive',reason='missing or non-passing source-bound rule verification')
+                observed=next((r for r in (rule_verification or {}).get('results',[])
+                               if r.get('rule_id')==rid and r.get('source_artifact')==source_artifact),None)
+                detail=('runner observation passed but normative predicate equivalence is unproved'
+                        if observed and observed.get('status')=='passed'
+                        else 'missing or non-passing source-bound rule verification')
+                ob.update(status='inconclusive',reason=detail)
                 ob.pop('evidence',None)
-                limitation='normative rule cannot be discharged by TCE test selection or inventory alone'
+                limitation='fixture/runner evidence cannot discharge free-text semantics without a source-bound proof'
         elif method in ('generated-test','generated-test-frame'):
             rule=source.split('#',1)[1].split(':outcome:',1)[0] if '#' in source else ''
             evidence=done_by_rule.get(rule,[])
