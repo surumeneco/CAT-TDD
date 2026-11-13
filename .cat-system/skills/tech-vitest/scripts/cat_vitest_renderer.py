@@ -26,7 +26,7 @@ def render_vitest(model, cases, binding):
         "  if (hasDuplicate(observed) || hasDuplicate(expected)) return false;",
         "  const used = new Set<number>();",
         "  for (const item of observed) {",
-        "    const i = expected.findIndex((candidate,index) => !used.has(index) && isDeepStrictEqual(item, expected[index]));",
+        "    const i = expected.findIndex((candidate,index) => !used.has(index) && isDeepStrictEqual(item, candidate));",
         "    if (i < 0) return false;",
         "    used.add(i);",
         "  }",
