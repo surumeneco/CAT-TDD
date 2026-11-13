@@ -98,9 +98,11 @@ def _type_subset(source,target):
         try:return all(semantic_types.contains(target,value) for value in values)
         except semantic_types.DomainError:return None
     if b=='nullable':
+        if a=='null':return True
         return _type_subset(source['of'],target['of']) if a=='nullable' else _type_subset(source,target['of'])
     if a=='nullable':
-        return False  # Null cannot inhabit any non-nullable, non-union target.
+        if b=='null':return _type_subset(source['of'],target)
+        return False  # Null cannot inhabit any other non-nullable, non-union target.
     if a=='enum':
         if b=='enum':
             return all(any(semantic_types.same(v,x) for x in target['values'])

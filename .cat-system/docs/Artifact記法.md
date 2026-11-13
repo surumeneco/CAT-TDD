@@ -373,6 +373,8 @@ record<x[absent]:boolean,y[undefined]:boolean>
 
 `型参照<UUID>` / `ref<UUID>` はRecord型への決め打ちではなく、DomainSpecの `## 型定義 / ## Types` 内に同名で宣言されたDomainを引用する**汎用型参照**である。型本体を創作せず、同名の実定義がないときは `resolved: false` を保持して規範完了に進めない。
 
+`null` / `明示null` は値域が `{null}` の**単一null Domain**である。`nullable<T>` はnullとTの値域を結合するが、`null`は他の通常値を一切許可しない。いずれもフィールドPresenceの`absent`（キー欠落）や`undefined`（未定義）と混同しない。`型参照<明示null>`はこのDomainを自動確定せず、正式なDomainSpecの`## Types`で同名を`null`として明示宣言した場合のみ解決する。有限列挙は`null`に対してちょうど1値であり、`nullable<null>`にも二重のnullを発生させない。
+
 ~~~md
 ## Types
 | ID | Domain |
