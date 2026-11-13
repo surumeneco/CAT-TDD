@@ -474,10 +474,22 @@ def conformance_evidence_status(wpath, w, kind):
             return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance evidence identity mismatch'}
         if e.get('context_sha256') != conformance_context_sha(w):
             return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance context changed'}
-        for item in e.get('input_sha256', {}).values():
-            p = Path(item['path'])
-            if not p.is_file() or sha(p.read_bytes()) != item['sha256']:
-                return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance input changed'}
+        # A recorded subset is not sufficient: deleting the TCE, verifier
+        # runner or fixture entries must not preserve an old 'passed' verdict.
+        # Reconstruct the entire dependency set from the current Work and
+        # require both its members and every byte digest to match exactly.
+        stored_inputs=e.get('input_sha256')
+        if not isinstance(stored_inputs,dict):
+            return {'status': 'stale', 'evidence': str(path),
+                    'reason': 'conformance input inventory missing'}
+        # Legacy reviewer-only Work receipts can be materialized without a
+        # Compilation section; they have no discoverable file dependencies.
+        # Once a Compilation is declared, require the *complete* live set.
+        current_inputs=(conformance_input_hashes(wpath,w,kind)
+                        if w.get('compilation') else {})
+        if stored_inputs != current_inputs:
+            return {'status': 'stale', 'evidence': str(path),
+                    'reason': 'conformance input inventory changed'}
         if kind == 'implementation-conformance':
             if e.get('repo_state_sha256') != sha(json_bytes(_repo_state(wpath, w))):
                 return {'status': 'stale', 'evidence': str(path), 'reason': 'implementation repository state changed'}

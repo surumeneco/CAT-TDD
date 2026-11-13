@@ -202,5 +202,75 @@ class ConformanceRuntimeTest(unittest.TestCase):
                     flow.conformance_work(path, work, 'implementation-conformance')
 
 
+    def test_conformance_receipt_rejects_missing_extra_and_rebound_input_inventory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            work=base_work()
+            for name in ('Process.md','PI.md','TCE.md','Model.json'):
+                (root/name).write_text('source:'+name,encoding='utf-8')
+            work['compilation']={
+                'schema':'cat-compile/v2','process':'Process.md','pi':'PI.md',
+                'tce':'TCE.md','model':'Model.json','allow_draft':False}
+            path=self.write_work(root,work)
+            outcome=flow.record_conformance_evidence(path,work,'model-conformance',
+                                                       {'status':'passed','reason':'synthetic fixture'})
+            receipt=Path(outcome['evidence'])
+            original=json.loads(receipt.read_text(encoding='utf-8'))
+            self.assertEqual(flow.conformance_evidence_status(path,work,'model-conformance')['status'],
+                             'passed')
+            self.assertIn('tce:1',original['input_sha256'])
+            missing=json.loads(json.dumps(original))
+            del missing['input_sha256']['tce:1']
+            receipt.write_bytes(flow.json_bytes(missing))
+            self.assertEqual(flow.conformance_evidence_status(path,work,'model-conformance')['status'],
+                             'stale')
+            unexpected=json.loads(json.dumps(original))
+            unexpected['input_sha256']['invented']={'path':str(root/'Model.json'),
+                                                     'sha256':flow.sha((root/'Model.json').read_bytes())}
+            receipt.write_bytes(flow.json_bytes(unexpected))
+            self.assertEqual(flow.conformance_evidence_status(path,work,'model-conformance')['status'],
+                             'stale')
+            no_inventory=dict(original)
+            del no_inventory['input_sha256']
+            receipt.write_bytes(flow.json_bytes(no_inventory))
+            self.assertEqual(flow.conformance_evidence_status(path,work,'model-conformance')['status'],
+                             'stale')
+            receipt.write_bytes(flow.json_bytes(original))
+            (root/'TCE.md').write_text('changed source',encoding='utf-8')
+            self.assertEqual(flow.conformance_evidence_status(path,work,'model-conformance')['status'],
+                             'stale')
+
+    def test_external_verifier_dependencies_cannot_be_deleted_from_fresh_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            work=base_work()
+            for name in ('Process.md','PI.md','TCE.md'):
+                (root/name).write_text('source:'+name,encoding='utf-8')
+            (root/'fixture.json').write_text('{"ok":true}',encoding='utf-8')
+            (root/'runner.py').write_text('print("ok")',encoding='utf-8')
+            (root/'Registry.json').write_text(json.dumps({'entries':[
+                {'fixture':{'path':'fixture.json','sha256':'0'*64},
+                 'runner':{'path':'runner.py','sha256':'0'*64}}]}),encoding='utf-8')
+            work['compilation']={
+                'schema':'cat-compile/v2','process':'Process.md','pi':'PI.md','tce':'TCE.md',
+                'verifier_registry':'Registry.json','allow_draft':False}
+            path=self.write_work(root,work)
+            outcome=flow.record_conformance_evidence(path,work,'process-closure',
+                                                       {'status':'passed','reason':'synthetic fixture'})
+            receipt=Path(outcome['evidence'])
+            original=json.loads(receipt.read_text(encoding='utf-8'))
+            self.assertEqual(flow.conformance_evidence_status(path,work,'process-closure')['status'],
+                             'passed')
+            removed=json.loads(json.dumps(original))
+            del removed['input_sha256']['verifier:1:runner']
+            receipt.write_bytes(flow.json_bytes(removed))
+            self.assertEqual(flow.conformance_evidence_status(path,work,'process-closure')['status'],
+                             'stale')
+            # Even if the omitted runner is edited, the old receipt must not pass.
+            (root/'runner.py').write_text('print("tampered")',encoding='utf-8')
+            self.assertEqual(flow.conformance_evidence_status(path,work,'process-closure')['status'],
+                             'stale')
+
+
 if __name__ == '__main__':
     unittest.main()
