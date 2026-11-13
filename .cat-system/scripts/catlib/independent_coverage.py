@@ -102,21 +102,26 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                        'uncovered_count':gaps,'overlap_count':overlaps,
                        'uncovered':uncovered_examples,'overlaps':overlap_examples,
                        'excluded_by_pi_constraints':bool(constraints)}
-        if output_special:
+        if outputs:
             providers=[op for op in operations if op['direction']=='provide'
                        and (op.get('trigger') is None or op['trigger']==ident)]
-            if (len(providers)!=1 or any(info['owner']!=providers[0]['source_pi'] for info in outputs.values())
-                or any(ov['operation']!=providers[0]['id'] for ov in overrides if ov['field'] in outputs)):
+            # Nonrequired output frames need an explicit, unique provider.
+            # Required fields must be emitted by each alternative regardless
+            # of whether a nonrequired field or a provide operation exists.
+            provider=providers[0] if len(providers)==1 else None
+            if output_special and (provider is None
+                or any(info['owner']!=provider['source_pi'] for info in outputs.values())
+                or any(ov['operation']!=provider['id'] for ov in overrides if ov['field'] in outputs)):
                 output_ok=False
-            else:
-                provider=providers[0]
-                for rule in applicable:
-                    for outcome in rule['allowed']:
-                        emitted={x['target'] for x in outcome['write']}
-                        for field,info in outputs.items():
-                            ps=[ov['presence'] for ov in overrides if ov['field']==field and ov['operation']==provider['id']]
-                            presence=ps[0] if ps else info['presence']
-                            if (presence=='undefined' or (presence=='required' and field not in emitted)
-                                    or (presence=='absent' and field in emitted)):
-                                output_ok=False
+            for rule in applicable:
+                for outcome in rule['allowed']:
+                    emitted={x['target'] for x in outcome['write']}
+                    for field,info in outputs.items():
+                        ps=([ov['presence'] for ov in overrides
+                             if ov['field']==field and ov['operation']==provider['id']]
+                            if provider is not None else [])
+                        presence=ps[0] if ps else info['presence']
+                        if (presence=='undefined' or (presence=='required' and field not in emitted)
+                                or (presence=='absent' and field in emitted)):
+                            output_ok=False
     return {'triggers':result,'output_presence_proved':output_ok}
