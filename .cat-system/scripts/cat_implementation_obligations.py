@@ -154,6 +154,8 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
         'model_semantic_authority': model.get('semantic_authority'),
         'model_status': model.get('status'),
         'unresolved_rule_ids': model.get('unverified_rule_ids',[]),
+        # A source-bound Model proof is not a runtime implementation effect.
+        'unresolved_effect_ids': model.get('unverified_effect_ids',[]),
         # Script-owned, source-digest-bound structural proofs. Observed runner
         # assertions are separate evidence and cannot self-promote free text.
         'intrinsic_rule_proofs': model.get('intrinsic_rule_proofs',[]),
