@@ -76,6 +76,11 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
         gaps=overlaps=0;visited=set();unknown=False
+        uncovered_examples=[];overlap_examples=[]
+        def snapshot(env):
+            return {name:({'$cat_presence':'missing'} if value is types.MISSING else
+                          {'$cat_presence':'undefined'} if value is types.UNDEFINED else value)
+                    for name,value in env.items()}
         for items in itertools.product(*dimensions):
             env=dict(zip(sorted(names),items))
             try:
@@ -83,12 +88,20 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                 hit=[r['id'] for r in applicable if eval_expr(r['when'],env,definitions)]
             except (Blocked,TypeError,ValueError,KeyError):
                 unknown=True;break
-            if len(hit)==0:gaps+=1
-            if len(hit)>1:overlaps+=1
+            if len(hit)==0:
+                gaps+=1
+                if len(uncovered_examples)<64:uncovered_examples.append(snapshot(env))
+            if len(hit)>1:
+                overlaps+=1
+                if len(overlap_examples)<16:
+                    overlap_examples.append({'state':snapshot(env),'rules':hit})
             visited.update(hit)
         unvisited=sorted({r['id'] for r in applicable}-visited)
         result[ident]={'result':'unproven' if unknown else 'conflict' if overlaps else 'uncovered' if gaps else 'proved',
-                       'unreachable_rules':unvisited,'uncovered_count':gaps,'overlap_count':overlaps}
+                       'guard_refs':sorted(names),'unreachable_rules':unvisited,
+                       'uncovered_count':gaps,'overlap_count':overlaps,
+                       'uncovered':uncovered_examples,'overlaps':overlap_examples,
+                       'excluded_by_pi_constraints':bool(constraints)}
         if output_special:
             providers=[op for op in operations if op['direction']=='provide'
                        and (op.get('trigger') is None or op['trigger']==ident)]
