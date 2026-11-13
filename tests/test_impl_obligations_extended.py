@@ -104,6 +104,49 @@ Closed world: true
    self.assertEqual(by['normative-rule.demo.common.one']['status'],'inconclusive')
    self.assertEqual(by['cross-process.boundary.demo.process.first.peer.first']['status'],'inconclusive')
    self.assertEqual(by['normative-rule.demo.domain.two']['status'],'inconclusive')
+ def test_non_deterministic_allowed_set_is_one_runtime_obligation_not_per_outcome_reachability(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);p,a,b,t,cr,ds=self.setup(root)
+   old='| demo.yes | submit | `input.ready` | 1 | `output.result = true` |'
+   new=old+'\\n| demo.yes | submit | `input.ready` | 2 | `output.result = false` |'
+   data=t.read_text(encoding='utf-8')
+   self.assertIn(old,data)
+   t.write_text(data.replace(old,new),encoding='utf-8')
+   doc=impl.generate(p,[a,b],[t])
+   ids={x['id'] for x in doc['items']}
+   self.assertIn('behavior.demo.yes',ids)
+   self.assertIn('invariant.demo.yes.allowed-set',ids)
+   self.assertNotIn('invariant.demo.yes.1',ids)
+   self.assertNotIn('invariant.demo.yes.2',ids)
+   frames=[x for x in doc['model_outcome_frames']
+           if x['rule_id']=='demo.yes']
+   self.assertEqual(len(frames),2)
+   self.assertEqual([x['source_ref'].split(':outcome:')[1] for x in frames],['1','2'])
+   # One Green for a selected input establishes only observed membership,
+   # not that both allowed alternatives ever happened.
+   observed=impl.aggregate(doc,
+      verified_green={'demo.yes':['queue:observed-a']},
+      model_conformance={'status':'passed','evidence':'model-source-proof'})
+   by={x['id']:x for x in observed['items']}
+   self.assertEqual(by['behavior.demo.yes']['status'],'passed')
+   self.assertEqual(by['invariant.demo.yes.allowed-set']['status'],'passed')
+   self.assertIn('allowed set',by['invariant.demo.yes.allowed-set']['limitation'])
+   self.assertNotIn('invariant.demo.yes.2',by)
+   self.assertTrue(all('status' not in frame and 'evidence' not in frame for frame in frames))
+   without_model=impl.aggregate(doc,
+      verified_green={'demo.yes':['queue:observed-a']})
+   by={x['id']:x for x in without_model['items']}
+   self.assertEqual(by['behavior.demo.yes']['status'],'passed')
+   self.assertEqual(by['invariant.demo.yes.allowed-set']['status'],'inconclusive')
+   unobserved=impl.aggregate(doc,model_conformance={'status':'passed'})
+   by={x['id']:x for x in unobserved['items']}
+   self.assertEqual(by['invariant.demo.yes.allowed-set']['status'],'inconclusive')
+   legacy={'schema':doc['schema'],'source_sha256':doc['source_sha256'],
+           'items':[impl.item('invariant.demo.yes.2','invariant',
+                   'demo.process.tce#demo.yes:outcome:2','generated-test-frame')]}
+   stale=impl.aggregate(legacy,verified_green={'demo.yes':['queue:observed-a']})
+   self.assertEqual(stale['items'][0]['status'],'inconclusive')
+
  def test_shared_domain_rule_requires_ancestor_scope_and_explicit_references(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);p,a,b,t,cr,ds=self.setup(root)
