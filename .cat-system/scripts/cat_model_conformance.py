@@ -186,6 +186,8 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                               for _,fm in files if fm['kind'] not in ('common-rule','domain-spec'))
                           and all(doc['status']=='confirmed' for doc in rule_docs))
     return {
+        'process':p['process'],
+        'process_closed_world':p['closed_world'],
         'sources': {
             fm['id']: (fm['kind'], hashlib.sha256(Path(path).read_bytes()).hexdigest())
             for path, fm in files
@@ -391,6 +393,7 @@ def json_model(path):
     operations = {item['id']: (item['direction'], item.get('trigger'))
                   for item in model.get('pi_operations', [])}
     return {
+        'process':model.get('process'),
         'sources': sources,
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
         'boundary': model.get('pi_boundary'),
@@ -408,6 +411,11 @@ def json_model(path):
         'unverified_rule_ids':model.get('unverified_rule_ids',[]),
         'status':model.get('status'),
         'coverage_requirement':model.get('coverage_requirement'),
+        'coverage_claim':model.get('coverage_claim'),
+        'coverage_checks':model.get('coverage_checks'),
+        'presence_unproven':model.get('presence_unproven'),
+        'unresolved_domains':model.get('unresolved_domains'),
+        'unresolved_interfaces':model.get('unresolved_interfaces'),
         'constraints': tuple(format_expr(expr, language=model.get('language', 'en'))
                              for expr in model.get('pi_constraints', [])),
         'definitions': definitions,
@@ -424,16 +432,36 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids')
+        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids')
     for key in checks:
         if actual.get(key) != expected.get(key):
             mismatches.append(key)
     if Path(model).suffix.lower()=='.json':
         if actual.get('status') not in ('draft','confirmed'):
             mismatches.append('model_status_invalid')
+        # Claims of complete closure must be coherent with both the source
+        # Process and the model's own finite proof records. This comparison
+        # does not replace the independent process-closure Gate.
+        checks_by_trigger=actual.get('coverage_checks')
+        complete_checks=(
+            isinstance(checks_by_trigger,dict)
+            and set(checks_by_trigger)==set(expected['triggers'])
+            and all(isinstance(v,dict) and v.get('result')=='proved'
+                    for v in checks_by_trigger.values()))
+        exact_claim=(actual.get('coverage_requirement') in ('closed','partial')
+                     and actual.get('coverage_claim')==actual.get('coverage_requirement'))
+        if actual.get('coverage_requirement')=='closed' and not expected['process_closed_world']:
+            mismatches.append('closed_world_claim_unjustified')
         if actual.get('status')=='confirmed' and (
-                not expected['source_all_confirmed'] or expected['unverified_rule_ids']
-                or actual.get('coverage_requirement')!='closed'):
+                not expected['source_all_confirmed']
+                or not expected['process_closed_world']
+                or expected['unverified_rule_ids']
+                or not exact_claim
+                or actual.get('coverage_requirement')!='closed'
+                or not complete_checks
+                or actual.get('presence_unproven')!=[]
+                or actual.get('unresolved_domains')!=[]
+                or actual.get('unresolved_interfaces')!=[]):
             mismatches.append('normative_status_unjustified')
     if Path(model).suffix.lower()!='.json' and expected.get('intrinsic_rule_proofs'):
         mismatches.append('intrinsic_rule_proofs: Markdown renderer omits source-bound proof evidence')
