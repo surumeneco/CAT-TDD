@@ -201,6 +201,10 @@ def evaluate(model_file,registry_file):
             state,reason='failed','one or more deterministic assertions failed'
         out.append({'rule_id':rid,'source_artifact':rule['source_artifact'],'subject':subject,
                     'verifier_id':e['verifier_id'],'status':state,'reason':reason,
+                    # Asserted fixture observations are not a semantic proof
+                    # of the normative Requirement (nor independent runtime fact).
+                    'normative_status':'inconclusive',
+                    'verification_scope':'fixture-assertions-only',
                     'fixture_sha256':fixture['sha256'],
                     'runner_sha256':e.get('runner',{}).get('sha256'),
                     'checks':checks})
@@ -213,6 +217,10 @@ def evaluate(model_file,registry_file):
     elif statuses and all(s=='passed' for s in statuses):status='passed'
     else:status='inconclusive'
     return {'schema':'cat-verifier-result/v1','status':status,
+            # The status above is only the fixture assertion verdict.
+            # No arbitrary runner/registry can prove source-text equivalence.
+            'normative_status':'inconclusive',
+            'verification_scope':'fixture-assertions-only',
             'model_sha256':digest(model_bytes),
             'registry_sha256':digest(registry_file.read_bytes()),
             'results':out}
