@@ -113,6 +113,15 @@ def _type_subset(source,target):
             return all(semantic_types.contains(target,v) for v in source['values'])
         except semantic_types.DomainError:
             return None
+    if b=='enum':
+        # A finite non-enum Domain may still fit a literal value set.
+        # Never infer containment from a representative sample.
+        try:
+            values=semantic_types.finite_values(source,max_values=4096)
+            return (all(semantic_types.contains(target,value) for value in values)
+                    if values is not None else None)
+        except semantic_types.DomainError:
+            return None
     if a==b and a in ('integer','real'):
         return ((target.get('min') is None or (source.get('min') is not None
                                                and source['min']>=target['min']))
