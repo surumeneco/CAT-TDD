@@ -55,4 +55,26 @@ class OperationPresenceTests(unittest.TestCase):
    with self.assertRaisesRegex(Blocked,'operation outside owning PI'):
     load(p,[a,b],[t],allow_partial=True)
 
+
+class OperationNominalDiagnosticsTests(unittest.TestCase):
+    def test_resolved_named_type_and_null_are_observable_without_fabricated_gate(self):
+        domains=(
+          {'type':'reference','name':'Approved','resolved':True,
+           'of':{'type':'enum','values':['A']}},
+          {'type':'null'},
+          {'type':'union','variants':[{'type':'null'},{'type':'boolean'}]},
+        )
+        for domain in domains:
+            with self.subTest(domain=domain):
+                m={'pi_operations':[{'id':'get','source_pi':'pi.one',
+                                     'direction':'provide'}],
+                   'fields':[{'id':'output.value','role':'output','source_pi':'pi.one',
+                              'presence':'required','domain':domain}],
+                   'operation_presence':[]}
+                r=presence.diagnostics(m,json.dumps(m).encode())
+                cases=r['probes'][0]['cases']
+                rep=next(x for x in cases if x['kind']=='representative-value')
+                self.assertTrue(rep['type_accepts'],rep)
+                self.assertEqual(r['conformance_status'],'not-run')
+
 if __name__=='__main__':unittest.main()
