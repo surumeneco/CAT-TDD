@@ -46,6 +46,32 @@ class RuleVerifierTests(unittest.TestCase):
             self.assertEqual(result['results'][0]['checks'][0]['status'],'passed')
             self.assertEqual(result['model_sha256'],sha(model.read_bytes()))
 
+    def test_runner_assertion_success_does_not_claim_normative_equivalence(self):
+        for subject in ('static','discord','dom'):
+            with self.subTest(subject=subject), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp)
+                model,registry=self.prepare(root,subject,True)
+                observed=verifier.evaluate(model,registry)
+                self.assertEqual(observed['status'],'passed')
+                self.assertEqual(observed['results'][0]['status'],'passed')
+                self.assertEqual(observed['normative_status'],'inconclusive')
+                self.assertEqual(observed['verification_scope'],'fixture-assertions-only')
+                self.assertEqual(observed['results'][0]['normative_status'],'inconclusive')
+                self.assertEqual(observed['results'][0]['verification_scope'],'fixture-assertions-only')
+
+    def test_failed_registered_assertion_cannot_by_itself_disprove_free_text_rule(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,'discord',True)
+            data=json.loads(registry.read_text(encoding='utf-8'))
+            data['entries'][0]['assertions'][0]['expected']=False
+            registry.write_text(json.dumps(data),encoding='utf-8')
+            result=verifier.evaluate(model,registry)
+            self.assertEqual(result['status'],'failed')
+            self.assertEqual(result['normative_status'],'inconclusive')
+            self.assertEqual(result['results'][0]['status'],'failed')
+            self.assertEqual(result['results'][0]['normative_status'],'inconclusive')
+
     def test_static_fixture_without_runner_is_not_execution_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             model,registry=self.prepare(Path(temp),'static')
