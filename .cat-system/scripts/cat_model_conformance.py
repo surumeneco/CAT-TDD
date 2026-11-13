@@ -486,8 +486,16 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                         if 'source_guard_coverage' not in mismatches:
                             mismatches.append('source_guard_coverage')
                         break
-        if (not source_guard['output_presence_proved']
-                and actual.get('presence_unproven')==[]):
+        # Exact identity of Source-obligated output fields matters. A nonempty
+        # invented/different pending ID is not proof that the required output
+        # was preserved in the Model's unproved Presence inventory.
+        pending=actual.get('presence_unproven')
+        required_pending=set(source_guard['unproved_output_fields'])
+        if (not isinstance(pending,list)
+                or any(not isinstance(x,str) or x not in expected['fields']
+                       for x in pending)
+                or len(pending)!=len(set(pending))
+                or not required_pending.issubset(set(pending))):
             mismatches.append('source_output_presence')
         guard_proved=(bool(source_guard['triggers'])
                       and all(c['result']=='proved' and not c['unreachable_rules']
