@@ -76,6 +76,10 @@ def _type_subset(source,target):
         return None
     if source==target:
         return True
+    if isinstance(source,dict) and source.get('type')=='reference':
+        return _type_subset(source['of'],target)
+    if isinstance(target,dict) and target.get('type')=='reference':
+        return _type_subset(source,target['of'])
     if isinstance(source,str):
         source={'type':source}
     if isinstance(target,str):
