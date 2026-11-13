@@ -89,7 +89,7 @@ if (accept(after,{"output.events":[{id:"C"},{id:"C"}]},alternatives,
            ["state.tags","state.flag"],["state.tags"],["output.events"])) process.exit(5);
 if (accept(after,{"output.other":true},alternatives,
            ["state.tags","state.flag"],["state.tags"],["output.events"])) process.exit(6);
-\'''
+'''
         with tempfile.TemporaryDirectory() as td:
             path=Path(td)/'set-contract.mts'
             path.write_text('import {isDeepStrictEqual} from "node:util";\n'+helpers+'\n'+
