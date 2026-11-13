@@ -224,6 +224,24 @@ def _link(binding,models):
             'status':'structurally-matched' if all(c['status']=='matched' for c in checks) else 'inconclusive',
             'external_effects_verified':False}
 
+def _local_claim_consistent(model):
+    """Check local closure receipts for internal contradictions, not Source conformance.
+
+    Full Process Closure and independent Source->Model Conformance must be
+    checked separately; this structural composition does not replace them.
+    """
+    checks=model.get('coverage_checks')
+    return (model.get('status')=='confirmed'
+            and model.get('coverage_requirement')=='closed'
+            and model.get('coverage_claim')=='closed'
+            and isinstance(checks,dict) and bool(checks)
+            and all(isinstance(v,dict) and v.get('result')=='proved'
+                    for v in checks.values())
+            and model.get('unverified_rule_ids')==[]
+            and model.get('unresolved_domains')==[]
+            and model.get('unresolved_interfaces',[])==[]
+            and model.get('presence_unproven')==[])
+
 def compose(model_paths,binding_path=None):
     if len(model_paths)<2:raise CompositionError('composition requires >=2 Processes')
     models={};hashes={}
@@ -269,7 +287,7 @@ def compose(model_paths,binding_path=None):
             unresolved.append({**edge,'reason':'PI connection/effect lacks explicit binding'})
     unproved_local=[]
     for p,model in models.items():
-        if model.get('status')!='confirmed' or model.get('coverage_requirement')!='closed' or model.get('unverified_rule_ids') or model.get('unresolved_domains') or model.get('presence_unproven'):
+        if not _local_claim_consistent(model):
             unproved_local.append(p)
     # This proves typed links only. External effects, ordering and interleaving
     # are never proved merely by matching source/target schemas.
