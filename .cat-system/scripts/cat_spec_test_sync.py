@@ -25,7 +25,7 @@ def source_paths(work_path, work):
     if cat_flow.infer_flow(work) != "spec-test-sync" or route["status"] != "ready":
         raise Blocked("confirmed spec-test-sync Work is not ready")
     config = work.get("compilation")
-    if not config or config.get("allow_draft") or config.get("common_rules"):
+    if not config or config.get("allow_draft"):
         raise Blocked("unsupported or unconfirmed compilation inputs")
     for kind in ("process-closure", "model-conformance"):
         gate = cat_flow.conformance_evidence_status(work_path, work, kind)
@@ -34,6 +34,8 @@ def source_paths(work_path, work):
     paths = {name: cat_flow.compilation_path(work_path, work, config, name, True)
              for name in ("process", "pi", "model", "vectors", "binding")}
     paths["domain_specs"] = cat_flow.compilation_paths(work_path, work, config, "domain_specs", "domain_spec", True)
+    paths["common_rules"] = cat_flow.compilation_paths(work_path, work, config, "common_rules", "common_rule", True)
+    paths["pis"] = cat_flow.compilation_pi_paths(work_path, work, config, True)
     tces = cat_flow.compilation_tce_paths(work_path, work, config, True)
     domain = (cat_flow.compilation_path(work_path, work, config, "domain_rule", True)
               if config.get("domain_rule") else None)
@@ -42,10 +44,16 @@ def source_paths(work_path, work):
 
 def render_suite(work_path, work, prefix):
     paths, tces, domain = source_paths(work_path, work)
-    model = compiler.load(paths["process"], paths["pi"], tces, domain, False,
+    model = compiler.load(paths["process"], paths.get("pis") or [paths["pi"]],
+                          tces, domain, False,
+                          common_rules=paths.get("common_rules", []),
                           domain_specs=paths.get("domain_specs", []))
-    if model.get("rule_obligations"):
-        raise Blocked("rule-bearing DomainSpec requires separate normative verification; type-only sources are supported")
+    obligations=model.get("rule_obligations", [])
+    proofs=model.get("intrinsic_rule_proofs", [])
+    if (model.get("unverified_rule_ids")
+            or len(proofs)!=len(obligations)
+            or {p["rule_id"] for p in proofs}!={o["id"] for o in obligations}):
+        raise Blocked("normative Rule requires complete source-bound intrinsic proof before suite sync")
     if model.get("status") != "confirmed":
         raise Blocked("confirmed TestModel required")
     model_bytes = Path(paths["model"]).read_bytes()
@@ -76,13 +84,15 @@ def render_suite(work_path, work, prefix):
         desired.append({"test_id": identity, "model_ref": case["source_tce"],
                         "vector_ref": identity, "path": name,
                         "content_sha256": digest(data)})
-    sources = [paths["process"], paths["pi"], *tces, *paths.get("domain_specs", []),
+    sources = [paths["process"], *(paths.get("pis") or [paths["pi"]]), *tces,
+               *paths.get("common_rules", []), *paths.get("domain_specs", []),
                *([domain] if domain else [])]
     hashes = [digest(Path(name).read_bytes()) for name in sources]
     scripts = [Path(compiler.__file__),
                compiler.ROOT / "scripts/catlib/semantic_types.py",
                compiler.ROOT / "scripts/catlib/semantic_named_types.py",
                compiler.ROOT / "scripts/catlib/semantic_rules.py",
+               compiler.ROOT / "scripts/catlib/semantic_intrinsic_rules.py",
                compiler.ROOT / "skills/tech-vitest/scripts/cat_vitest_renderer.py"]
     inputs = {"source_sha256": digest(encoded(hashes)),
               "model_sha256": digest(model_bytes),
