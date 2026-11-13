@@ -37,11 +37,13 @@
 
 # Project adapters/extensions are local to the project using this template.
 /.cat-system/extensions/**
+!/.cat-system/extensions/.gitkeep
 
 # ---------------------------------------------------------------------------
 # CAT execution evidence and generated local state
 # ---------------------------------------------------------------------------
 **/.cat-flow/
+/.gradle-task-cache/
 
 # ---------------------------------------------------------------------------
 # Local secrets / environment configuration
