@@ -1111,8 +1111,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                   'guard_refs':ordered}
             presence_unproven.update(special)
             continue
-        require(__import__('math').prod(len(x) for x in domainvalues)<=65536,
-                'finite closure exceeds configured 65536 combinations')
+        combinations=__import__('math').prod(len(x) for x in domainvalues)
+        if combinations>65536:
+            # Solver capacity is an absence of proof, not a domain mismatch.
+            # Shadow/partial models retain the source-bound reason; normative
+            # compilation still blocks unless an independent proof is supplied.
+            per_trigger[trigger]={'result':'unproven',
+                                  'reason':'finite closure exceeds configured 65536 combinations',
+                                  'combination_count':combinations,
+                                  'guard_refs':ordered}
+            presence_unproven.update(special)
+            continue
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr);unknown=None
         for values in itertools.product(*domainvalues):
             env=dict(zip(ordered,values))
