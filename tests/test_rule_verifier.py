@@ -109,6 +109,45 @@ class RuleVerifierTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.VerifierError,'fixture hash mismatch'):
                 verifier.evaluate(model,registry)
 
+    def test_duplicate_normative_rule_id_is_rejected_even_with_rebound_registry_hash(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            data=json.loads(model.read_text(encoding='utf-8'))
+            data['rule_obligations'].append(dict(data['rule_obligations'][0]))
+            model.write_text(json.dumps(data),encoding='utf-8')
+            entries=json.loads(registry.read_text(encoding='utf-8'))
+            entries['model_sha256']=sha(model.read_bytes())
+            registry.write_text(json.dumps(entries),encoding='utf-8')
+            with self.assertRaisesRegex(verifier.VerifierError,'duplicate normative rule ID'):
+                verifier.evaluate(model,registry)
+
+    def test_duplicate_source_id_is_rejected_even_with_rebound_registry_hash(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            data=json.loads(model.read_text(encoding='utf-8'))
+            data['normative_rule_inputs'].append(dict(data['normative_rule_inputs'][0]))
+            model.write_text(json.dumps(data),encoding='utf-8')
+            entries=json.loads(registry.read_text(encoding='utf-8'))
+            entries['model_sha256']=sha(model.read_bytes())
+            registry.write_text(json.dumps(entries),encoding='utf-8')
+            with self.assertRaisesRegex(verifier.VerifierError,'duplicate normative source ID'):
+                verifier.evaluate(model,registry)
+
+    def test_source_record_hash_cannot_contradict_normative_rule_inventory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            data=json.loads(model.read_text(encoding='utf-8'))
+            data['source_records']=[{'id':'demo.spec','kind':'domain-spec','sha256':'f'*64}]
+            model.write_text(json.dumps(data),encoding='utf-8')
+            entries=json.loads(registry.read_text(encoding='utf-8'))
+            entries['model_sha256']=sha(model.read_bytes())
+            registry.write_text(json.dumps(entries),encoding='utf-8')
+            with self.assertRaisesRegex(verifier.VerifierError,'source record hash mismatch'):
+                verifier.evaluate(model,registry)
+
     def test_nested_presence_and_null_are_distinct(self):
         observed={'missing':{},'null':None,'zero':0,'false':False}
         self.assertEqual(verifier.assertion({'id':'m','path':'missing.a','op':'absent'},observed)['status'],'passed')
