@@ -21,6 +21,11 @@ class PresenceError(ValueError):
 
 def nominal(d):
     t=d.get('type')
+    if t=='reference':
+        if not d.get('resolved') or 'of' not in d:
+            raise PresenceError('named type unresolved')
+        return nominal(d['of'])
+    if t=='null':return None
     if t=='nullable':return nominal(d['of'])
     if t=='union':return nominal(d['variants'][0])
     if t=='boolean':return False
