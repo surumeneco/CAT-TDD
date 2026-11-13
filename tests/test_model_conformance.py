@@ -67,6 +67,18 @@ class ModelConformanceTest(unittest.TestCase):
             self.assertEqual(result['status'], 'blocked')
             self.assertTrue({'effects', 'frames'} & set(result['mismatches']))
 
+    def test_json_model_process_identity_is_source_bound(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,t=self.confirmed_fixture(root)
+            model=compiler.load(p,pi,t)
+            model['process']='unrelated.process'
+            path=root/'TestModel.json'
+            path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            result=validator.validate(p,pi,t,path)
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('process',result['mismatches'])
+
     def test_open_world_process_cannot_become_closed_by_editing_model_claims(self):
         from test_cat_compile_readable import write_v2
         from test_intrinsic_rule_proofs import approve_fixture
