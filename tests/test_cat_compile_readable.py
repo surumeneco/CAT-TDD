@@ -139,6 +139,38 @@ Coverage requirement: closed
 
 
 class ReadableArtifactTests(unittest.TestCase):
+    def test_scalar_collection_elements_are_structured_domain_nodes(self):
+        from cat_compile_v2 import parse_domain_text
+        from catlib import semantic_types
+        for spelling,kind,element in (
+            ('集合<文字列>','set','string'),
+            ('集合<整数>','set','integer'),
+            ('set<string>','set','string'),
+            ('列<整数>','sequence','integer'),
+            ('sequence<string>','sequence','string'),
+        ):
+            with self.subTest(spelling=spelling):
+                domain=parse_domain_text(spelling)
+                self.assertEqual(domain,{'type':kind,'element':{'type':element}})
+                semantic_types.validate(domain)
+
+    def test_scalar_collection_fields_resolve_without_internal_type_exception(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            process,pi,tce=write_v2(root,False)
+            old='| input.enabled | receive | boolean | required |'
+            original=pi.read_text(encoding='utf-8')
+            self.assertIn(old,original)
+            pi.write_text(original.replace(
+                old,old+'\n| input.discord_ids | receive | 集合<文字列> | optional |'),
+                encoding='utf-8')
+            model=load(process,pi,tce,allow_draft=True,allow_partial=True)
+            field=next(x for x in model['fields'] if x['id']=='input.discord_ids')
+            self.assertEqual(field['domain'],
+                             {'type':'set','element':{'type':'string'}})
+            self.assertEqual(field['presence'],'optional')
+            self.assertEqual(model['status'],'draft')  # unbounded input remains unproved
+
     def test_japanese_v2_artifacts_compile_to_symbolic_model(self):
         fixture=Path(__file__).resolve().parent/'fixtures/minimal'
         m=load(fixture/'Process.md',fixture/'PI.md',fixture/'TCE.md',allow_draft=True)
