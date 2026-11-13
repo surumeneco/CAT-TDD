@@ -151,4 +151,54 @@ class ExplicitPresenceVectorTest(unittest.TestCase):
             self.assertNotIn('undefinedTransport',rendered)
 
 
+    def test_provided_output_operation_requires_explicit_driver_method(self):
+        m=model('required')
+        m['pi_operations'].append({'id':'reply.op','direction':'provide',
+                                   'trigger':'submit','source_pi':'demo.pi'})
+        witness=case({'input.flag':True});witness['output_operation']='reply.op'
+        v=vectors(witness)
+        self.assertEqual(compiler.expand_cases(m,v)[0]['output_operation'],'reply.op')
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/'binding.json'
+            p.write_text(json.dumps({'schema':compiler.D,'process':'demo.process',
+                                     'driver':'./driver'}))
+            with self.assertRaisesRegex(compiler.Blocked,'output-operation'):
+                compiler.emit_vitest(m,v,p)
+            p.write_text(json.dumps({'schema':compiler.D,'process':'demo.process',
+                'driver':'./driver','output_operation_transport':'js-driver-provide/v1'}))
+            rendered=compiler.emit_vitest(m,v,p)
+            self.assertIn('driver as {outputOperationTransport?: string}',rendered)
+            self.assertIn('triggerProvidedOperation',rendered)
+            self.assertIn('("reply.op","submit",input)',rendered)
+            self.assertNotIn('await driver.trigger("submit", input)',rendered)
+            self.assertEqual(rendered,compiler.emit_vitest(m,v,p))
+
+    def test_unique_source_provide_operation_can_be_selected_for_required_output(self):
+        m=model('required')
+        m['pi_operations'].append({'id':'reply.op','direction':'provide',
+                                   'trigger':'submit','source_pi':'demo.pi'})
+        m['operation_presence'].append({'operation':'reply.op','field':'output.ok',
+                                        'presence':'required','source_pi':'demo.pi'})
+        selected=compiler.selection_vectors(m)
+        self.assertEqual([x['output_operation'] for x in selected['cases']],['reply.op'])
+        self.assertEqual(len(compiler.expand_cases(m,selected)),1)
+        m['pi_operations'].append({'id':'another.reply','direction':'provide',
+                                   'trigger':'submit','source_pi':'demo.pi'})
+        with self.assertRaisesRegex(compiler.Blocked,'ambiguous provided'):
+            compiler.selection_vectors(m)
+
+    def test_unrecognized_output_operation_transport_never_passes(self):
+        m=model('required')
+        m['pi_operations'].append({'id':'reply.op','direction':'provide',
+                                   'trigger':'submit','source_pi':'demo.pi'})
+        witness=case({'input.flag':True});witness['output_operation']='reply.op'
+        for mode in ('none','json/v1','',None):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as td:
+                binding={'schema':compiler.D,'process':'demo.process','driver':'./driver'}
+                if mode is not None:binding['output_operation_transport']=mode
+                p=Path(td)/'binding.json';p.write_text(json.dumps(binding))
+                with self.assertRaises(compiler.Blocked):
+                    compiler.emit_vitest(m,vectors(witness),p)
+
+
 if __name__=='__main__':unittest.main()
