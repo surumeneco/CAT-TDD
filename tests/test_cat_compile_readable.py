@@ -171,6 +171,33 @@ class ReadableArtifactTests(unittest.TestCase):
             self.assertEqual(field['presence'],'optional')
             self.assertEqual(model['status'],'draft')  # unbounded input remains unproved
 
+    def test_direct_alias_reference_can_flow_into_same_union_member_but_not_other_alias(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            process,pi,tce=write_v2(root,False)
+            process.write_text(process.read_text(encoding='utf-8').replace(
+                '## Actions',
+                '| observation.daily | external | ref<DailyNotice> |\n## Actions'),
+                encoding='utf-8')
+            pi.write_text(pi.read_text(encoding='utf-8').replace(
+                '| output.accepted | send | boolean | required |',
+                '| output.accepted | send | union<ref<ChangeNotice>,ref<DailyNotice>> | required |'),
+                encoding='utf-8')
+            tce.write_text(tce.read_text(encoding='utf-8')
+                           .replace('output.accepted = true',
+                                    'output.accepted = observation.daily')
+                           .replace('output.accepted = false',
+                                    'output.accepted = observation.daily'),
+                           encoding='utf-8')
+            model=load(process,pi,tce,allow_draft=True,allow_partial=True)
+            self.assertEqual(model['status'],'draft')
+            self.assertEqual(model['unresolved_domains'],
+                             ['observation.daily','output.accepted'])
+            pi.write_text(pi.read_text(encoding='utf-8').replace(
+                'ref<DailyNotice>>','ref<OtherNotice>>'),encoding='utf-8')
+            with self.assertRaisesRegex(Blocked,'Effect output.accepted: type mismatch'):
+                load(process,pi,tce,allow_draft=True,allow_partial=True)
+
     def test_japanese_v2_artifacts_compile_to_symbolic_model(self):
         fixture=Path(__file__).resolve().parent/'fixtures/minimal'
         m=load(fixture/'Process.md',fixture/'PI.md',fixture/'TCE.md',allow_draft=True)
