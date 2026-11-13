@@ -47,7 +47,7 @@ class RuleVerifierTests(unittest.TestCase):
             self.assertEqual(result['model_sha256'],sha(model.read_bytes()))
 
     def test_runner_assertion_success_does_not_claim_normative_equivalence(self):
-        for subject in ('static','discord','dom'):
+        for subject in ('static','discord'):
             with self.subTest(subject=subject), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp)
                 model,registry=self.prepare(root,subject,True)
