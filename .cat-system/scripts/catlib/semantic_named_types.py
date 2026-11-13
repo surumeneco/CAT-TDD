@@ -21,6 +21,22 @@ def registry(documents):
 
 def resolve(domain,definitions,stack=()):
     t=domain['type']
+    if t=='reference':
+        if domain.get('resolved'):
+            return semantic_types.validate(deepcopy(domain))
+        name=domain['name']
+        if name not in definitions:
+            return deepcopy(domain)  # Unknown aliases remain unresolved, never guessed.
+        if name in stack:
+            raise NamedTypeError('cyclic named type: '+' -> '.join((*stack,name)))
+        definition=definitions[name]
+        body=resolve(definition['domain'],definitions,(*stack,name))
+        if not _resolved(body):
+            raise NamedTypeError('unresolved named type definition: '+name)
+        return semantic_types.validate({
+            'type':'reference','name':name,'resolved':True,'of':body,
+            'definition_source':definition['source_artifact'],
+            'definition_sha256':definition['source_sha256']})
     if t=='record':
         if 'name' in domain and not domain.get('resolved',False):
             name=domain['name']
@@ -59,6 +75,7 @@ def resolve(domain,definitions,stack=()):
 
 def _resolved(domain):
     t=domain['type']
+    if t=='reference':return bool(domain.get('resolved')) and _resolved(domain['of']) if domain.get('resolved') else False
     if t=='record':return bool(domain.get('resolved')) and all(_resolved(f['domain']) for f in domain.get('fields',[]))
     if t in ('sequence','set'):return _resolved(domain['element'])
     if t=='nullable':return _resolved(domain['of'])
@@ -71,7 +88,8 @@ def resolved_definitions(definitions):
     result=[]
     for name in sorted(definitions):
         item=definitions[name]
-        domain=resolve({'type':'record','name':name,'resolved':False},definitions)
+        probe_type='record' if item['domain']['type']=='record' else 'reference'
+        domain=resolve({'type':probe_type,'name':name,'resolved':False},definitions)
         if not _resolved(domain):raise NamedTypeError('unresolved named type definition: '+name)
         result.append({'id':name,'source_artifact':item['source_artifact'],
                        'source_sha256':item['source_sha256'],'domain':domain})
