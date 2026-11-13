@@ -183,6 +183,22 @@ PIはProcess間の境界状態空間であり、実装上の型定義そのも�
 
 PresenceはCATとして有効な意味であり、Domainの`nullable`とは独立している。`optional` の欠落、`absent`、`undefined`、`null`、空文字列、0、falseを同一値に変換しない。
 
+### 非required Presenceを条件で扱う機械的表現
+
+入力Presenceは `required / optional / absent / undefined`、Domainの `nullable` は独立する。非required入力を読むConditionは、値の通常参照に暗黙の既定値を設定しない。
+
+| 条件式 | 意味 |
+| --- | --- |
+| `is_missing(input.x)` | PI入力のキーが存在しない場合のみ真 |
+| `is_undefined(input.x)` | PI入力が明示的なundefined状態の場合のみ真 |
+| `is_present(input.x)` | キーが実在する値である場合のみ真。`null` も値として存在するため真 |
+
+これらの関数には**直接のPI入力フィールド参照1個のみ**渡せる。Conditionは`and`/`or`を左から短絡評価するため、例えば `is_present(input.x) and input.x > 0` は値欠落時に通常参照を行わない。`is_missing`による欠落と`nullable`による`null`は別状態である。欠落/undefinedを通常演算で読む場合はClosureを`unproven`とし、TestModelの正本合格を認めない。
+
+正規Compilerは、閉じた有限Domainの`optional`に欠落＋各値、`absent`に欠落のみ、`undefined`に明示undefinedのみ、`required`に各値を割り当てる。単一の受付Operationに対する操作別Presenceも適用する。受付Operationが曖昧な場合、出力のnonrequired Presence、無限・列挙上限超のDomain、nonrequired入力を直接読むEffectなどはまだ完全証明しない。
+
+決定論的Vectorsでは欠落をキー省略、undefinedを `{"$cat_presence":"undefined"}` として区別する。undefinedの生成Vitestには実装依存のtransport契約が未定義のため、テストコード生成は引き続きblockedとし、undefinedをnullや値に自動置換しない。
+
 PI全体の既定Presenceと操作別の例外を区別する場合、必要な行だけ`## 操作別存在`（英語:`## Operation presence`）に宣言する。
 
 | 操作 | 項目 | 存在 |
