@@ -99,6 +99,21 @@ class StructuralSubsetTests(unittest.TestCase):
         self.assertIs(_type_subset(producer,consumer),False)
         self.assertIs(_type_subset(consumer,producer),False)
 
+    def test_finite_scalar_domain_is_contained_by_explicit_enum(self):
+        # A finite value domain is a subset of an enum containing all values.
+        self.assertIs(_type_subset(parse('boolean'),
+                                   parse('enum{false,true}')),True)
+        self.assertIs(_type_subset(parse('integer[0..1]'),
+                                   parse('enum{0,1}')),True)
+        # A missing member is a concrete counterexample, never a proof.
+        self.assertIs(_type_subset(parse('integer[0..2]'),
+                                   parse('enum{0,1}')),False)
+        self.assertIs(_type_subset(parse('boolean'),
+                                   parse('enum{true}')),False)
+        # An unbounded source cannot be exhaustively proved by sampling.
+        self.assertIsNone(_type_subset(parse('integer'),
+                                      parse('enum{0,1}')))
+
     def test_union_members_can_jointly_cover_finite_source(self):
         self.assertIs(_type_subset(parse('integer[0..2]'),
                                    parse('Union<enum{0},enum{1},enum{2}>')),True)
