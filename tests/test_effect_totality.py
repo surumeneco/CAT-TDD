@@ -76,6 +76,28 @@ class EffectTotalityTests(unittest.TestCase):
             self.assertEqual(result['status'],'blocked',result)
             self.assertIn('effect_checks',result['mismatches'])
 
+    def test_proved_bounded_effect_reaches_vectors_queue_and_renderer(self):
+        import json
+        from cat_compile_v2 import selection_vectors,expand_cases,make_queue,emit_vitest
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=self.fixture(root,output_domain='integer[0..2]')
+            model=load(p,pi,tce,allow_partial=True)
+            self.assertEqual(model['status'],'confirmed')
+            vectors=selection_vectors(model)
+            self.assertEqual(len(vectors['cases']),2)
+            cases=expand_cases(model,vectors)
+            self.assertTrue(all(case['allowed'][0]['output']['output.accepted']==1
+                                for case in cases))
+            queue=make_queue(model,vectors,json.dumps(model).encode(),json.dumps(vectors).encode())
+            self.assertEqual(len(queue['items']),2)
+            self.assertEqual([x['status'] for x in queue['items']],['current','pending'])
+            binding=root/'binding.json'
+            binding.write_text(json.dumps({'schema':'cat-test-driver/v2',
+                         'process':model['process'],'driver':'./driver'}),encoding='utf-8')
+            code=emit_vitest(model,vectors,binding)
+            self.assertIn('output.accepted',code)
+
     def test_implementation_obligations_preserve_effect_gaps(self):
         from cat_implementation_obligations import generate
         with tempfile.TemporaryDirectory() as td:
