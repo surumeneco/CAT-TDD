@@ -81,6 +81,24 @@ class StructuralSubsetTests(unittest.TestCase):
         b=parse('record<y[absent]:integer,x[optional]:boolean>')
         self.assertIs(_type_subset(a,b),True)
 
+    def test_enum_boolean_and_integer_domains_are_not_identical(self):
+        # Python equates bool with 0/1; CAT explicitly preserves their types.
+        pairs=(('enum{true}', 'enum{1}'),
+               ('enum{false}', 'enum{0}'),
+               ('enum{false}', 'nullable<enum{0}>'),
+               ('enum{true}', 'Union<enum{0},enum{1}>'))
+        for source,target in pairs:
+            with self.subTest(source=source,target=target):
+                self.assertIs(_type_subset(parse(source),parse(target)),False)
+        self.assertIs(_type_subset(parse('enum{true}'),parse('enum{true}')),True)
+        self.assertIs(_type_subset(parse('enum{1}'),parse('enum{1}')),True)
+
+    def test_nested_record_boolean_enum_is_not_integer_enum(self):
+        producer=parse('record<state:record<value:enum{true}>>')
+        consumer=parse('record<state:record<value:enum{1}>>')
+        self.assertIs(_type_subset(producer,consumer),False)
+        self.assertIs(_type_subset(consumer,producer),False)
+
     def test_union_members_can_jointly_cover_finite_source(self):
         self.assertIs(_type_subset(parse('integer[0..2]'),
                                    parse('Union<enum{0},enum{1},enum{2}>')),True)

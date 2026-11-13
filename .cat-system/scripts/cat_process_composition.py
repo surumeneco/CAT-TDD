@@ -74,7 +74,9 @@ def _type_subset(source,target):
     """True only for proved inclusion; False for a counterexample; None if unknown."""
     if _unresolved_domain(source) or _unresolved_domain(target):
         return None
-    if source==target:
+    # Python dict equality conflates enum booleans with integers (True == 1).
+    # Domain identity must preserve scalar types throughout nested structures.
+    if semantic_types.same(source,target):
         return True
     if isinstance(source,dict) and source.get('type')=='reference':
         return _type_subset(source['of'],target)
