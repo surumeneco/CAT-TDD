@@ -552,7 +552,9 @@ def conformance_work(wpath, w, kind):
                         verifier_path=runtime/'process-closure-verifiers.json'
                         verifier_path.write_bytes(json_bytes(verified))
                         verifier_evidence=str(verifier_path)
-                        rule_status=verified['status']
+                        # A pinned runner proves only its fixture assertions,
+                        # never equivalence with free-text CommonRule/DomainSpec.
+                        rule_status=verified.get('normative_status','inconclusive')
                     except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
                         return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
             if rule_status=='failed':
