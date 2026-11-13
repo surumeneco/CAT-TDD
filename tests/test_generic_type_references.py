@@ -65,6 +65,21 @@ class GenericTypeReferences(unittest.TestCase):
             self.assertEqual(result['status'],'blocked')
             self.assertIn('domains',result['mismatches'])
 
+    def test_named_enum_definition_boolean_integer_swap_is_detected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);p,pi,t=write_v2(root,False)
+            for src in (p,pi,t):approve_fixture(src)
+            ds=definitions(root,'| Mode | enum{true} |\n')
+            model=load(p,pi,t,domain_specs=[ds])
+            path=root/'Model.json'
+            path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            self.assertEqual(conformance.validate(p,pi,[t],path,domain_specs=[ds])['status'],'passed')
+            model['named_type_definitions'][0]['domain']['of']['values']=[1]
+            path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            result=conformance.validate(p,pi,[t],path,domain_specs=[ds])
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('named_type_definitions',result['mismatches'])
+
     def test_unknown_source_alias_stays_draft_and_does_not_prove_intrinsic_rule(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);p,pi,t=write_v2(root,False)
