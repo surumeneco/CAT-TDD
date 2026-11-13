@@ -208,7 +208,8 @@ def check_presence(domain,presence,value=MISSING):
         raise DomainError('unsupported presence')
     if value is MISSING:return ('missing',presence in ('optional','absent'))
     if value is UNDEFINED:return ('undefined',presence=='undefined')
-    if presence in ('absent','undefined'):return ('value',False)
+    if presence in ('absent','undefined'):
+        return ('null' if value is None else 'value',False)
     if value is None:return ('null',contains(domain,None))
     valid=contains(domain,value)
     return ('value' if valid else 'out-of-domain',valid)
