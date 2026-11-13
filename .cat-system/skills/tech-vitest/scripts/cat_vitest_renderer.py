@@ -67,6 +67,16 @@ def render_vitest(model, cases, binding):
                 ]
         else:
             input_lines=["    const input = " + _ts(c["input"]) + " as Record<string,unknown>"]
+        provide_operation=c.get('output_operation')
+        if provide_operation is not None:
+            output_lines=[
+                '    expect((driver as {outputOperationTransport?: string}).outputOperationTransport).toBe("js-driver-provide/v1")',
+                '    expect(typeof (driver as {triggerProvidedOperation?: unknown}).triggerProvidedOperation).toBe("function")',
+                "    const output = await (driver as {triggerProvidedOperation:(operation: string, trigger: string, input: Record<string,unknown>) => Promise<Record<string,unknown>>}).triggerProvidedOperation(" +
+                _ts(provide_operation) + "," + _ts(c["trigger"]) + ",input)",
+            ]
+        else:
+            output_lines=["    const output = await driver.trigger(" + _ts(c["trigger"]) + ", input)"]
         lines.extend([
             "  it(" + _ts(c["id"]) + ", async () => {",
             "    // TCE: " + c["source_tce"],
@@ -76,7 +86,7 @@ def render_vitest(model, cases, binding):
             "    await driver.prepare(pre, input)",
             "    const before = await driver.observeState()",
             "    for (const id of " + _ts(declared) + ") { const normalized = (v: unknown) => (" + _ts(set_fields) + " as string[]).includes(id) && Array.isArray(v) ? [...v].sort() : v; expect(normalized(before[id])).toEqual(normalized(pre[id])); }",
-            "    const output = await driver.trigger(" + _ts(c["trigger"]) + ", input)",
+            *output_lines,
             "    const after = await driver.observeState()",
             "    const allowed = " + _ts(alt) + " as Array<{state:Record<string,unknown>,output:Record<string,unknown>}> ",
             "    expect(accept(after, output, allowed, " + _ts(declared) + ", " + _ts(set_fields) + ")).toBe(true)",
