@@ -73,8 +73,8 @@ class SetRendererTests(unittest.TestCase):
         model,cases,binding=self.sample()
         generated=render_vitest(model,cases,binding)
         helpers=generated[generated.index('function sameCATSet('):
-                          generated.index('\\ndescribe(')]
-        probe=\'''import {isDeepStrictEqual} from 'node:util';
+                          generated.index('\ndescribe(')]
+        probe='''import {isDeepStrictEqual} from 'node:util';
 const lhs=[{id:"A"},{id:"B"}],rhs=[{id:"B"},{id:"A"}];
 if (!sameCATSet(lhs,rhs)) process.exit(1);
 if (sameCATSet([{id:"A"},{id:"A"}],[{id:"A"},{id:"A"}])) process.exit(2);
@@ -92,7 +92,7 @@ if (accept(after,{"output.other":true},alternatives,
 \'''
         with tempfile.TemporaryDirectory() as td:
             path=Path(td)/'set-contract.mts'
-            path.write_text('import {isDeepStrictEqual} from "node:util";\\n'+helpers+'\\n'+
+            path.write_text('import {isDeepStrictEqual} from "node:util";\n'+helpers+'\n'+
                             probe.replace("import {isDeepStrictEqual} from 'node:util';",''),
                             encoding='utf-8')
             result=subprocess.run([executable,'--experimental-strip-types',str(path)],
