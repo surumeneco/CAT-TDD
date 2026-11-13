@@ -482,7 +482,11 @@ def conformance_evidence_status(wpath, w, kind):
         if not isinstance(stored_inputs,dict):
             return {'status': 'stale', 'evidence': str(path),
                     'reason': 'conformance input inventory missing'}
-        current_inputs=conformance_input_hashes(wpath,w,kind)
+        # Legacy reviewer-only Work receipts can be materialized without a
+        # Compilation section; they have no discoverable file dependencies.
+        # Once a Compilation is declared, require the *complete* live set.
+        current_inputs=(conformance_input_hashes(wpath,w,kind)
+                        if w.get('compilation') else {})
         if stored_inputs != current_inputs:
             return {'status': 'stale', 'evidence': str(path),
                     'reason': 'conformance input inventory changed'}
