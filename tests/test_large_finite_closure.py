@@ -16,7 +16,7 @@ class FiniteBudgetTests(unittest.TestCase):
             root=Path(tmp)
             p,pi,t=write_v2(root,False)
             observations=''.join(
-                '| observation.cap'+str(i)+' | synthetic | boolean |\\n'
+                '| observation.cap'+str(i)+' | synthetic | boolean |\n'
                 for i in range(17))
             p.write_text(p.read_text(encoding='utf-8').replace(
                 '## Actions',observations+'## Actions'),encoding='utf-8')
