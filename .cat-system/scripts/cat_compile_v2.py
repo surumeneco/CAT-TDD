@@ -227,8 +227,8 @@ def parse_domain_text(text):
         return d
     if text=='string':return {'type':'string'}
     if text=='string<safe-signed-integer>':return {'type':'string','format':'safe-signed-integer'}
-    m=re.fullmatch(r'(set|sequence)<(string|integer)>',text)
-    if m:return {'type':m.group(1),'element':m.group(2)}
+    # Scalar collection elements must be structured Domain nodes too;
+    # the recursive parser below owns sets/sequences of every supported type.
     m=re.fullmatch(r'enum\{(.*)\}',text)
     if m:return {'type':'enum','values':[_scalar_token(x) for x in _split_items(m.group(1))]}
     try:return typed.parse(text)
