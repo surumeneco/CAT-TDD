@@ -487,6 +487,8 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                 or actual.get('unresolved_domains')!=[]
                 or actual.get('unresolved_interfaces')!=[]):
             mismatches.append('normative_status_unjustified')
+    if Path(model).suffix.lower()!='.json' and expected.get('unverified_effect_ids'):
+        mismatches.append('effect_totality: Markdown renderer lacks source-bound Effect proof receipts')
     if Path(model).suffix.lower()!='.json' and expected.get('intrinsic_rule_proofs'):
         mismatches.append('intrinsic_rule_proofs: Markdown renderer omits source-bound proof evidence')
     if Path(model).suffix.lower()!='.json' and expected.get('named_type_definitions'):
