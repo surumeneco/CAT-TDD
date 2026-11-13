@@ -308,19 +308,30 @@ def finite_values(domain,max_values=65536):
                     if len(values)>max_values:return None
         return values
     if t=='record':
-        if not domain.get('resolved') or any(f['presence']!='required' for f in domain['fields']):
+        if not domain.get('resolved'):
             return None
         from itertools import product
         dimensions=[]
         capacity=1
         for field in domain['fields']:
-            cases=finite_values(field['domain'],max_values)
-            if cases is None:return None
+            presence=field['presence']
+            if presence=='undefined':
+                # The JSON witness format cannot carry a present JS undefined.
+                # Never silently invent an ordinary value or treat as absent.
+                return None
+            if presence=='absent':
+                cases=[(False,None)]
+            else:
+                values=finite_values(field['domain'],max_values)
+                if values is None:return None
+                cases=([(False,None)] if presence=='optional' else [])
+                cases.extend((True,value) for value in values)
             capacity*=len(cases)
             if capacity>max_values:return None
             dimensions.append(cases)
-        return [{f['id']:v for f,v in zip(domain['fields'],values)}
-                for values in product(*dimensions)]
+        return [{f['id']:value for f,(present,value)
+                 in zip(domain['fields'],choices) if present}
+                for choices in product(*dimensions)]
     # Arbitrary-length sequences, real, text, bytes and unbounded sets
     # remain unproven, even when a representative sample could be constructed.
     return None
