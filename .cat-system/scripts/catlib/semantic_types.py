@@ -88,12 +88,18 @@ def parse(text):
             for component in components:
                 key,has_type,definition=component.partition(':')
                 key=key.strip()
-                if not re.fullmatch(r'[\w-]+',key,flags=re.UNICODE) or key in seen:
-                    raise DomainError('invalid/duplicate record field '+key)
-                seen.add(key)
-                fields.append({'id':key,
+                match=re.fullmatch(
+                    r'(?P<name>[\w-]+)(?:\[(?P<presence>required|optional|absent|undefined)\])?',
+                    key,flags=re.UNICODE)
+                if match is None:
+                    raise DomainError('invalid record field or Presence '+key)
+                name=match.group('name')
+                if name in seen:
+                    raise DomainError('duplicate record field '+name)
+                seen.add(name)
+                fields.append({'id':name,
                                'domain':parse(definition) if has_type else {'type':'unknown'},
-                               'presence':'required'})
+                               'presence':match.group('presence') or 'required'})
             return {'type':'record','fields':fields,
                     'resolved':all(f['domain']['type']!='unknown' for f in fields)}
     for pattern,kind,cast in (
