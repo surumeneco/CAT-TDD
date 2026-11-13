@@ -79,6 +79,12 @@ def parse(text):
     for prefix,kind in (('集合<','set'),('set<','set'),('列<','sequence'),('sequence<','sequence')):
         if text.startswith(prefix) and text.endswith('>'):
             return {'type':kind,'element':parse(text[len(prefix):-1])}
+    for prefix in ('型参照<','ref<','Ref<'):
+        if text.startswith(prefix) and text.endswith('>'):
+            name=text[len(prefix):-1].strip()
+            if not name or any(ch in name for ch in ('<','>',',','[',']','{','}')):
+                raise DomainError('invalid named type reference')
+            return {'type':'reference','name':name,'resolved':False}
     for prefix in ('レコード<','record<','Record<'):
         if text.startswith(prefix) and text.endswith('>'):
             components=_parts(text[len(prefix):-1])
@@ -136,6 +142,18 @@ def validate(d):
             raise DomainError('enum requires nonempty scalar values')
         if len({_signature(v) for v in values})!=len(values):
             raise DomainError('duplicate enum value')
+    elif t=='reference':
+        if d.get('resolved') is True:
+            _keys(d,{'type','name','resolved','of','definition_source','definition_sha256'})
+            if not isinstance(d['definition_source'],str) or not d['definition_source']:
+                raise DomainError('missing type reference source')
+            if not isinstance(d['definition_sha256'],str) or not d['definition_sha256']:
+                raise DomainError('missing type reference digest')
+            validate(d['of'])
+        else:
+            _keys(d,{'type','name','resolved'})
+        if not isinstance(d.get('name'),str) or not d['name']:
+            raise DomainError('type reference name required')
     elif t=='string':
         _keys(d,{'type'},{'format'})
         if d.get('format','any') not in ('any','safe-signed-integer'):
@@ -197,6 +215,10 @@ def check_presence(domain,presence,value=MISSING):
 
 def contains(d,value):
     t=d['type']
+    if t=='reference':
+        if not d.get('resolved'):
+            raise DomainError('unresolved named type reference: '+d['name'])
+        return contains(d['of'],value)
     if t=='nullable':return value is None or contains(d['of'],value)
     if t=='union':
         unknown=None
@@ -254,6 +276,8 @@ def finite_values(domain,max_values=65536):
         raise DomainError('finite-domain cap must be positive integer')
     validate(domain)
     t=domain['type']
+    if t=='reference':
+        return finite_values(domain['of'],max_values) if domain.get('resolved') else None
     if t=='boolean':return [False,True] if max_values>=2 else None
     if t=='enum':
         return list(domain['values']) if len(domain['values'])<=max_values else None
