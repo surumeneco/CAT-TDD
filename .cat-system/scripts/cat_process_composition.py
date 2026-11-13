@@ -118,6 +118,13 @@ def _local_claim_consistent(model):
             and all(isinstance(v,dict) and v.get('result')=='proved'
                     for v in checks.values())
             and model.get('unverified_rule_ids')==[]
+            # New Compiler receipts also require total Effect proofs. This
+            # structural check does not independently certify their sources.
+            and (model.get('effect_checks') is None or
+                 (isinstance(model['effect_checks'],dict) and
+                  all(isinstance(v,dict) and v.get('result')=='proved'
+                      for v in model['effect_checks'].values())))
+            and model.get('unverified_effect_ids',[])==[]
             and model.get('unresolved_domains')==[]
             and model.get('unresolved_interfaces',[])==[]
             and model.get('presence_unproven')==[])
