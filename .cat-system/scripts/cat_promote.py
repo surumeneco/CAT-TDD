@@ -53,7 +53,7 @@ def _rebase_markdown_links(body: str, source: Path, output: Path, frontmatter: d
         rebased=Path(os.path.relpath(target,output.parent)).as_posix()
         rebuilt=rebased+('?' + parts.query if parts.query else '')+('#'+parts.fragment if parts.fragment else '')
         if angle:rebuilt='<'+rebuilt+'>'
-        return match.group('prefix')+rebuilt+match.group('suffix')
+        return match.group('prefix')+rebuilt+(match.groupdict().get('suffix') or '')
 
     def escaped(text,position):
         slash_count=0
