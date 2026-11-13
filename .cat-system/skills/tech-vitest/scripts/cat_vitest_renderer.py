@@ -20,9 +20,24 @@ def render_vitest(model, cases, binding):
         "import {createDriver} from " + _ts(binding["driver"]),
         "import {isDeepStrictEqual} from 'node:util'",
         "",
-        "function accept(after: Record<string,unknown>, output: Record<string,unknown>, alternatives: Array<{state:Record<string,unknown>,output:Record<string,unknown>}>, declared: string[], setFields: string[]): boolean {",
-        "  const canonical = (id: string, value: unknown) => setFields.includes(id) && Array.isArray(value) ? [...value].sort() : value;",
-        "  return alternatives.some(expected => declared.every(id => Object.prototype.hasOwnProperty.call(after,id) && isDeepStrictEqual(canonical(id,after[id]),canonical(id,expected.state[id]))) && isDeepStrictEqual(output,expected.output));",
+        "function sameCATSet(observed: unknown, expected: unknown): boolean {",
+        "  if (!Array.isArray(observed) || !Array.isArray(expected) || observed.length !== expected.length) return false;",
+        "  const hasDuplicate = (items: unknown[]) => items.some((item,index) => items.slice(index+1).some(other => isDeepStrictEqual(item,other)));",
+        "  if (hasDuplicate(observed) || hasDuplicate(expected)) return false;",
+        "  const used = new Set<number>();",
+        "  for (const item of observed) {",
+        "    const i = expected.findIndex((candidate,index) => !used.has(index) && isDeepStrictEqual(item, candidate));",
+        "    if (i < 0) return false;",
+        "    used.add(i);",
+        "  }",
+        "  return true;",
+        "}",
+        "function equalCATValue(id: string, observed: unknown, expected: unknown, setFields: string[]): boolean {",
+        "  if (setFields.includes(id) && Array.isArray(observed) && Array.isArray(expected)) return sameCATSet(observed,expected);",
+        "  return isDeepStrictEqual(observed,expected);",
+        "}",
+        "function accept(after: Record<string,unknown>, output: Record<string,unknown>, alternatives: Array<{state:Record<string,unknown>,output:Record<string,unknown>}>, declared: string[], stateSetFields: string[], outputSetFields: string[]): boolean {",
+        "  return alternatives.some(expected => declared.every(id => Object.prototype.hasOwnProperty.call(after,id) && equalCATValue(id,after[id],expected.state[id],stateSetFields)) && Object.keys(output).length === Object.keys(expected.output).length && Object.keys(output).every(id => Object.prototype.hasOwnProperty.call(expected.output,id) && equalCATValue(id,output[id],expected.output[id],outputSetFields)));",
         "}",
         "",
         "describe(" + _ts(model["process"] + " CAT symbolic contract") + ", () => {",
@@ -49,7 +64,18 @@ def render_vitest(model, cases, binding):
             "",
         ]
     declared=[f["id"] for f in model["fields"] if f["role"]=="state"]
-    set_fields=[f["id"] for f in model["fields"] if f["role"]=="state" and f["domain"]["type"]=="set"]
+    def is_set_domain(domain):
+        # A source-bound named alias and nullable wrapper preserve the same
+        # underlying set comparison contract. Unproven unions are not guessed.
+        while domain.get('type') in ('reference','nullable'):
+            if domain['type']=='reference':
+                if not domain.get('resolved'):return False
+                domain=domain['of']
+            else:
+                domain=domain['of']
+        return domain.get('type')=='set'
+    set_fields=[f["id"] for f in model["fields"] if f["role"]=="state" and is_set_domain(f["domain"])]
+    output_set_fields=[f["id"] for f in model["fields"] if f["role"]=="output" and is_set_domain(f["domain"])]
     for c in cases:
         alt=[{"state":a["state"],"output":a["output"]} for a in c["allowed"]]
         undefined_fields=sorted(
@@ -85,11 +111,11 @@ def render_vitest(model, cases, binding):
             *input_lines,
             "    await driver.prepare(pre, input)",
             "    const before = await driver.observeState()",
-            "    for (const id of " + _ts(declared) + ") { const normalized = (v: unknown) => (" + _ts(set_fields) + " as string[]).includes(id) && Array.isArray(v) ? [...v].sort() : v; expect(normalized(before[id])).toEqual(normalized(pre[id])); }",
+            "    for (const id of " + _ts(declared) + ") { expect(equalCATValue(id,before[id],pre[id]," + _ts(set_fields) + ")).toBe(true); }",
             *output_lines,
             "    const after = await driver.observeState()",
             "    const allowed = " + _ts(alt) + " as Array<{state:Record<string,unknown>,output:Record<string,unknown>}> ",
-            "    expect(accept(after, output, allowed, " + _ts(declared) + ", " + _ts(set_fields) + ")).toBe(true)",
+            "    expect(accept(after, output, allowed, " + _ts(declared) + ", " + _ts(set_fields) + ", " + _ts(output_set_fields) + ")).toBe(true)",
             "  })",
         ])
     lines.append("})")
