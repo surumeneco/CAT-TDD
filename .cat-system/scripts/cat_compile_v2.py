@@ -787,6 +787,57 @@ def _presence_for_field(field,operation,overrides):
     return result
 
 
+def _nonrequired_output_ids(fields,overrides):
+    return {f['id'] for f in fields.values()
+            if f['role']=='output' and f.get('presence','required')!='required'} | {
+        item['field'] for item in overrides
+        if fields[item['field']]['role']=='output' and item['presence']!='required'}
+
+
+def _provided_output_operation(fields,operations,overrides,trigger):
+    """A single source-owned provider is required for optional output proof."""
+    special=_nonrequired_output_ids(fields,overrides)
+    declared=any(fields[item['field']]['role']=='output' for item in overrides)
+    if not special and not declared:
+        return None
+    candidates=[op for op in operations if op['direction']=='provide'
+                and (op.get('trigger') is None or op['trigger']==trigger)]
+    if len(candidates)!=1:
+        return None
+    operation=candidates[0]
+    output_fields=[f for f in fields.values() if f['role']=='output']
+    # Other PI outputs can never be attributed to the chosen operation.
+    if any(f['source_pi']!=operation['source_pi'] for f in output_fields):
+        return None
+    if any(item['operation']!=operation['id'] for item in overrides
+           if fields[item['field']]['role']=='output'):
+        return None
+    return operation
+
+
+def _unproved_output_presence(fields,operations,overrides,rules,triggers):
+    special=_nonrequired_output_ids(fields,overrides)
+    if not special:
+        return set()
+    errors=set()
+    for trigger in triggers:
+        operation=_provided_output_operation(fields,operations,overrides,trigger)
+        if operation is None:
+            errors.update(special)
+            continue
+        for rule in (r for r in rules if r['trigger']==trigger):
+            for outcome in rule['allowed']:
+                emitted={w['target'] for w in outcome['write']}
+                for field in (f for f in fields.values() if f['role']=='output'):
+                    name=field['id']
+                    presence=_presence_for_field(field,operation,overrides)
+                    if (presence=='undefined'
+                            or (presence=='required' and name not in emitted)
+                            or (presence=='absent' and name in emitted)):
+                        errors.add(name)
+    return errors
+
+
 def _debug_presence_env(env):
     return {key:({'$cat_presence':'missing'} if value is typed.MISSING else
                  {'$cat_presence':'undefined'} if value is typed.UNDEFINED else value)
@@ -1008,14 +1059,11 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     unique([r['id'] for r in rules],'TCE behaviors')
 
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
-    output_presence_unproven={
-        f['id'] for f in pi_fields.values()
-        if f['role']=='output' and f.get('presence','required')!='required'
-    }
-    output_presence_unproven.update(
-        x['operation']+':'+x['field'] for x in operation_presence
-        if fields[x['field']]['role']=='output' and x['presence']!='required')
-    presence_unproven=set(output_presence_unproven)
+    # A nonrequired output is provable only when a unique provided PI
+    # operation owns its output and every TCE alternative respects the
+    # presence-specific emission frame. Missing/undefined are never coerced.
+    presence_unproven=_unproved_output_presence(
+        fields,pi_operations,operation_presence,rules,triggers)
     for trigger in triggers:
         rr=[r for r in rules if r['trigger']==trigger]
         operation,ambiguous=_presence_accepted_operation(pi_operations,trigger)
@@ -1218,9 +1266,9 @@ def _vector_output_operation(model,test,fields):
     declared=[x for x in model.get('operation_presence',[])
               if fields[x['field']]['role']=='output']
     chosen=test.get('output_operation')
-    if declared:
+    if declared or _nonrequired_output_ids(fields,model.get('operation_presence',[])):
         require(chosen is not None,
-                'operation-scoped output Presence requires vector.output_operation')
+                'nonrequired/operation-scoped output Presence requires vector.output_operation')
     if chosen is None:return None
     ops=[x for x in model.get('pi_operations',[])
          if x['id']==chosen and x['direction']=='provide'
@@ -1305,12 +1353,13 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 and not model.get('presence_unproven',[*presence_inputs])
                 and bool(checks) and all(c.get('result')=='proved' for c in checks.values()),
                 'non-required operation Presence lacks a source-backed finite closure proof')
-    output_unsupported=sorted(f['id'] for f in fields.values()
-                              if f['role']=='output' and f.get('presence','required')!='required')
-    output_unsupported+=sorted(x['operation']+':'+x['field'] for x in model.get('operation_presence',[])
-                               if fields[x['field']]['role']=='output' and x['presence']!='required')
-    require(not output_unsupported,
-            'output Presence requires a proved output-operation transport: '+str(output_unsupported))
+    output_special=_nonrequired_output_ids(fields,model.get('operation_presence',[]))
+    if output_special:
+        checks=model.get('coverage_checks',{})
+        require(model.get('coverage_requirement')=='closed'
+                and model.get('presence_unproven')==[]
+                and bool(checks) and all(x.get('result')=='proved' for x in checks.values()),
+                'nonrequired output Presence needs proved operation and Effect frame')
     variable_ids=sorted(f for f in fields if fields[f]['role'] in ('input','state'))
     defs={d['id']:d for d in model['definitions']}
     witnesses={}
@@ -1324,14 +1373,12 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         output_overrides=[x for x in model.get('operation_presence',[])
                           if fields[x['field']]['role']=='output']
         provide_operation=None
-        if output_overrides:
-            candidates=[op for op in model.get('pi_operations',[])
-                        if op['direction']=='provide'
-                        and (op.get('trigger') is None or op['trigger']==trigger)]
-            require(len(candidates)==1 and
-                    all(x['operation']==candidates[0]['id'] for x in output_overrides),
+        if output_overrides or output_special:
+            provide_operation=_provided_output_operation(
+                fields,model.get('pi_operations',[]),
+                model.get('operation_presence',[]),trigger)
+            require(provide_operation is not None,
                     'ambiguous provided output operation for deterministic vectors')
-            provide_operation=candidates[0]
         domains=[]
         for field_id in variable_ids:
             field=fields[field_id]

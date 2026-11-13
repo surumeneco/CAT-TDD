@@ -118,5 +118,68 @@ class PresenceClosureTests(unittest.TestCase):
             self.assertEqual(m['status'],'draft')
             self.assertIn('output.accepted',m['presence_unproven'])
 
+    def test_optional_output_with_unique_provider_and_explicit_effects_is_confirmed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p,pi,t=source(root,presence='required',
+                          accept='input.enabled',reject='not input.enabled')
+            pi.write_text(pi.read_text(encoding='utf-8')
+                          .replace('| output.accepted | send | boolean | required |',
+                                   '| output.accepted | send | boolean | optional |')
+                          .replace('| submit_op | accept | submit |',
+                                   '| submit_op | accept | submit |\n| reply_op | provide | submit |'),
+                          encoding='utf-8')
+            t.write_text(t.read_text(encoding='utf-8').replace(
+                'output.accepted = false','state.ready = false'),encoding='utf-8')
+            m=load(p,pi,t)
+            self.assertEqual(m['status'],'confirmed')
+            self.assertEqual(m['presence_unproven'],[])
+            vectors=selection_vectors(m)
+            self.assertEqual({v['output_operation'] for v in vectors['cases']},{'reply_op'})
+            cases=expand_cases(m,vectors)
+            by_id={case['source_tce']:case for case in cases}
+            self.assertEqual(by_id['demo.accept']['allowed'][0]['output'],
+                             {'output.accepted':True})
+            self.assertEqual(by_id['demo.reject']['allowed'][0]['output'],{})
+            binding=root/'driver-binding.json'
+            binding.write_text(json.dumps({'schema':'cat-test-driver/v2',
+                                           'process':'demo.process','driver':'./driver',
+                                           'output_operation_transport':'js-driver-provide/v1'}),
+                               encoding='utf-8')
+            rendered=emit_vitest(m,vectors,binding)
+            self.assertIn('triggerProvidedOperation',rendered)
+            self.assertIn('reply_op',rendered)
+
+    def test_optional_output_without_provide_operation_remains_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p,pi,t=source(root,presence='required',
+                          accept='input.enabled',reject='not input.enabled')
+            pi.write_text(pi.read_text(encoding='utf-8').replace(
+                '| output.accepted | send | boolean | required |',
+                '| output.accepted | send | boolean | optional |'),encoding='utf-8')
+            m=load(p,pi,t,allow_draft=True)
+            self.assertEqual(m['status'],'draft')
+            self.assertIn('output.accepted',m['presence_unproven'])
+
+    def test_ambiguous_or_undefined_output_providers_remain_unproved(self):
+        for presence,add_provider in [('optional',True),('undefined',False)]:
+            with self.subTest(presence=presence),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp)
+                p,pi,t=source(root,presence='required',
+                              accept='input.enabled',reject='not input.enabled')
+                pi_text=pi.read_text(encoding='utf-8').replace(
+                    '| output.accepted | send | boolean | required |',
+                    '| output.accepted | send | boolean | '+presence+' |').replace(
+                    '| submit_op | accept | submit |',
+                    '| submit_op | accept | submit |\n| reply_op | provide | submit |')
+                if add_provider:
+                    pi_text=pi_text.replace('| reply_op | provide | submit |',
+                                '| reply_op | provide | submit |\n| other_reply | provide | submit |')
+                pi.write_text(pi_text,encoding='utf-8')
+                m=load(p,pi,t,allow_draft=True)
+                self.assertEqual(m['status'],'draft')
+                self.assertIn('output.accepted',m['presence_unproven'])
+
 
 if __name__=='__main__':unittest.main()
