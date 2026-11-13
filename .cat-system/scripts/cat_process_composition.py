@@ -121,18 +121,38 @@ def _type_subset(source,target):
             return False  # Sequence permits duplicates; Set forbids duplicates.
         return _type_subset(source['element'],target['element'])
     if a==b=='record':
+        # Records are closed: omitting a declaration means that key is always
+        # missing. Presence is a separate state dimension from Domain.
+        states={'required':{'value'},'optional':{'missing','value'},
+                'absent':{'missing'},'undefined':{'undefined'}}
         left=source.get('fields',[]);right=target.get('fields',[])
-        if (any(x.get('presence')!='required' for x in [*left,*right])
-                or len({x['id'] for x in left})!=len(left)
-                or len({x['id'] for x in right})!=len(right)):
-            return None  # Presence-aware record inclusion is not yet proved.
-        mine={x['id']:x['domain'] for x in left}
-        theirs={x['id']:x['domain'] for x in right}
-        if set(mine)!=set(theirs):
-            return False  # Both records are closed; missing/extra keys are rejected.
-        nested=[_type_subset(mine[id_],theirs[id_]) for id_ in sorted(mine)]
-        if all(x is True for x in nested):return True
-        return False if False in nested else None
+        mine={x['id']:x for x in left}
+        theirs={x['id']:x for x in right}
+        if len(mine)!=len(left) or len(theirs)!=len(right):
+            return None  # Malformed duplicate declarations have no proof.
+        unknown=False
+        for field_id in sorted(set(mine)|set(theirs)):
+            producer=mine.get(field_id)
+            consumer=theirs.get(field_id)
+            producer_states=(states.get(producer.get('presence','required'))
+                             if producer else {'missing'})
+            consumer_states=(states.get(consumer.get('presence','required'))
+                             if consumer else {'missing'})
+            if producer_states is None or consumer_states is None:
+                return None
+            if not producer_states.issubset(consumer_states):
+                return False  # Counterexample: key absent/undefined/value.
+            if 'value' in producer_states:
+                # Presence already guarantees a value on both boundaries.
+                # Structural Domain inclusion is still required for that case.
+                if producer is None or consumer is None:
+                    return False
+                result=_type_subset(producer['domain'],consumer['domain'])
+                if result is False:
+                    return False
+                if result is None:
+                    unknown=True
+        return None if unknown else True
     if a=='integer' and b=='real':
         return None  # Unbounded integers need a representability proof.
     if a!=b:
