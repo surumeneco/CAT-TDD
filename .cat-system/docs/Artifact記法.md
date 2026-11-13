@@ -368,7 +368,7 @@ record<id:integer,note[optional]:nullable<string>>
 record<x[absent]:boolean,y[undefined]:boolean>
 ~~~
 
-`note[optional]` はキー欠落を許すが、明示nullを許すかどうかは記述されたDomainで決まる。`[absent]` はキーの不在のみ、`[undefined]` は明示的な未定義状態のみを許す。異なるPresence属性で同一名を2回宣言することも重複として拒否する。ParserはRecord内部のPresenceを型付きIRに保持し、Markdown formatterは同属性を再出力する。JSONでの未定義値のwire符号化や実装テストのtransport証明をこの構文だけで完了とみなさない。
+`note[optional]` はキー欠落を許すが、明示nullを許すかどうかは記述されたDomainで決まる。`[absent]` はキーの不在のみ、`[undefined]` は明示的な未定義状態のみを許す。異なるPresence属性で同一名を2回宣言することも重複として拒否する。ParserはRecord内部のPresenceを型付きIRに保持し、Markdown formatterは同属性を再出力する。JSONでの未定義値のwire符号化や実装テストのtransport証明をこの構文だけで完了とみなさない。 有限Domainとして列挙できるRecordでは、`required`は各Domainの値、`optional`はキー欠落と各Domainの値、`absent`はキー欠落のみを組み合わせる（入れ子Recordも同じ）。有限積が上限を超える場合や要素Domainが無限の場合は列挙せずinconclusiveとし、`undefined`のRecord内部値はJSON標準の値として偽装せず、明示的なtransportがない限り有限列挙を行わない。
 ### 汎用型参照（明示的に定義されたDomainへの参照）
 
 `型参照<UUID>` / `ref<UUID>` はRecord型への決め打ちではなく、DomainSpecの `## 型定義 / ## Types` 内に同名で宣言されたDomainを引用する**汎用型参照**である。型本体を創作せず、同名の実定義がないときは `resolved: false` を保持して規範完了に進めない。
