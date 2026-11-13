@@ -108,7 +108,7 @@ Closed world: true
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);p,a,b,t,cr,ds=self.setup(root)
    old='| demo.yes | submit | `input.ready` | 1 | `output.result = true` |'
-   new=old+'\\n| demo.yes | submit | `input.ready` | 2 | `output.result = false` |'
+   new=old+'\n| demo.yes | submit | `input.ready` | 2 | `output.result = false` |'
    data=t.read_text(encoding='utf-8')
    self.assertIn(old,data)
    t.write_text(data.replace(old,new),encoding='utf-8')
