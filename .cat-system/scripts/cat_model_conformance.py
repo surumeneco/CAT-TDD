@@ -213,7 +213,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'operation_presence':sorted((e['operation'],e['field'],e['presence'],fm['id'])
                                     for _,fm,a in pi_docs for e in a.get('operation_presence',[])),
         'operations': {
-            item['id']: (item['direction'], item.get('trigger')) for _,_,a in pi_docs
+            item['id']: (item['direction'], item.get('trigger'), item.get('peer')) for _,_,a in pi_docs
             for item in a.get('operations', [])
         },
         'operation_owners': {item['id']:fm['id'] for _,fm,artifact in pi_docs
@@ -296,17 +296,24 @@ def markdown_model(path):
     boundary_rows = table(text, 'PI boundary', 'PI境界')
     boundary = None
     if boundary_rows:
-        require(len(boundary_rows) == 1, 'TestModel PI boundary must have one row')
-        direction = cell(boundary_rows[0], 'Direction', '方向')
-        boundary = {'peer': cell(boundary_rows[0], 'Peer process', '相手Process'),
-                    'direction': DIRECTION_ALIASES.get(direction, direction)}
+        peers = [cell(row, 'Peer process', '相手Process') for row in boundary_rows]
+        directions = [DIRECTION_ALIASES.get(cell(row, 'Direction', '方向'),
+                                             cell(row, 'Direction', '方向'))
+                      for row in boundary_rows]
+        require(len(peers)==len(set(peers)) and len(set(directions))==1,
+                'TestModel PI boundary peer set must be unique with one direction')
+        boundary = {'peer':peers[0], 'direction':directions[0]}
+        if len(peers)>1:
+            boundary['peers']=peers
 
     operations = {}
     for row in table(text, 'PI operations', 'PI操作'):
         direction = cell(row, 'Direction', '方向')
         trigger = cell(row, 'Trigger', '起点')
+        peer = row.get('Peer process', row.get('相手Process', '—')).strip()
         operations[cell(row, 'ID')] = (DIRECTION_ALIASES.get(direction, direction),
-                                       None if trigger in ('-', '—', '') else trigger)
+                                       None if trigger in ('-', '—', '') else trigger,
+                                       None if peer in ('-', '—', '') else peer)
 
     triggers = {cell(row, 'ID'): cell(row, 'Origin', '由来')
                 for row in table(text, 'Triggers', '起点')}
@@ -407,7 +414,7 @@ def json_model(path):
     definitions = {item['id']: (tuple(item['params']),
                    format_expr(item['body'], item['params'], model.get('language', 'en')))
                    for item in model.get('definitions', [])}
-    operations = {item['id']: (item['direction'], item.get('trigger'))
+    operations = {item['id']: (item['direction'], item.get('trigger'), item.get('peer'))
                   for item in model.get('pi_operations', [])}
     return {
         'process':model.get('process'),

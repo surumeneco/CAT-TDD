@@ -24,7 +24,10 @@ def _bounds(model):
     out=[]
     for bound in model.get('pi_boundaries',[]):
         peers=bound.get('peers',[bound.get('peer')])
-        if not isinstance(peers,list) or any(not isinstance(x,str) or not x for x in peers):
+        if (not isinstance(peers,list) or not peers
+                or any(not isinstance(x,str) or not x for x in peers)
+                or len(set(peers))!=len(peers)
+                or bound.get('peer')!=peers[0]):
             raise CompositionError('invalid PI peer specification')
         for peer in peers:
             directions=('send','receive') if bound['direction']=='bidirectional' else (bound['direction'],)
@@ -45,9 +48,24 @@ def _field(model,id_,role,pi):
                                ' owned by PI '+pi+' in '+model['process'])
     return entries[0]
 
-def _operation(model,id_,source_pi,role):
-    return any(x['id']==id_ and x.get('source_pi')==source_pi and x['direction']==role
-               for x in model.get('pi_operations',[]))
+def _operation(model,id_,source_pi,role,peer):
+    # An operation has one normatively declared counterparty. An old PI with
+    # exactly one peer retains its implicit mapping; multi-peer PI must bind
+    # each operation explicitly. Name/role equality is not peer proof.
+    matches=[x for x in model.get('pi_operations',[])
+             if x.get('id')==id_ and x.get('source_pi')==source_pi
+             and x.get('direction')==role]
+    boundaries=[b for b in model.get('pi_boundaries',[])
+                if b.get('artifact')==source_pi]
+    if len(matches)!=1 or len(boundaries)!=1:
+        return False
+    bound=boundaries[0]
+    peers=bound.get('peers',[bound.get('peer')])
+    if (not isinstance(peers,list) or not peers or len(peers)!=len(set(peers))
+            or bound.get('peer')!=peers[0] or peer not in peers):
+        return False
+    assigned=matches[0].get('peer')
+    return assigned==peer if assigned is not None else len(peers)==1
 
 # Re-export for compatibility with existing composition callers/tests.
 from catlib.semantic_subtyping import subset as _type_subset
@@ -66,10 +84,10 @@ def _link(binding,models):
     target_op=binding.get('target_operation')
     if source_op is None or target_op is None:
         raise CompositionError('connection must name both source and target operations')
-    if not _operation(source,source_op,a,'provide'):
-        raise CompositionError('source operation is not provided by its PI')
-    if not _operation(target,target_op,b,'accept'):
-        raise CompositionError('target operation is not accepted by its PI')
+    if not _operation(source,source_op,a,'provide',target['process']):
+        raise CompositionError('source operation is not provided by its PI or assigned to peer')
+    if not _operation(target,target_op,b,'accept',source['process']):
+        raise CompositionError('target operation is not accepted by its PI or assigned to peer')
     fields=binding.get('field_links')
     if not isinstance(fields,list) or not fields:
         raise CompositionError('connection requires typed field links')
@@ -234,6 +252,37 @@ def compose(model_paths,binding_path=None):
             unresolved.append({**edge,'reason':'PI binding exists but structural proof is inconclusive'})
         elif key not in bound_pairs:
             unresolved.append({**edge,'reason':'PI connection/effect lacks explicit binding'})
+    # A single proven operation must not discharge a whole PI when the same
+    # PI declares additional operations to the same peer. Keep missing
+    # operations separate from an absent boundary or an unproved effect.
+    proven_operations=set()
+    for link in proven:
+        if link['status']!='structurally-matched':
+            continue
+        proven_operations.add((link['source_process'],link['source_pi'],
+                               link['source_operation'],link['target_process'],'send'))
+        proven_operations.add((link['target_process'],link['target_pi'],
+                               link['target_operation'],link['source_process'],'receive'))
+    for process,model in models.items():
+        boundaries={b['artifact']:b for b in model.get('pi_boundaries',[])}
+        for op in model.get('pi_operations',[]):
+            pi=op.get('source_pi')
+            if pi not in boundaries:
+                continue
+            boundary=boundaries[pi]
+            declared_peers=boundary.get('peers',[boundary.get('peer')])
+            peer=op.get('peer')
+            candidates=([peer] if peer is not None else
+                        declared_peers[:1] if len(declared_peers)==1 else declared_peers)
+            direction='send' if op.get('direction')=='provide' else 'receive'
+            for target in candidates:
+                edge=(process,pi,target,direction)
+                operation=(process,pi,op.get('id'),target,direction)
+                if edge in bound_pairs and operation not in proven_operations:
+                    unresolved.append({'source_process':process,'source_pi':pi,
+                                       'target_process':target,'direction':direction,
+                                       'operation':op.get('id'),
+                                       'reason':'PI operation lacks explicit binding'})
     unproved_local=[]
     for p,model in models.items():
         if not _local_claim_consistent(model):

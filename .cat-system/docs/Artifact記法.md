@@ -213,6 +213,29 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。単一Triggerに対して提供操作が1件であり、`## Operation presence`で出力の操作が明示され、出力がrequiredである範囲のみ、決定論的Vectorsの`output_operation`を導出する。非required出力の意味的証明は依然として未対応。
 
+### 複数peerに対するOperationの明示対応
+
+同一PIの`## 境界 / ## Boundary`に複数の相手Processを宣言する場合は、各`## 操作 / ## Operations`に`相手Process / Peer process`列を追加し、**その操作が対応する相手を一つ明示**する。単一peerのPIでは従来どおり列を省略できる。
+
+~~~md
+## 境界
+| 相手Process | 方向 |
+| --- | --- |
+| xplay.launcher | 双方向 |
+| xplay.command-source | 双方向 |
+
+## 操作
+| ID | 方向 | 起点 | 相手Process |
+| --- | --- | --- | --- |
+| startup_sync | 受付 | startup_sync | xplay.launcher |
+| manual_sync | 受付 | manual_sync | xplay.command-source |
+~~~
+
+- CompilerはOperationとpeerの対応を出典PI付きIRへ保持し、TestModelのJSON・Markdown両方で独立照合する。PIの全peerへOperationを総当たりで割り当てたり、別peerの同名Operationで代用したりしない。
+- 対応先の未指定・境界外のpeer・重複した境界peerは規範上の曖昧さとして拒否する。合成では送受双方のPI／Operation／相手Processを同一接続ごとに検査し、一部のOperationが接続できても別Operationの接続証拠を代用しない。
+- 同じ提供Operationが「今回の実行を開始した相手」に戻るという**実行時の動的対応**は、この単一peer列だけでは表せない。起点ごとに提供Operationを分けるか、別途正当に確定した相関契約と実観測が必要であり、未導入の自動分配・同一実行証明は行わない。
+- `xplay.command-source`のような論理actor識別子を、実在する独立サービスやHTTP境界として捏造しない。対象Processが組立て集合外なら外部境界として`inconclusive`を維持する。型付き接続が成立しても外部Effect/配送/時系列の証明とは別である。
+
 ### 操作方向
 
 | English | 日本語 |
