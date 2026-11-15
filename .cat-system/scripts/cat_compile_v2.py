@@ -419,8 +419,10 @@ def _readable_spec_v2(path, kind, fm):
         for row in _table_any(body,('Operations','操作'),required=False):
             odir=_canon(_cell(row,'Direction','direction','方向'),{'accept':{'受付'},'provide':{'提供'}},'PI operation direction')
             trig=_cell(row,'Trigger','trigger','起点',required=False)
+            operation_peer=_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス',required=False)
             operations.append({'id':semantic_ident(_cell(row,'ID','Id','id'),'PI operation ID'),'direction':odir,
-                               'trigger':None if trig in ('','-','—','none','なし') else trig})
+                               'trigger':None if trig in ('','-','—','none','なし') else trig,
+                               **({'peer':operation_peer} if operation_peer not in ('','-','—','none','なし') else {})})
         operation_presence=[]
         for row in _table_any(body,('Operation presence','操作別存在'),required=False):
             operation_presence.append({
@@ -992,11 +994,19 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             require(all(ID.fullmatch(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
                     'PI peer process must use stable Process IDs')
             require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
+            peers=pi['boundary'].get('peers',[pi['boundary']['peer']])
+            require(bool(peers) and len(peers)==len(set(peers)) and pi['boundary']['peer']==peers[0],
+                    'PI boundary peers must be nonempty, unique and agree with primary peer')
             require(isinstance(pi['operations'],list),'PI operations must be array')
             for op in pi['operations']:
-                check_keys(op,['id','direction','trigger'],where='PI operation')
+                check_keys(op,['id','direction','trigger'],['peer'],where='PI operation')
                 semantic_ident(op['id'],'PI operation ID')
                 require(op['direction'] in ('accept','provide'),'PI operation direction invalid')
+                if 'peer' in op:
+                    require(isinstance(op['peer'],str) and op['peer'] in peers,
+                            'PI operation peer must match a declared boundary peer')
+                else:
+                    require(len(peers)==1,'PI operation peer required for multi-peer boundary')
                 if op['direction']=='accept':
                     require(op['trigger'] in {t['id'] for t in p['triggers']},'accepted PI operation must reference Process trigger')
                 elif op['trigger'] is not None:
