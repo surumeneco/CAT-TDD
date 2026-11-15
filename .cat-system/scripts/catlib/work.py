@@ -481,3 +481,4 @@ def validate(w):
             if not isinstance(compilation.get('allow_draft'), bool):
                 errs.append('compilation.allow_draft must be boolean')
     return errs
+
