@@ -305,8 +305,10 @@ def markdown_model(path):
     for row in table(text, 'PI operations', 'PI操作'):
         direction = cell(row, 'Direction', '方向')
         trigger = cell(row, 'Trigger', '起点')
+        peer = row.get('Peer process', row.get('相手Process', '—')).strip()
         operations[cell(row, 'ID')] = (DIRECTION_ALIASES.get(direction, direction),
-                                       None if trigger in ('-', '—', '') else trigger)
+                                       None if trigger in ('-', '—', '') else trigger,
+                                       None if peer in ('-', '—', '') else peer)
 
     triggers = {cell(row, 'ID'): cell(row, 'Origin', '由来')
                 for row in table(text, 'Triggers', '起点')}
