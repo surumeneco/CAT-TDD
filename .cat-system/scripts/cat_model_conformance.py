@@ -296,10 +296,15 @@ def markdown_model(path):
     boundary_rows = table(text, 'PI boundary', 'PI境界')
     boundary = None
     if boundary_rows:
-        require(len(boundary_rows) == 1, 'TestModel PI boundary must have one row')
-        direction = cell(boundary_rows[0], 'Direction', '方向')
-        boundary = {'peer': cell(boundary_rows[0], 'Peer process', '相手Process'),
-                    'direction': DIRECTION_ALIASES.get(direction, direction)}
+        peers = [cell(row, 'Peer process', '相手Process') for row in boundary_rows]
+        directions = [DIRECTION_ALIASES.get(cell(row, 'Direction', '方向'),
+                                             cell(row, 'Direction', '方向'))
+                      for row in boundary_rows]
+        require(len(peers)==len(set(peers)) and len(set(directions))==1,
+                'TestModel PI boundary peer set must be unique with one direction')
+        boundary = {'peer':peers[0], 'direction':directions[0]}
+        if len(peers)>1:
+            boundary['peers']=peers
 
     operations = {}
     for row in table(text, 'PI operations', 'PI操作'):
