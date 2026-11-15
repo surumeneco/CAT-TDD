@@ -144,5 +144,71 @@ class MultiPeerBindingTests(unittest.TestCase):
             self.assertIn('operations', result['mismatches'])
 
 
+    def test_unbound_second_operation_on_a_structurally_matched_pi_is_unresolved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            s = model('p.one', 'p.two', 'send')
+            t = model('p.two', 'p.one', 'receive')
+            s['pi_operations'].append(dict(s['pi_operations'][0], id='p.one.extra'))
+            t['pi_operations'].append(dict(t['pi_operations'][0], id='p.two.extra'))
+            paths, links = write_models(Path(temp), s, t, t, [link_to('p.two', 'p.one.op')])
+            # Both models in the assembly must have distinct Process IDs.
+            result = composition.compose(paths[:2], links)
+            self.assertTrue(any(
+                e['reason'] == 'PI operation lacks explicit binding'
+                and e.get('operation') in ('p.one.extra', 'p.two.extra')
+                for e in result['unresolved_connections']))
+
+    def test_human_readable_model_retains_and_checks_operation_peer(self):
+        from cat_compile_v2 import render_model_markdown
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            paths = peer_pi(root)
+            compiled = load(*paths, allow_draft=True, allow_partial=True)
+            report = render_model_markdown(compiled)
+            self.assertIn('Peer process', report)
+            model_path = root / 'Model.md'
+            model_path.write_text(report, encoding='utf-8')
+            checked = conformance.validate(paths[0], paths[1], [paths[2]], model_path, allow_draft=True)
+            self.assertEqual(checked['status'], 'passed', checked)
+            report = report.replace('| submit_op | accept | submit | demo.user |',
+                                    '| submit_op | accept | submit | demo.other |')
+            model_path.write_text(report, encoding='utf-8')
+            invalid = conformance.validate(paths[0], paths[1], [paths[2]], model_path, allow_draft=True)
+            self.assertEqual(invalid['status'], 'blocked')
+            self.assertIn('operations', invalid['mismatches'])
+
+    def test_duplicate_peer_boundary_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            paths = peer_pi(Path(temp))
+            pi = paths[1]
+            pi.write_text(pi.read_text(encoding='utf-8').replace(
+                '| demo.other | bidirectional |', '| demo.user | bidirectional |'),
+                encoding='utf-8')
+            with self.assertRaisesRegex(Blocked, 'peers.*unique'):
+                load(*paths, allow_draft=True, allow_partial=True)
+
+    def test_reversed_operation_role_cannot_be_bound(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, two, three = multi_peer_models()
+            two['pi_operations'][0]['direction'] = 'provide'
+            paths, binds = write_models(Path(temp), source, two, three, [
+                link_to('p.two', 'p.one.op')
+            ])
+            with self.assertRaisesRegex(composition.CompositionError, 'target operation'):
+                composition.compose(paths, binds)
+
+    def test_single_peer_declared_foreign_operation_peer_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            paths = write_v2(Path(temp), False)
+            pi = paths[1]
+            text = pi.read_text(encoding='utf-8')
+            text = text.replace('| ID | Direction | Trigger |\\n| --- | --- | --- |\\n| submit_op | accept | submit |',
+                                '| ID | Direction | Trigger | Peer process |\\n| --- | --- | --- | --- |\\n| submit_op | accept | submit | demo.other |')
+            pi.write_text(text, encoding='utf-8')
+            with self.assertRaisesRegex(Blocked, 'operation peer'):
+                load(*paths, allow_draft=True, allow_partial=True)
+
+
+
 if __name__ == '__main__':
     unittest.main()
