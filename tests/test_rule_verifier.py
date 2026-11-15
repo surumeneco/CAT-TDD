@@ -174,6 +174,41 @@ class RuleVerifierTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.VerifierError,'source record hash mismatch'):
                 verifier.evaluate(model,registry)
 
+    def test_symlinked_fixture_or_runner_cannot_bypass_registry_path_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            metadata=json.loads(registry.read_text())
+            (root/'linked.json').symlink_to(root/'fixture.json')
+            metadata['entries'][0]['fixture']['path']='linked.json'
+            registry.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(verifier.VerifierError,'symlink'):
+                verifier.evaluate(model,registry)
+            metadata['entries'][0]['fixture']['path']='fixture.json'
+            (root/'runner-alias.py').symlink_to(root/'runner.py')
+            metadata['entries'][0]['runner']['path']='runner-alias.py'
+            registry.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(verifier.VerifierError,'symlink'):
+                verifier.evaluate(model,registry)
+            # The same file via a symlinked parent must also fail closed.
+            (root/'shortcut').symlink_to(root,target_is_directory=True)
+            metadata['entries'][0]['runner']['path']='shortcut/runner.py'
+            registry.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(verifier.VerifierError,'symlink'):
+                verifier.evaluate(model,registry)
+
+    def test_absolute_and_dotdot_verifier_file_paths_are_disallowed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            metadata=json.loads(registry.read_text())
+            for path in ('./../'+root.name+'/fixture.json',str(root/'fixture.json')):
+                with self.subTest(path=path):
+                    metadata['entries'][0]['fixture']['path']=path
+                    registry.write_text(json.dumps(metadata))
+                    with self.assertRaisesRegex(verifier.VerifierError,'path'):
+                        verifier.evaluate(model,registry)
+
     def test_nested_presence_and_null_are_distinct(self):
         observed={'missing':{},'null':None,'zero':0,'false':False}
         self.assertEqual(verifier.assertion({'id':'m','path':'missing.a','op':'absent'},observed)['status'],'passed')
