@@ -4,7 +4,7 @@ This repository is the CAT-TDD control workspace. The actual product repositorie
 
 - Do not treat code observed in Room0 and numbered Rooms as specification authority. Existing code and tests may produce CAT candidates only until semantic authority confirms them.
 - Use `.cat-system/docs/` as the common CAT/Cycle/TDD operating contract.
-- Use the common agents and skills already exposed under `.github/`. Technology-specific `tech-*` skills remain in `.cat-system/skills/` until a Work declares that technology and the installer selects it.
+- Use the common agents and skills already exposed under `.github/`. Technology-specific `tech-*` skills remain in `.cat-system/skills/` until a Work declares that technology and the installer selects it. For document/evidence maintenance, follow the existing `cat-tdd-entry` documentation-necessity rule rather than synchronizing status on every code change.
 - Lifecycle state is the containing directory: `New`, `InProgress`, `Blocked`, `Completed`, or `Cancelled`. Move the entire stable-ID Issue/Task/Work directory when state changes; do not duplicate lifecycle state in front matter.
 - Prefer exploration by lifecycle directory: new intake from `Lifecycle/Issues/New/`, resumable work from `Lifecycle/Works/InProgress/`, and external/semantic waits from `Lifecycle/Works/Blocked/`. Do not scan Completed by default.
 - CAT semantic authority belongs in confirmed artifacts under `Docs/Processes/` (or an explicitly linked external authority). Draft/candidate material stays under `Lifecycle/CAT/`.
