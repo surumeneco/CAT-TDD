@@ -7,6 +7,8 @@ description: "Manage Issue/Task/Work lifecycle, deterministic dependency orderin
 
 人間はIssueを入口としてよい。`cycle-scope-divider`が意味的にTask/Workへ分解し、Workへ`flow / work_kind / parent / depends_on`を記録する。
 
+AIが発見した懸念の採否は`cycle-scope-divider`の課題候補の判断に従い、ユーザー要求と自発的な仮説を混同しない。採用していない懸念や、保証対象外と決定した状態の差異を、機械的にTask/Workへ追加しない。既存Issueにある受入条件と依存関係は維持し、scope-order Scriptには採否・仕様解釈を委譲しない。
+
 ## 機械処理
 
 - Lifecycle state移動: `scripts/cat_lifecycle.py`
