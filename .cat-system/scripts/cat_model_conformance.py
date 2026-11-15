@@ -213,7 +213,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'operation_presence':sorted((e['operation'],e['field'],e['presence'],fm['id'])
                                     for _,fm,a in pi_docs for e in a.get('operation_presence',[])),
         'operations': {
-            item['id']: (item['direction'], item.get('trigger')) for _,_,a in pi_docs
+            item['id']: (item['direction'], item.get('trigger'), item.get('peer')) for _,_,a in pi_docs
             for item in a.get('operations', [])
         },
         'operation_owners': {item['id']:fm['id'] for _,fm,artifact in pi_docs
@@ -407,7 +407,7 @@ def json_model(path):
     definitions = {item['id']: (tuple(item['params']),
                    format_expr(item['body'], item['params'], model.get('language', 'en')))
                    for item in model.get('definitions', [])}
-    operations = {item['id']: (item['direction'], item.get('trigger'))
+    operations = {item['id']: (item['direction'], item.get('trigger'), item.get('peer'))
                   for item in model.get('pi_operations', [])}
     return {
         'process':model.get('process'),
