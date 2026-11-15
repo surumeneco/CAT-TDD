@@ -24,7 +24,10 @@ def _bounds(model):
     out=[]
     for bound in model.get('pi_boundaries',[]):
         peers=bound.get('peers',[bound.get('peer')])
-        if not isinstance(peers,list) or any(not isinstance(x,str) or not x for x in peers):
+        if (not isinstance(peers,list) or not peers
+                or any(not isinstance(x,str) or not x for x in peers)
+                or len(set(peers))!=len(peers)
+                or bound.get('peer')!=peers[0]):
             raise CompositionError('invalid PI peer specification')
         for peer in peers:
             directions=('send','receive') if bound['direction']=='bidirectional' else (bound['direction'],)
@@ -45,9 +48,24 @@ def _field(model,id_,role,pi):
                                ' owned by PI '+pi+' in '+model['process'])
     return entries[0]
 
-def _operation(model,id_,source_pi,role):
-    return any(x['id']==id_ and x.get('source_pi')==source_pi and x['direction']==role
-               for x in model.get('pi_operations',[]))
+def _operation(model,id_,source_pi,role,peer):
+    # An operation has one normatively declared counterparty. An old PI with
+    # exactly one peer retains its implicit mapping; multi-peer PI must bind
+    # each operation explicitly. Name/role equality is not peer proof.
+    matches=[x for x in model.get('pi_operations',[])
+             if x.get('id')==id_ and x.get('source_pi')==source_pi
+             and x.get('direction')==role]
+    boundaries=[b for b in model.get('pi_boundaries',[])
+                if b.get('artifact')==source_pi]
+    if len(matches)!=1 or len(boundaries)!=1:
+        return False
+    bound=boundaries[0]
+    peers=bound.get('peers',[bound.get('peer')])
+    if (not isinstance(peers,list) or not peers or len(peers)!=len(set(peers))
+            or bound.get('peer')!=peers[0] or peer not in peers):
+        return False
+    assigned=matches[0].get('peer')
+    return assigned==peer if assigned is not None else len(peers)==1
 
 # Re-export for compatibility with existing composition callers/tests.
 from catlib.semantic_subtyping import subset as _type_subset
@@ -66,10 +84,10 @@ def _link(binding,models):
     target_op=binding.get('target_operation')
     if source_op is None or target_op is None:
         raise CompositionError('connection must name both source and target operations')
-    if not _operation(source,source_op,a,'provide'):
-        raise CompositionError('source operation is not provided by its PI')
-    if not _operation(target,target_op,b,'accept'):
-        raise CompositionError('target operation is not accepted by its PI')
+    if not _operation(source,source_op,a,'provide',target['process']):
+        raise CompositionError('source operation is not provided by its PI or assigned to peer')
+    if not _operation(target,target_op,b,'accept',source['process']):
+        raise CompositionError('target operation is not accepted by its PI or assigned to peer')
     fields=binding.get('field_links')
     if not isinstance(fields,list) or not fields:
         raise CompositionError('connection requires typed field links')
