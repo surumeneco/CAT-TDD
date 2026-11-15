@@ -483,13 +483,19 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
         receipt_keys=('guard_refs','overlap_count','overlaps','uncovered',
                       'uncovered_count','unreachable_rules',
                       'excluded_by_pi_constraints')
+        symbolic_receipt_keys=('proof_method','partition_fields',
+                               'abstract_state_count','proof_scope')
         if isinstance(actual_guards,dict):
             for trigger,expected_receipt in source_guard['triggers'].items():
                 if expected_receipt['result'] in ('proved','uncovered','conflict'):
                     observed=actual_guards.get(trigger)
                     if (not isinstance(observed,dict) or any(
                             not semantic_types.same(observed.get(k),expected_receipt[k])
-                            for k in receipt_keys)):
+                            for k in receipt_keys)
+                            or any(not semantic_types.same(observed.get(k),expected_receipt.get(k))
+                                   for k in symbolic_receipt_keys)
+                            or ('proof_method' not in expected_receipt and
+                                any(k in observed for k in symbolic_receipt_keys))):
                         if 'source_guard_coverage' not in mismatches:
                             mismatches.append('source_guard_coverage')
                         break
