@@ -169,7 +169,7 @@ class MultiPeerBindingTests(unittest.TestCase):
             model_path = root / 'Model.md'
             model_path.write_text(report, encoding='utf-8')
             checked = conformance.validate(paths[0], paths[1], [paths[2]], model_path, allow_draft=True)
-            self.assertEqual(checked['status'], 'passed', checked)
+            self.assertEqual(checked['status'], 'passed', (checked, conformance.source_semantics(paths[0], paths[1], [paths[2]], allow_draft=True)['operations'], conformance.markdown_model(model_path)['operations'], report))
             report = report.replace('| submit_op | accept | submit | demo.user |',
                                     '| submit_op | accept | submit | demo.other |')
             model_path.write_text(report, encoding='utf-8')
