@@ -24,6 +24,8 @@ import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
 import cat_verifier_contracts as verifier_runtime
 import cat_process_composition as composition_runtime
+import cat_effect_trace_correlation as effect_correlation_runtime
+import cat_external_effect_receipts as effect_receipts_runtime
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / 'config' / 'routing.json'
@@ -381,6 +383,8 @@ def conformance_input_hashes(wpath, w, kind):
         keys.extend(['model','vectors','queue','obligations'])
         if conf.get('conformance_binding'):
             keys.append('conformance_binding')
+        keys.extend(key for key in ('effect_trace','effect_packet','effect_driver')
+                    if conf.get(key))
     # Runtime rule verification must be invalidated when its registered
     # runner/fixture/assertion identities change, even if the Work is unchanged.
     if kind in ('process-closure','implementation-conformance') and conf.get('verifier_registry'):
@@ -400,6 +404,22 @@ def conformance_input_hashes(wpath, w, kind):
     for index, raw in enumerate(compilation_tce_paths(wpath, w, conf, True), 1):
         path = Path(raw)
         result['tce:' + str(index)] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    if kind=='implementation-conformance' and conf.get('effect_packet'):
+        packet_path=Path(compilation_path(wpath,w,conf,'effect_packet',True))
+        packet=read_json(packet_path)
+        observations=packet.get('observations')
+        require(isinstance(observations,list),'Effect packet observations required')
+        for index,receipt in enumerate(observations,1):
+            require(isinstance(receipt,dict),'Effect receipt must be an object')
+            if receipt.get('reported_status')=='not-observed':
+                continue
+            try:
+                path=effect_receipts_runtime._local(packet_path.parent,
+                                                    receipt.get('observation_file'))
+            except (effect_receipts_runtime.ReceiptError,ValueError,OSError) as exc:
+                raise Blocked('Effect observation input invalid: '+str(exc)) from exc
+            result['effect_observation:'+str(index)]={'path':str(path),
+                                                     'sha256':sha(path.read_bytes())}
     if kind=='implementation-conformance' and conf.get('queue'):
         queue_file=Path(compilation_path(wpath,w,conf,'queue',True))
         queue_data=read_json(queue_file)
@@ -453,6 +473,7 @@ def record_conformance_evidence(wpath, w, kind, result):
         'supporting_evidence': supporting,
         'verifier_evidence':result.get('verifier_evidence'),
         'composition_evidence':result.get('composition_evidence'),
+        'effect_correlation_evidence':result.get('effect_correlation_evidence'),
     }
     if kind == 'implementation-conformance':
         payload['repo_state_sha256'] = sha(json_bytes(_repo_state(wpath, w)))
@@ -496,6 +517,43 @@ def conformance_evidence_status(wpath, w, kind):
         return {'status': e.get('verdict', 'inconclusive'), 'evidence': str(path), 'reason': e.get('reason', '')}
     except (OSError, KeyError, Blocked):
         return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance evidence cannot be revalidated'}
+
+
+
+def implementation_effect_preflight(wpath,w,conf):
+    """Source-bound packet/trace preflight; never grants a CAT Gate pass."""
+    files=('effect_trace','effect_packet','effect_driver')
+    selected=[key for key in files if conf.get(key)]
+    require(not selected or len(selected)==3,
+            'Effect evidence requires trace, packet and driver together')
+    if not selected:
+        return None
+    def loc(key):return Path(compilation_path(wpath,w,conf,key,True))
+    model=loc('model')
+    trace=loc('effect_trace')
+    packet=loc('effect_packet')
+    driver=loc('effect_driver')
+    repo=None
+    driver_repo_path=None
+    if conf.get('effect_repo') or conf.get('effect_repo_path'):
+        require(conf.get('effect_repo') and conf.get('effect_repo_path'),
+                'Effect checkout verification requires repository and relative path')
+        repo=resolve_dir(wpath,w,'@repo:'+conf['effect_repo'])
+        driver_repo_path=conf['effect_repo_path']
+    try:
+        result=effect_correlation_runtime.correlate(
+            model.read_bytes(), read_json(trace), read_json(packet), driver.read_bytes(),
+            packet.parent,repo,driver_repo_path)
+    except (effect_correlation_runtime.CorrelationError,ValueError,OSError,KeyError,
+            TypeError,IndexError,subprocess.TimeoutExpired) as exc:
+        raise Blocked('Effect/trace evidence invalid: '+str(exc)) from exc
+    runtime=wpath.parent/'.cat-flow'/'cache'
+    runtime.mkdir(parents=True,exist_ok=True)
+    path=runtime/'implementation-effect-correlation.json'
+    path.write_bytes(json_bytes(result))
+    return {'path':str(path),'status':result['status'],
+            'normative_status':result['normative_status'],
+            'provider_authentication_status':result['provider_authentication_status']}
 
 
 def conformance_work(wpath, w, kind):
@@ -594,6 +652,12 @@ def conformance_work(wpath, w, kind):
         msg=(p.stderr or p.stdout).strip()
         status='inconclusive' if any(x in msg for x in ('unsupported','currently supports','unproven','cannot compare')) else 'blocked'
         return {'gate':kind,'status':status,'reason':msg[-1800:]}
+    effect_correlation=None
+    if any(conf.get(key) for key in ('effect_trace','effect_packet','effect_driver')):
+        try:
+            effect_correlation=implementation_effect_preflight(wpath,w,conf)
+        except Blocked as exc:
+            return {'gate':kind,'status':'blocked','reason':str(exc)}
     tech = technology_conformance(wpath, w, conf)
     if tech['status'] == 'blocked':
         return {'gate': kind, 'status': 'blocked', 'reason': tech['reason'],
@@ -658,6 +722,8 @@ def conformance_work(wpath, w, kind):
     missing=sorted(required-categories)
     base={'missing_categories':missing,'technology_results':tech['results'],
           'evaluated_obligations':str(evaluated)}
+    if effect_correlation is not None:
+        base['effect_correlation_evidence']=effect_correlation['path']
     if any(x['status']=='failed' for x in items):
         return {'gate':kind,'status':'blocked','reason':'one or more implementation obligations failed',**base}
     if missing or any(x['status'] in ('inconclusive','not-run') for x in items):
@@ -668,6 +734,12 @@ def conformance_work(wpath, w, kind):
     if predecessor.get('status')!='passed' or model_gate.get('status')!='passed':
         return {'gate':kind,'status':'inconclusive',
                 'reason':'fresh passed process-closure and model-conformance evidence required',**base}
+    if effect_correlation is not None:
+        # A self-submitted trace/receipt has not proved that an Effect happened,
+        # or that the declared Rule's free-text meaning equals the verifier.
+        # Even checked-out driver bytes do not attest runner execution.
+        return {'gate':kind,'status':'inconclusive',
+                'reason':'Effect/trace receipt identities are consistent but provider authenticity and normative meaning are unproved',**base}
     return {'gate':kind,'status':'passed',
             'reason':'all CAT implementation obligations, predecessor Gates and technology inspectors passed',**base}
 
