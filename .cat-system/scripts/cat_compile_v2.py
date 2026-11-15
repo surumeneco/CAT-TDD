@@ -24,6 +24,7 @@ from catlib import semantic_rules
 from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
 from catlib import semantic_subtyping
+from catlib import semantic_interval_partition
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -996,8 +997,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
             peers=pi['boundary'].get('peers',[pi['boundary']['peer']])
             require(bool(peers) and len(peers)==len(set(peers)) and pi['boundary']['peer']==peers[0],
-                    'PI boundary peers must be nonempty, unique and agree with primary peer')
-            require(isinstance(pi['operations'],list),'PI operations must be array')
+                    'PI boundary peers must be nonempty, unique and agree with primary peer')            require(isinstance(pi['operations'],list),'PI operations must be array')
             for op in pi['operations']:
                 check_keys(op,['id','direction','trigger'],['peer'],where='PI operation')
                 semantic_ident(op['id'],'PI operation ID')
@@ -1201,10 +1201,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             continue
         ordered=sorted(relevant)
         domainvalues=[]
+        partition_fields=[]
+        predicates=[*constraints,*(r['when'] for r in rr)]
         for field_id in ordered:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
+            if values is None and (field_id not in input_presence
+                                   or input_presence[field_id]=='required'):
+                values=semantic_interval_partition.integer_partition_values(
+                    field['domain'],field_id,predicates)
+                if values is not None:partition_fields.append(field_id)
             domainvalues.append(values)
         if any(values is None for values in domainvalues):
             per_trigger[trigger]={'result':'unproven',
@@ -1242,12 +1249,18 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             presence_unproven.update(special)
             continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
-        per_trigger[trigger]={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered',
-                              'guard_refs':ordered,'overlap_count':len(overlaps),
-                              'overlaps':overlaps[:16],'uncovered':gaps[:64],
-                              'uncovered_count':len(gaps),
-                              'unreachable_rules':sorted(unreachable),
-                              'excluded_by_pi_constraints':True if constraints else False}
+        check={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered',
+               'guard_refs':ordered,'overlap_count':len(overlaps) if not partition_fields else None,
+               'overlaps':overlaps[:16],'uncovered':gaps[:64],
+               'uncovered_count':len(gaps) if not partition_fields else None,
+               'unreachable_rules':sorted(unreachable),
+               'excluded_by_pi_constraints':True if constraints else False}
+        if partition_fields:
+            check.update(proof_method='integer-literal-partition/v1',
+                         partition_fields=partition_fields,
+                         abstract_state_count=combinations,
+                         proof_scope='local-guard-truth-partition-not-effect-or-implementation')
+        per_trigger[trigger]=check
         require(allow_draft or not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
     presence_unproven=sorted(presence_unproven)
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
@@ -1503,12 +1516,18 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             require(provide_operation is not None,
                     'ambiguous provided output operation for deterministic vectors')
         domains=[]
+        predicates=[*model['pi_constraints'],*(r['when'] for r in model['rules']
+                                                if r['trigger']==trigger)]
         for field_id in variable_ids:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],presence[field_id])
                     if field_id in presence else typed.finite_values(field['domain']))
+            if values is None and (field_id not in presence
+                                   or presence[field_id]=='required'):
+                values=semantic_interval_partition.integer_partition_values(
+                    field['domain'],field_id,predicates,allow_unused=True)
             require(values is not None,
-                    'rule-witness/v1 cannot enumerate domain or Presence of '+field_id)
+                    'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)
             domains.append(values)
         require(__import__('math').prod(len(x) for x in domains)<=65536,
