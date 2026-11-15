@@ -1,6 +1,6 @@
 """UP20-06: independent receipt identity, no synthetic external proof."""
 from __future__ import annotations
-import hashlib,json,sys,tempfile,unittest
+import hashlib,json,sys,tempfile,unittest,subprocess
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'.cat-system'/'scripts'))
 import cat_external_effect_receipts as evidence
@@ -87,6 +87,33 @@ class ExternalEvidenceTests(unittest.TestCase):
             raw,packet=inputs(Path(t));packet['observations'].append(dict(packet['observations'][0]))
             with self.assertRaisesRegex(evidence.ReceiptError,'duplicate observation'):
                 evidence.inspect(raw,packet,DRIVER,t)
+    def test_checkout_proves_driver_blob_identity_not_external_effect(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);repo=root/'repository';repo.mkdir()
+            def git(*argv):
+                return subprocess.run(['git','-C',str(repo),*argv],check=True,
+                                      capture_output=True,text=True).stdout.strip()
+            git('init','-q')
+            (repo/'runner.py').write_bytes(DRIVER)
+            git('add','runner.py')
+            git('-c','user.email=tests@example.org','-c','user.name=CAT Test',
+                'commit','-qm','pin runner')
+            head=git('rev-parse','HEAD')
+            raw,packet=inputs(root);packet['implementation_head']=head
+            result=evidence.inspect(raw,packet,DRIVER,root,repo,'runner.py')
+            self.assertTrue(result['implementation_head_checkout_verified'])
+            self.assertEqual(result['external_effect_proof'],'not-run')
+            self.assertEqual(result['provider_authentication_status'],'not-run')
+            packet['implementation_head']='0'*40
+            with self.assertRaisesRegex(evidence.ReceiptError,'HEAD'):
+                evidence.inspect(raw,packet,DRIVER,root,repo,'runner.py')
+            packet['implementation_head']=head
+            (repo/'runner.py').write_bytes(DRIVER+b'changed')
+            with self.assertRaisesRegex(evidence.ReceiptError,'Driver bytes'):
+                evidence.inspect(raw,packet,DRIVER,root,repo,'runner.py')
+            with self.assertRaisesRegex(evidence.ReceiptError,'root and driver'):
+                evidence.inspect(raw,packet,DRIVER,root,repo,None)
+
     def test_stale_fixture_file_or_path_traversal_blocks(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);raw,packet=inputs(root);(root/'obs.json').write_text('{}')

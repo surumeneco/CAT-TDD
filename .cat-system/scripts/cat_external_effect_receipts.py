@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import subprocess
 
 SCHEMA='cat-external-effect-receipts/v1'
 
@@ -37,6 +38,11 @@ def _local(root,name):
     candidate=Path(name)
     require(not candidate.is_absolute() and '..' not in candidate.parts,
             'observation path must remain under evidence root')
+    # Do not follow symlinked evidence members, including intermediate folders.
+    prefix=root
+    for component in candidate.parts:
+        prefix=prefix/component
+        require(not prefix.is_symlink(),'observation path contains a symlink')
     full=(root/candidate).resolve(strict=True)
     require(full!=root and root in full.parents and full.is_file() and not full.is_symlink(),
             'observation path outside evidence root or invalid file')
@@ -80,7 +86,44 @@ def _rules(model,sources):
     return rules
 
 
-def inspect(model_bytes,packet,driver_bytes,observation_root):
+def _verify_checkout(repository_root,driver_repo_path,commit,driver_bytes):
+    """Verify a driver blob really belongs to the declared Git commit.
+
+    This proves repository/driver identity only; the observation provider may
+    still be synthetic or the driver may never have executed.
+    """
+    require(not Path(repository_root).is_symlink(), 'checkout root invalid')
+    root=Path(repository_root).resolve(strict=True)
+    require(root.is_dir() and not root.is_symlink(), 'checkout root invalid')
+    rel=Path(driver_repo_path) if isinstance(driver_repo_path,str) else Path('.')
+    require(isinstance(driver_repo_path,str) and driver_repo_path
+            and not rel.is_absolute() and '..' not in rel.parts
+            and rel.as_posix() not in ('.',''), 'driver repository path invalid')
+    prefix=root
+    for component in rel.parts:
+        prefix=prefix/component
+        require(not prefix.is_symlink(), 'Driver repository path contains symlink')
+    driver=(root/rel).resolve(strict=True)
+    require(driver!=root and root in driver.parents and driver.is_file()
+            and not driver.is_symlink(), 'driver path outside checkout')
+    def git(*args):
+        proc=subprocess.run(['git','-C',str(root),*args],capture_output=True,
+                            check=False,timeout=10)
+        require(proc.returncode==0, 'Git checkout identity unavailable')
+        return proc.stdout
+    top=Path(git('rev-parse','--show-toplevel').decode().strip()).resolve()
+    require(top==root,'repository_root is not the Git checkout root')
+    actual_head=git('rev-parse','HEAD').decode().strip()
+    require(actual_head==commit,'implementation HEAD does not match checkout')
+    relative=rel.as_posix()
+    blob=git('show',commit+':'+relative)
+    require(blob==driver_bytes and blob==driver.read_bytes(),
+            'Driver bytes differ from pinned HEAD Git blob')
+    return actual_head
+
+
+def inspect(model_bytes,packet,driver_bytes,observation_root,
+            repository_root=None,driver_repo_path=None):
     require(isinstance(model_bytes,bytes) and isinstance(driver_bytes,bytes),
             'actual model/driver bytes required')
     require(isinstance(packet,dict) and packet.get('schema')==SCHEMA,
@@ -98,6 +141,12 @@ def inspect(model_bytes,packet,driver_bytes,observation_root):
     sources=_model_sources(model)
     require(packet.get('source_sha256')==sources, 'Source identity mismatch')
     rules=_rules(model,sources)
+    require((repository_root is None)==(driver_repo_path is None),
+            'checkout verification requires repository root and driver repository path')
+    verified_head=None
+    if repository_root is not None:
+        verified_head=_verify_checkout(repository_root,driver_repo_path,
+                                        packet['implementation_head'],driver_bytes)
     records=packet.get('observations')
     require(isinstance(records,list), 'observations must be an array')
     seen=set();out=[];inconclusive=[]
@@ -160,7 +209,7 @@ def inspect(model_bytes,packet,driver_bytes,observation_root):
             'source_sha256':sources,
             'driver_sha256':packet['driver_sha256'],
             'implementation_head_claim':packet['implementation_head'],
-            'implementation_head_checkout_verified':False,
+            'implementation_head_checkout_verified':verified_head is not None,
             'receipts':out,'unresolved':inconclusive,
             'limitations':['synthetic-fixtures-do-not-prove-real-effects',
                            'no-observation-provider-authentication',
@@ -175,12 +224,15 @@ def main(argv=None):
     p.add_argument('--packet',type=Path,required=True)
     p.add_argument('--driver',type=Path,required=True)
     p.add_argument('--observation-root',type=Path,required=True)
+    p.add_argument('--repository-root',type=Path)
+    p.add_argument('--driver-repo-path')
     p.add_argument('--output',type=Path,required=True)
     args=p.parse_args(argv)
     try:
         result=inspect(args.model.read_bytes(),
                        json.loads(args.packet.read_text(encoding='utf-8')),
-                       args.driver.read_bytes(),args.observation_root)
+                       args.driver.read_bytes(),args.observation_root,
+                       args.repository_root,args.driver_repo_path)
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
         print(json.dumps({'status':result['status'],
