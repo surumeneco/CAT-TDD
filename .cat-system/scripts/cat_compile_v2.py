@@ -1744,7 +1744,7 @@ def render_model_markdown(model):
             direction=direction_ja.get(op['direction'],op['direction']) if ja else op['direction']
             row=f"| {_md(op['id'])} | {_md(direction)} | {_md(op.get('trigger') or '—')} |"
             if has_peer:
-                row=row[:-1]+f" {_md(op.get('peer') or '—')} |"
+                row+=f" {_md(op.get('peer') or '—')} |"
             lines.append(row)
     lines += ['',('## 起点' if ja else '## Triggers'),'',('| ID | 由来 |' if ja else '| ID | Origin |'),'| --- | --- |']
     for t in model['triggers']:lines.append(f"| {_md(t['id'])} | {_md(t['origin'])} |")
