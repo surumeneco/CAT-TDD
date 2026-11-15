@@ -77,7 +77,7 @@ CATの仕様記述・開発フロー・TDDをVS Code / GitHub Copilot・Codex・
 - 人間による最新の明示指示と指定された規範的仕様を、要求された振る舞いの基準とする。ソースコード・テスト・CI・ログは現実の証拠であって、コードだけを仕様に昇格させない。
 - CAT正本とテストモデルからテストの期待結果を定める。実装結果をoracleにしない。レビュー者の分離だけで独立性が保証されるとも扱わない。
 - `spec-confirmed`、`tests-green`、`ci-passed`、`merged`、`deployed`、`real-use-verified`は独立状態。
-- 静的なプロジェクト情報は文書、プロジェクト固有の繰り返し手順のみ`<project>-adapter`に置く。XPlayServer固有情報は`extensions/xplayserver-adapter/`へ隔離し、`--adapter xplayserver-adapter`を明示したWorkだけへ導入する。
+- 静的なプロジェクト情報は利用先の文書、プロジェクト固有の繰り返し手順は利用先が用意する`<project>-adapter`に置く。公開CAT-TDDテンプレートには特定製品のアダプタやその私有文書を含めず、`--adapter <project>-adapter`を明示し、実際に配置された場合だけ選択導入する。
 
 ## 配置時の最小手順
 
