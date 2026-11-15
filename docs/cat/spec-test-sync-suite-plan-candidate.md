@@ -5,9 +5,9 @@ id: cat-tdd.spec-test-sync.suite-plan-prototype
 status: candidate
 process: cat-tdd.spec-test-sync
 source_refs:
-  - https://drive.google.com/file/d/1l73dJkpggDA96MT4st9Ha-NIwdEXNLSW/view
-  - https://drive.google.com/file/d/1RsJI_z4C3QBI5iPZy0v1vFiKRXM37zWB/view
-  - https://drive.google.com/file/d/1FaXcWNoBd2WRzkhHc16rSKREGVDwtdh4/view
+  - .cat-system/docs/開発フロー.md
+  - .cat-system/docs/AI実行契約.md
+  - .cat-system/config/routing.json
 refs: []
 semantic_contract: markdown-v2
 language: ja
@@ -17,7 +17,7 @@ language: ja
 
 ## Scope and authority
 
-This is a **non-normative Candidate for the pure planner algorithm**, now called by the separately guarded `cat_spec_test_sync.py` implementation on a feature branch. It is not a Confirmed CAT Semantic Artifact or a test oracle. The original four flows retain their Red/Green contract and TDD Queue unchanged. Actual synchronization requires current Confirmed source, process-closure/model-conformance evidence, safe file ownership and a pinned repository revision; none is granted by the planner itself.
+This is a **non-normative Candidate for the pure planner algorithm**. The `source_refs` above identify the in-repository flow and runtime contracts relevant to this candidate; they are not a substitute for source-specific normative approval. It is not a Confirmed CAT Semantic Artifact or a test oracle. The original four flows retain their Red/Green contract and TDD Queue unchanged. Actual synchronization requires current Confirmed source, process-closure/model-conformance evidence, safe file ownership and a pinned repository revision; none is granted by the planner itself.
 
 The companion `cat_suite_plan_candidate.py` is a pure function returning an ordered **proposal** from caller-supplied metadata. It never reads or changes the filesystem or Git, never invokes a renderer, and cannot execute tests. Consequently its caller must separately prove that the input source/model/vector hashes, confirmed specification, Git revision, and observed disk hashes are authentic and fresh before any future authorized sync.
 
