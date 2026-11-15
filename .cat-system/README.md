@@ -6,7 +6,7 @@ version: '1.0'
 
 # CAT実用エージェント体系
 
-CAT理論をVS Code / GitHub Copilot・Codex・Claude Code上の開発作業へ接続するための共通定義原本。**Gitを前提とするが、GitHubでのホスティングを前提としない。** 理論正本は`forGPT/SystemDevelopment/00_理論・構想/設計理論.md`。自然言語Conditionの網羅性、一般的なProcess合成、テストの完全性を機械証明できるとは扱わない。
+CATの仕様記述・開発フロー・TDDをVS Code / GitHub Copilot・Codex・Claude Code上の開発作業へ接続するための**公開可能で自己完結した実行契約**。**Gitを前提とするが、GitHubでのホスティングを前提としない。** 本パッケージの適用手順と検証可能範囲は本リポジトリ内の[`Artifact記法`](docs/Artifact記法.md)・[`開発フロー`](docs/開発フロー.md)・[`AI実行契約`](docs/AI実行契約.md)・[`機械的変換`](docs/機械的変換.md)・[`routing.json`](config/routing.json)に記す。導入や判断に特定個人の外部ストレージ、ChatGPTプラグイン、非公開文書を必須としない。自然言語Conditionの網羅性、一般的なProcess合成、テストの完全性を機械証明できるとは扱わない。
 
 | 原本 | 開発ワークスペースへの配置 | 管轄 |
 | --- | --- | --- |
@@ -77,7 +77,7 @@ CAT理論をVS Code / GitHub Copilot・Codex・Claude Code上の開発作業へ�
 - 人間による最新の明示指示と指定された規範的仕様を、要求された振る舞いの基準とする。ソースコード・テスト・CI・ログは現実の証拠であって、コードだけを仕様に昇格させない。
 - CAT正本とテストモデルからテストの期待結果を定める。実装結果をoracleにしない。レビュー者の分離だけで独立性が保証されるとも扱わない。
 - `spec-confirmed`、`tests-green`、`ci-passed`、`merged`、`deployed`、`real-use-verified`は独立状態。
-- 静的なプロジェクト情報は文書、プロジェクト固有の繰り返し手順のみ`<project>-adapter`に置く。XPlayServer固有情報は`extensions/xplayserver-adapter/`へ隔離し、`--adapter xplayserver-adapter`を明示したWorkだけへ導入する。
+- 静的なプロジェクト情報は利用先の文書、プロジェクト固有の繰り返し手順は利用先が用意する`<project>-adapter`に置く。公開CAT-TDDテンプレートには特定製品のアダプタやその私有文書を含めず、`--adapter <project>-adapter`を明示し、実際に配置された場合だけ選択導入する。
 
 ## 配置時の最小手順
 
@@ -88,7 +88,9 @@ CAT理論をVS Code / GitHub Copilot・Codex・Claude Code上の開発作業へ�
 
 ## 参照資料
 
-- [CAT設計理論](https://drive.google.com/file/d/1yCwl46msHLvDSMObrHRBL7_RLV3H9ZJt/view)
-- [XPlayServer作業入口](https://drive.google.com/file/d/1oyuQJfvjho_RsWIrlPI_XCmLlc4Df0dl/view)
+- [CAT Artifact記法](docs/Artifact記法.md)
+- [開発フロー](docs/開発フロー.md)
+- [AI実行契約](docs/AI実行契約.md)
+- [プロジェクト適用](docs/プロジェクト適用.md)
 - [VS Code Custom Agents](https://code.visualstudio.com/docs/agent-customization/custom-agents)
 - [VS Code Agent Skills](https://code.visualstudio.com/docs/agent-customization/agent-skills)

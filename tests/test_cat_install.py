@@ -44,16 +44,33 @@ class InstallTest(unittest.TestCase):
         self.assertIn('.github/skills/tech-vitest/scripts/cat_vitest_renderer.py', rel)
 
     def test_project_extension_is_explicit_only(self):
-        a,s,e=self.selected()
-        rel=[str(dst.relative_to(self.project)) for _,dst,_ in installer.plan(self.project,a,s,False,e)]
-        self.assertFalse(any('xplayserver-adapter' in x or 'XPlayServer.md' in x for x in rel))
-        a,s,e=self.selected('xplayserver-adapter')
-        self.assertEqual(e.name,'xplayserver-adapter')
-        rel=[str(dst.relative_to(self.project)) for _,dst,_ in installer.plan(self.project,a,s,False,e)]
-        self.assertIn('.github/skills/xplayserver-adapter/SKILL.md',rel)
-        self.assertIn('.cat-system/extensions/xplayserver-adapter/XPlayServer.md',rel)
-        rows=installer.plan(self.project,a,s,False,e)
-        self.assertEqual(installer.planned_reference_errors(self.project,rows),[])
+        # Public CAT-TDD must be testable without any private project adapter.
+        agents, skills, extension = self.selected()
+        self.assertIsNone(extension)
+        baseline = [str(dst.relative_to(self.project))
+                    for _, dst, _ in installer.plan(self.project, agents, skills, False, extension)]
+        self.assertFalse(any('/extensions/' in path or '-adapter/' in path for path in baseline))
+        with self.assertRaises(flow.Blocked):
+            self.selected('missing-fixture-adapter')
+
+        root = installer.ROOT / 'extensions'
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='unit-', suffix='-adapter', dir=root) as tmp:
+            local = Path(tmp)
+            name = local.name
+            (local / 'SKILL.md').write_text(
+                f'---\nname: {name}\ndescription: Temporary public test adapter.\n---\n'
+                '# Fixture adapter\n\nSee [local reference](AdapterReference.md).\n',
+                encoding='utf-8')
+            (local / 'AdapterReference.md').write_text(
+                '# Isolated adapter reference\n', encoding='utf-8')
+            agents, skills, extension = self.selected(name)
+            self.assertEqual(extension.name, name)
+            rows = installer.plan(self.project, agents, skills, False, extension)
+            installed = {str(dst.relative_to(self.project)) for _, dst, _ in rows}
+            self.assertIn(f'.github/skills/{name}/SKILL.md', installed)
+            self.assertIn(f'.cat-system/extensions/{name}/AdapterReference.md', installed)
+            self.assertEqual(installer.planned_reference_errors(self.project, rows), [])
 
     def test_multi_skill_technology_is_selected_only_when_adopted(self):
         self.work['technologies']=['Docker']
