@@ -29,6 +29,15 @@ def _unresolved_domain(domain):
 
 def subset(source,target):
     """True only for proved inclusion; False for a counterexample; None if unknown."""
+    # An exact, fully resolved union arm proves inclusion even when another
+    # arm is still unresolved. Unresolved source aliases are NOT promoted to
+    # a proof, and partial/structural inclusion still requires a separate check.
+    if isinstance(target,dict) and target.get('type')=='union':
+        for arm in target.get('variants',[]):
+            if (not _unresolved_domain(source)
+                    and not _unresolved_domain(arm)
+                    and semantic_types.same(source,arm)):
+                return True
     if _unresolved_domain(source) or _unresolved_domain(target):
         return None
     # Python dict equality conflates enum booleans with integers (True == 1).
