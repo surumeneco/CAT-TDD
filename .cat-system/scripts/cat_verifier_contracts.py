@@ -35,9 +35,20 @@ def read_json(path):
 def resolve(root,name):
     if not isinstance(name,str) or not name or chr(0) in name:
         raise VerifierError('invalid verifier fixture path')
+    relative=Path(name)
+    if relative.is_absolute() or '..' in relative.parts or relative==Path('.'):
+        raise VerifierError('verifier path must be relative and cannot traverse parents')
     root=Path(root).resolve(strict=True)
-    target=(root/name).resolve(strict=True)
-    if target!=root and root not in target.parents:
+    # Resolve the symbolic path only after proving every original component
+    # is a normal directory or file. An in-root symlink is not trusted even
+    # if the target file would have exactly the same SHA256.
+    candidate=root
+    for component in relative.parts:
+        candidate=candidate/component
+        if candidate.is_symlink():
+            raise VerifierError('verifier path contains symlink')
+    target=candidate.resolve(strict=True)
+    if target==root or root not in target.parents:
         raise VerifierError('verifier path outside registry directory')
     if not target.is_file() or target.is_symlink():
         raise VerifierError('verifier source is not a regular file')
