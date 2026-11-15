@@ -252,6 +252,37 @@ def compose(model_paths,binding_path=None):
             unresolved.append({**edge,'reason':'PI binding exists but structural proof is inconclusive'})
         elif key not in bound_pairs:
             unresolved.append({**edge,'reason':'PI connection/effect lacks explicit binding'})
+    # A single proven operation must not discharge a whole PI when the same
+    # PI declares additional operations to the same peer. Keep missing
+    # operations separate from an absent boundary or an unproved effect.
+    proven_operations=set()
+    for link in proven:
+        if link['status']!='structurally-matched':
+            continue
+        proven_operations.add((link['source_process'],link['source_pi'],
+                               link['source_operation'],link['target_process'],'send'))
+        proven_operations.add((link['target_process'],link['target_pi'],
+                               link['target_operation'],link['source_process'],'receive'))
+    for process,model in models.items():
+        boundaries={b['artifact']:b for b in model.get('pi_boundaries',[])}
+        for op in model.get('pi_operations',[]):
+            pi=op.get('source_pi')
+            if pi not in boundaries:
+                continue
+            boundary=boundaries[pi]
+            declared_peers=boundary.get('peers',[boundary.get('peer')])
+            peer=op.get('peer')
+            candidates=([peer] if peer is not None else
+                        declared_peers[:1] if len(declared_peers)==1 else declared_peers)
+            direction='send' if op.get('direction')=='provide' else 'receive'
+            for target in candidates:
+                edge=(process,pi,target,direction)
+                operation=(process,pi,op.get('id'),target,direction)
+                if edge in bound_pairs and operation not in proven_operations:
+                    unresolved.append({'source_process':process,'source_pi':pi,
+                                       'target_process':target,'direction':direction,
+                                       'operation':op.get('id'),
+                                       'reason':'PI operation lacks explicit binding'})
     unproved_local=[]
     for p,model in models.items():
         if not _local_claim_consistent(model):
