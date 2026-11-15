@@ -997,7 +997,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
             peers=pi['boundary'].get('peers',[pi['boundary']['peer']])
             require(bool(peers) and len(peers)==len(set(peers)) and pi['boundary']['peer']==peers[0],
-                    'PI boundary peers must be nonempty, unique and agree with primary peer')            require(isinstance(pi['operations'],list),'PI operations must be array')
+                    'PI boundary peers must be nonempty, unique and agree with primary peer')
+            require(isinstance(pi['operations'],list),'PI operations must be array')
             for op in pi['operations']:
                 check_keys(op,['id','direction','trigger'],['peer'],where='PI operation')
                 semantic_ident(op['id'],'PI operation ID')
