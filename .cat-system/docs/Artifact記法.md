@@ -47,7 +47,7 @@ id: xplay.spot.save
 status: confirmed
 process: xplay.spot
 source_refs:
-  - https://drive.google.com/file/d/EXACT_ID/view
+  - Docs/Constraints/approved-requirements.md
 decision_ref: user-decision-or-normative-url
 refs:
   - xplay.spot.pi.input
@@ -56,6 +56,8 @@ semantic_contract: markdown-v2
 language: ja
 ---
 ~~~
+
+`source_refs` は適用先プロジェクトが保持する出典参照であり、上例は利用側ワークスペース内の架空パスである。本パッケージに特定の私有ストレージへの接続を要求しない。実際の `confirmed` Source では、そのプロジェクトで検証可能な実在参照と承認根拠を指定する。
 
 `language` は `ja / en`。`confirmed`では `decision_ref` を必須とする。Artifact ID / Process IDは参照安定性のためASCII安定IDを推奨する。一方、本文中のTrigger、field、state、observation、action、DomainRule parameter等はPython identifier互換のUnicode識別子と `.` による階層表現を使用できる。
 

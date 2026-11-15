@@ -5,7 +5,8 @@ id: cat-tdd.spec-test-sync.routing-contract
 status: draft
 process: cat-tdd.spec-test-sync
 source_refs:
-  - https://drive.google.com/file/d/1l73dJkpggDA96MT4st9Ha-NIwdEXNLSW/view
+  - .cat-system/docs/開発フロー.md
+  - .cat-system/config/routing.json
 refs: []
 semantic_contract: markdown-v2
 language: ja
@@ -33,4 +34,4 @@ language: ja
 | STS-REGRESS-01 | 既存4フローを利用 | spec-implementationのRed→Green/current=1を維持 | 既存routingとguardの回帰テストを実行 |
 
 ## 適用境界
-本書は採用済み設計の実装準備用Draftであり、Confirmed昇格やCAT機械Gate通過の証拠ではない。既存4フローの動作を変更せず、ChatGPT Chatモード固有の実行手順は本リポジトリに追加しない。機械的なsuite plan・Manifest・同期実装は別工程で検証する。
+本書の`source_refs`は本リポジトリの既存フロー・機械ルーティングの参照先であり、個別プロジェクトの規範Source承認ではない。本書は採用済み設計の実装準備用Draftであり、Confirmed昇格やCAT機械Gate通過の証拠ではない。既存4フローの動作を変更せず、ChatGPT Chatモード固有の実行手順は本リポジトリに追加しない。機械的なsuite plan・Manifest・同期実装は別工程で検証する。
