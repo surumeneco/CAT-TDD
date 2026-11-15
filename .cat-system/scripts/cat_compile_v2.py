@@ -1732,11 +1732,17 @@ def render_model_markdown(model):
         lines += ['',('## PI境界' if ja else '## PI boundary'),'',('| 相手Process | 方向 |' if ja else '| Peer process | Direction |'),'| --- | --- |',
                   f"| {_md(model['pi_boundary']['peer'])} | {_md({'receive':'受信','send':'送信','bidirectional':'双方向'}.get(model['pi_boundary']['direction'],model['pi_boundary']['direction']) if ja else model['pi_boundary']['direction'])} |"]
     if model.get('pi_operations') is not None:
-        lines += ['',('## PI操作' if ja else '## PI operations'),'',('| ID | 方向 | 起点 |' if ja else '| ID | Direction | Trigger |'),'| --- | --- | --- |']
+        has_peer=any('peer' in op for op in model['pi_operations'])
+        heading=('| ID | 方向 | 起点 | 相手Process |' if ja else '| ID | Direction | Trigger | Peer process |') if has_peer else ('| ID | 方向 | 起点 |' if ja else '| ID | Direction | Trigger |')
+        lines += ['',('## PI操作' if ja else '## PI operations'),'',heading,
+                  '| --- | --- | --- | --- |' if has_peer else '| --- | --- | --- |']
         direction_ja={'accept':'受付','provide':'提供'}
         for op in model.get('pi_operations',[]):
             direction=direction_ja.get(op['direction'],op['direction']) if ja else op['direction']
-            lines.append(f"| {_md(op['id'])} | {_md(direction)} | {_md(op.get('trigger') or '—')} |")
+            row=f"| {_md(op['id'])} | {_md(direction)} | {_md(op.get('trigger') or '—')} |"
+            if has_peer:
+                row=row[:-1]+f" {_md(op.get('peer') or '—')} |"
+            lines.append(row)
     lines += ['',('## 起点' if ja else '## Triggers'),'',('| ID | 由来 |' if ja else '| ID | Origin |'),'| --- | --- |']
     for t in model['triggers']:lines.append(f"| {_md(t['id'])} | {_md(t['origin'])} |")
     lines += ['',('## 仕様要素' if ja else '## Fields'),'',('| ID | 役割 | Domain |' if ja else '| ID | Role | Domain |'),'| --- | --- | --- |']
