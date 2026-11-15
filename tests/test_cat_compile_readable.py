@@ -315,12 +315,12 @@ class ReadableArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(Blocked,'not declared/actuable'):
                 load(process,pi,tce,allow_draft=True)
 
-    def test_closed_requirement_keeps_unproven_result_in_draft_but_blocks_normative_compile(self):
+    def test_arithmetic_guard_keeps_unproven_result_in_draft_but_blocks_normative_compile(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),False)
             pi.write_text(pi.read_text().replace('input.enabled | receive | boolean','input.enabled | receive | integer'),encoding='utf-8')
-            tce.write_text(tce.read_text().replace('`input.enabled`','`input.enabled > 0`',1)
-                           .replace('`not input.enabled`','`input.enabled <= 0`'),encoding='utf-8')
+            tce.write_text(tce.read_text().replace('`input.enabled`','`input.enabled + 1 > 0`',1)
+                           .replace('`not input.enabled`','`input.enabled + 1 <= 0`'),encoding='utf-8')
             model=load(process,pi,tce,allow_draft=True)
             self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
             self.assertEqual(model['status'],'draft')
