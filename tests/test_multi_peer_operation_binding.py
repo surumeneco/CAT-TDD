@@ -202,8 +202,8 @@ class MultiPeerBindingTests(unittest.TestCase):
             paths = write_v2(Path(temp), False)
             pi = paths[1]
             text = pi.read_text(encoding='utf-8')
-            text = text.replace('| ID | Direction | Trigger |\\n| --- | --- | --- |\\n| submit_op | accept | submit |',
-                                '| ID | Direction | Trigger | Peer process |\\n| --- | --- | --- | --- |\\n| submit_op | accept | submit | demo.other |')
+            text = text.replace('| ID | Direction | Trigger |\n| --- | --- | --- |\n| submit_op | accept | submit |',
+                                '| ID | Direction | Trigger | Peer process |\n| --- | --- | --- | --- |\n| submit_op | accept | submit | demo.other |')
             pi.write_text(text, encoding='utf-8')
             with self.assertRaisesRegex(Blocked, 'operation peer'):
                 load(*paths, allow_draft=True, allow_partial=True)
