@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from catlib import decimal_integer
 from pathlib import Path
 
 
@@ -17,7 +18,7 @@ def require(ok, msg):
 
 
 def json_bytes(obj):
-    return (json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    return (decimal_integer.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
 def sha(data):
@@ -26,6 +27,6 @@ def sha(data):
 
 def read_json(path):
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        return decimal_integer.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise Blocked(f"{path}: invalid JSON: {exc}") from exc

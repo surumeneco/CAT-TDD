@@ -5,6 +5,7 @@ import re
 import json
 import ast
 from catlib import semantic_json_instant as json_time
+from catlib import decimal_integer
 
 class DomainError(ValueError):
     pass
@@ -45,7 +46,7 @@ def _enum_scalar(token):
         return value
     if token.lower()=='true' or token=='真':return True
     if token.lower()=='false' or token=='偽':return False
-    if re.fullmatch(r'[+-]?(?:0|[1-9][0-9]*)',token):return int(token)
+    if re.fullmatch(r'[+-]?(?:0|[1-9][0-9]*)',token):return decimal_integer.parse(token)
     if not token or '\\' in token or any(ch in token for ch in ('"',"'",'{','}','<','>')):
         raise DomainError('invalid enum literal')
     return token
@@ -113,7 +114,7 @@ def parse(text):
             return {'type':'record','fields':fields,
                     'resolved':all(f['domain']['type']!='unknown' for f in fields)}
     for pattern,kind,cast in (
-        (r'(?:整数|integer)\[\s*([+-]?\d+)?\s*\.\.\s*([+-]?\d+)?\s*\]','integer',int),
+        (r'(?:整数|integer)\[\s*([+-]?\d+)?\s*\.\.\s*([+-]?\d+)?\s*\]','integer',decimal_integer.parse),
         (r'(?:実数|real)\[\s*([+-]?(?:\d+(?:\.\d+)?))?\s*\.\.\s*([+-]?(?:\d+(?:\.\d+)?))?\s*\]','real',float)):
         m=re.fullmatch(pattern,text)
         if m:
@@ -360,11 +361,11 @@ def finite_values(domain,max_values=65536):
 def set_add(values,element):
     out=list(values)
     if not any(same(v,element) for v in out):out.append(element)
-    return sorted(out,key=lambda x:json.dumps(_signature(x),ensure_ascii=False,default=str))
+    return sorted(out,key=lambda x:decimal_integer.dumps(_signature(x),ensure_ascii=False,default=str))
 
 def set_remove(values,element):
     return sorted((v for v in values if not same(v,element)),
-                  key=lambda x:json.dumps(_signature(x),ensure_ascii=False,default=str))
+                  key=lambda x:decimal_integer.dumps(_signature(x),ensure_ascii=False,default=str))
 
 
 # Appended to semantic_types.py in the isolated implementation proposal.
