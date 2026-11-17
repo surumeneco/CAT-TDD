@@ -3,6 +3,7 @@ import hashlib,json,sys,unittest,copy
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'.cat-system'/'scripts'))
 import cat_relation_diagnostic as relation
+from catlib import fixture_probe
 
 SOURCE=b'''---
 kind: domain-spec
@@ -83,4 +84,41 @@ class RelationTests(unittest.TestCase):
                   'relation':'marker-style-references/v1'}
         with self.assertRaisesRegex(relation.RelationError,'source Rule ID absent'):
             relation.inspect(SOURCE,data,contract)
+    def test_generic_identity_accepts_an_alternate_projection_without_marker_fields(self):
+        fixture={'validated':{'objects_by_id':{'a':{'owner':'other'},'b':{'owner':'other'}},
+                              'links_by_id':{'a':'b'}}}
+        data=json.dumps(fixture,sort_keys=True).encode()
+        contract={'schema':'cat-relation-probe/v1','source_artifact':'demo.styles',
+                  'source_sha256':hashlib.sha256(SOURCE).hexdigest(),
+                  'rule_id':'style.links','fixture_sha256':hashlib.sha256(data).hexdigest(),
+                  'relation':'alternative-reference-projection/v1'}
+        decoded,evidence=fixture_probe.verify_identity(SOURCE,data,contract)
+        self.assertEqual(decoded,fixture)
+        self.assertEqual(evidence['relation'],'alternative-reference-projection/v1')
+        self.assertEqual(evidence['normative_status'],'inconclusive')
+        self.assertEqual(evidence['formal_gate_status'],'not-run')
+        self.assertNotIn('status',evidence)  # identity alone has no verdict
+        # The legacy marker CLI must not silently accept a different profile.
+        with self.assertRaisesRegex(relation.RelationError,'unsupported relation predicate'):
+            relation.inspect(SOURCE,data,contract)
+
+    def test_generic_identity_rejects_spoofed_source_or_fixture_on_any_projection(self):
+        fixture={'validated':{'objects_by_id':{'a':{}},'links_by_id':{}}}
+        data=json.dumps(fixture).encode()
+        contract={'schema':'cat-relation-probe/v1','source_artifact':'demo.styles',
+                  'source_sha256':hashlib.sha256(SOURCE).hexdigest(),
+                  'rule_id':'style.links','fixture_sha256':hashlib.sha256(data).hexdigest(),
+                  'relation':'alternative-reference-projection/v1'}
+        with self.assertRaisesRegex(relation.RelationError,'fixture SHA-256 mismatch'):
+            fixture_probe.verify_identity(SOURCE,data+b' ',contract)
+        with self.assertRaisesRegex(relation.RelationError,'Source SHA-256 mismatch'):
+            fixture_probe.verify_identity(SOURCE+b'\n',data,contract)
+
+    def test_marker_profile_is_optional_and_does_not_expand_common_gate(self):
+        original=check(base())
+        self.assertEqual(original['status'],'passed-fixture-only')
+        self.assertEqual(original['normative_status'],'inconclusive')
+        self.assertEqual(original['formal_gate_status'],'not-run')
+        self.assertEqual(original['external_hocon_status'],'not-run')
+        self.assertEqual(original['verification_scope'],'fixture-relational-integrity-only')
 if __name__=='__main__':unittest.main()
