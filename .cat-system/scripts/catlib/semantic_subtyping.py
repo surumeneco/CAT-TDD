@@ -71,6 +71,12 @@ def subset(source,target):
         results=[subset(x,target) for x in source['variants']]
         return False if False in results else (True if all(x is True for x in results) else None)
     if b=='union':
+        # A nullable source is exactly null plus the inner Domain. A union
+        # target may cover these two sets through different arms, even when
+        # the inner Domain is infinite and no finite witness list exists.
+        if a=='nullable' and (subset({'type':'null'},target) is True
+                              and subset(source['of'],target) is True):
+            return True
         results=[subset(source,x) for x in target['variants']]
         if True in results:return True
         # A source can be covered by a union without fitting any one branch.
@@ -81,7 +87,10 @@ def subset(source,target):
         except semantic_types.DomainError:return None
     if b=='nullable':
         if a=='null':return True
-        return subset(source['of'],target['of']) if a=='nullable' else subset(source,target['of'])
+        # Null is already included by the target. For a nullable source,
+        # compare its inner values against the whole target so redundant
+        # inner null members do not create a false rejection.
+        return subset(source['of'],target) if a=='nullable' else subset(source,target['of'])
     if a=='nullable':
         if b=='null':return subset(source['of'],target)
         # General JSON includes null; prove the non-null part separately.
