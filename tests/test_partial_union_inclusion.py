@@ -39,6 +39,39 @@ class PartialUnionInclusionTests(unittest.TestCase):
         changed=resolved('Notice',self.notice['of'],'b'*64)
         self.assertIsNot(subtyping.subset(changed,self.target),True)
 
+    def test_strict_enum_subtype_of_known_arm_with_unresolved_sibling(self):
+        target={'type':'union','variants':[{'type':'integer'},self.unresolved]}
+        self.assertIs(subtyping.subset({'type':'enum','values':[1,2]},target),True)
+
+    def test_bounded_integer_subtype_of_known_arm_with_unresolved_sibling(self):
+        target={'type':'union','variants':[{'type':'integer'},self.unresolved]}
+        self.assertIs(subtyping.subset({'type':'integer','min':0,'max':2},target),True)
+
+    def test_structural_record_subtype_of_known_arm_with_unresolved_sibling(self):
+        source={'type':'record','resolved':True,
+                'fields':[{'id':'x','domain':{'type':'integer','min':0,'max':2},'presence':'required'}]}
+        broad={'type':'record','resolved':True,
+               'fields':[{'id':'x','domain':{'type':'integer'},'presence':'required'}]}
+        self.assertIs(subtyping.subset(source,{'type':'union','variants':[broad,self.unresolved]}),True)
+
+    def test_nullable_nonfinite_subtype_of_known_json_arm_with_unresolved_sibling(self):
+        target={'type':'union','variants':[{'type':'json','root':'value'},self.unresolved]}
+        self.assertIs(subtyping.subset({'type':'nullable','of':{'type':'string'}},target),True)
+
+    def test_incompatible_known_arm_does_not_overrule_unresolved_sibling(self):
+        target={'type':'union','variants':[{'type':'integer'},self.unresolved]}
+        self.assertIsNone(subtyping.subset({'type':'enum','values':[True]},target))
+
+    def test_nominal_provenance_never_widened_by_partial_union(self):
+        source=resolved('Notice',self.notice['of'],'b'*64)
+        target={'type':'union','variants':[self.notice,self.unresolved]}
+        self.assertIsNone(subtyping.subset(source,target))
+
+    def test_malformed_sibling_cannot_certify_partial_union(self):
+        target={'type':'union','variants':[{'type':'integer'},
+                                          {'type':'integer','min':3,'max':2}]}
+        self.assertIsNone(subtyping.subset({'type':'enum','values':[1]},target))
+
     def test_exact_scalar_branch_stays_well_typed(self):
         d={'type':'union','variants':[{'type':'boolean'},self.unresolved]}
         self.assertIs(subtyping.subset({'type':'boolean'},d),True)
