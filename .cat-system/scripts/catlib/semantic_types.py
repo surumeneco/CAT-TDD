@@ -4,6 +4,7 @@ import math
 import re
 import json
 import ast
+from catlib import semantic_json_instant as json_time
 
 class DomainError(ValueError):
     pass
@@ -53,6 +54,9 @@ def _enum_scalar(token):
 def parse(text):
     if not isinstance(text,str) or not text.strip():raise DomainError('empty domain')
     text=text.strip().strip(chr(96))
+    if text in ('json','JSON値'):return {'type':'json','root':'value'}
+    if text in ('json-object','JSONオブジェクト'):return {'type':'json','root':'object'}
+    if text in ('instant','瞬間値'):return {'type':'instant'}
     aliases={'文字列':'string','整数':'integer','真偽':'boolean','バイト列':'bytes','明示null':'null',
              '実数':'real','安全符号付き整数':'string<safe-signed-integer>'}
     text=aliases.get(text,text)
@@ -126,7 +130,11 @@ def _keys(d,required,optional=frozenset()):
 def validate(d):
     if not isinstance(d,dict):raise DomainError('domain object required')
     t=d.get('type')
-    if t in ('boolean','bytes','null'):_keys(d,{'type'})
+    if t=='json':
+        _keys(d,{'type','root'})
+        if d['root'] not in ('value','object'):raise DomainError('invalid JSON root')
+    elif t=='instant':_keys(d,{'type'})
+    elif t in ('boolean','bytes','null'):_keys(d,{'type'})
     elif t in ('integer','real'):
         _keys(d,{'type'},{'min','max'})
         for key in ('min','max'):
@@ -216,6 +224,8 @@ def check_presence(domain,presence,value=MISSING):
 
 def contains(d,value):
     t=d['type']
+    if t=='json':return json_time.json_contains(value,d['root']=='object')
+    if t=='instant':return type(value) is json_time.InstantValue
     if t=='reference':
         if not d.get('resolved'):
             raise DomainError('unresolved named type reference: '+d['name'])
@@ -245,7 +255,7 @@ def contains(d,value):
         return isinstance(value,(bytes,bytearray)) or (isinstance(value,list) and all(type(v) is int and 0<=v<=255 for v in value))
     if t in ('set','sequence'):
         if not isinstance(value,list):return False
-        if t=='set' and len({_signature(v) for v in value})!=len(value):return False
+        if t=='set' and not has_semantic_domain(d['element']) and len({_signature(v) for v in value})!=len(value):return False
         unknown=None
         for element in value:
             try:
@@ -253,6 +263,9 @@ def contains(d,value):
             except DomainError as exc:
                 unknown=exc
         if unknown is not None:raise unknown
+        if t=='set' and has_semantic_domain(d['element']):
+            for i,item in enumerate(value):
+                if any(same_in_domain(d['element'],item,other) for other in value[:i]):return False
         return True
     if t=='record':
         # Record shape is irrelevant for values that cannot be records.
@@ -346,3 +359,112 @@ def set_add(values,element):
 def set_remove(values,element):
     return sorted((v for v in values if not same(v,element)),
                   key=lambda x:json.dumps(_signature(x),ensure_ascii=False,default=str))
+
+
+# Appended to semantic_types.py in the isolated implementation proposal.
+def has_semantic_domain(domain):
+    stack=[domain];seen=set()
+    while stack:
+        item=stack.pop()
+        if not isinstance(item,dict) or id(item) in seen:continue
+        seen.add(id(item))
+        if item.get('type') in ('json','instant'):return True
+        for key in ('of','element'):
+            if key in item:stack.append(item[key])
+        stack.extend(item.get('variants',[]))
+        stack.extend(field['domain'] for field in item.get('fields',[]))
+    return False
+
+
+def same_in_domain(domain,left,right):
+    """Explicit typed equality; legacy same() keeps its existing contract."""
+    if not contains(domain,left) or not contains(domain,right):
+        raise DomainError('typed equality requires in-domain values')
+    kind=domain['type']
+    if kind=='reference':return same_in_domain(domain['of'],left,right)
+    if kind=='json':return json_time.json_equal(left,right)
+    if kind=='instant':return left.seconds==right.seconds
+    if kind=='nullable':
+        return left is right if left is None or right is None else same_in_domain(domain['of'],left,right)
+    if kind=='union':
+        results={same_in_domain(arm,left,right) for arm in domain['variants'] if contains(arm,left) and contains(arm,right)}
+        if len(results)>1:raise DomainError('ambiguous union equality needs an explicit binding')
+        return results.pop() if results else False
+    if kind=='record':
+        if left.keys()!=right.keys():return False
+        fields={field['id']:field['domain'] for field in domain['fields']}
+        return all((left[key] is right[key]) if left[key] is UNDEFINED or right[key] is UNDEFINED
+                   else same_in_domain(fields[key],left[key],right[key]) for key in left)
+    if kind=='sequence':
+        return len(left)==len(right) and all(same_in_domain(domain['element'],a,b) for a,b in zip(left,right))
+    if kind=='set':
+        return len(left)==len(right) and all(any(same_in_domain(domain['element'],a,b) for b in right) for a in left)
+    return same(left,right)
+
+
+def compare_in_domain(domain,left,right):
+    if not contains(domain,left) or not contains(domain,right):
+        raise DomainError('typed ordering requires in-domain values')
+    kind=domain['type']
+    if kind=='reference':return compare_in_domain(domain['of'],left,right)
+    if kind=='instant':left,right=left.seconds,right.seconds
+    elif kind not in ('integer','real','string'):raise DomainError('no ordering contract for '+kind)
+    return int(left>right)-int(left<right)
+
+
+def _require_typed_set_input(element_domain, values, element):
+    # The existing input must itself satisfy set invariants, including
+    # domain-specific equality (for example JSON 1 == 1.0).
+    if (type(values) is not list
+            or not contains({'type': 'set', 'element': element_domain}, values)
+            or not contains(element_domain, element)):
+        raise DomainError('typed set operation requires a valid set and in-domain element')
+
+
+def set_add_in_domain(element_domain,values,element):
+    _require_typed_set_input(element_domain, values, element)
+    return list(values) if any(same_in_domain(element_domain,v,element) for v in values) else [*values,element]
+
+
+def set_remove_in_domain(element_domain,values,element):
+    _require_typed_set_input(element_domain, values, element)
+    return [v for v in values if not same_in_domain(element_domain,v,element)]
+
+
+def bind_in_domain(domain,value,*,instant_decoder=None):
+    """Explicit owner-selected binding; never guess a string/date wire format."""
+    kind=domain['type']
+    if kind=='reference':
+        if not domain.get('resolved'):raise DomainError('unresolved named type binding')
+        result=bind_in_domain(domain['of'],value,instant_decoder=instant_decoder)
+    elif kind=='instant':
+        if type(value) is json_time.InstantValue:result=value
+        elif instant_decoder is None:raise DomainError('explicit instant decoder required')
+        else:
+            try:result=instant_decoder(value)
+            except ValueError as exc:raise DomainError('instant binding rejected: '+str(exc)) from exc
+    elif kind=='nullable':
+        result=None if value is None else bind_in_domain(domain['of'],value,instant_decoder=instant_decoder)
+    elif kind=='record':
+        if not domain.get('resolved') or type(value) is not dict:raise DomainError('resolved record binding required')
+        fields={field['id']:field for field in domain['fields']}
+        if set(value)-set(fields):raise DomainError('unknown record binding field')
+        result={}
+        for key,item in value.items():
+            if fields[key]['presence']=='undefined' and item is UNDEFINED:result[key]=item
+            else:result[key]=bind_in_domain(fields[key]['domain'],item,instant_decoder=instant_decoder)
+    elif kind in ('sequence','set'):
+        if type(value) is not list:raise DomainError('collection binding requires a list')
+        result=[bind_in_domain(domain['element'],item,instant_decoder=instant_decoder) for item in value]
+    elif kind=='union':
+        candidates=[]
+        for arm in domain['variants']:
+            try:candidates.append(bind_in_domain(arm,value,instant_decoder=instant_decoder))
+            except DomainError:pass
+        if not candidates:raise DomainError('no applicable union binding')
+        if not all(same(candidates[0],item) for item in candidates[1:]):
+            raise DomainError('ambiguous union binding needs an explicit branch')
+        result=candidates[0]
+    else:result=value
+    if not contains(domain,result):raise DomainError('bound value is outside declared Domain')
+    return result

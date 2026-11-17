@@ -253,6 +253,9 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 | --- | --- | --- |
 | 真偽値 | `boolean` | `真偽` |
 | 整数 | `integer`, `integer[0..100]` | `整数`, `整数[0..100]` |
+| JSON構造値 | json | JSON値 |
+| JSON属性object | json-object | JSONオブジェクト |
+| 瞬間の抽象値 | instant | 瞬間値 |
 | 文字列 | `string` | `文字列` |
 | 安全な整数文字列 | `string<safe-signed-integer>` | `文字列<安全符号付き整数>` |
 | 列挙 | `enum{draft, published}` | `列挙{下書き, 公開}` |
@@ -260,6 +263,18 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 | 順序列 | `sequence<integer>` | `列<整数>` |
 
 null / undefined / optionalの一般的な値意味を、コンパイラ都合で無理に別Domainへ縮約しない。Presenceまたは領域別仕様として意味を保持し、機械変換非対応ならその事実を明示する。
+
+### JSON・時点の明示Domain
+
+jsonは有限のJSON木、json-objectはそのobject根を表す。null、真偽、文字、有限数値、array順と文字列キーobjectを保持し、循環、undefined、非有限数値、非文字キーを拒否する。深度上限やbinary64上限を型の規範へ追加しない。名前付き型JSONを使用する場合も、DomainSpecの明示宣言が必要で、名前から自動推定しない。
+
+instantは内部の厳密な瞬間carrierを表し、無制約stringや推測した日時精度ではない。明示codecの対象形式/暦範囲と抽象値域を区別し、各APIのwire形式・timezone・epoch単位を統一しない。サブmsの区別を内部で保持できても、既にJS Date等で失われた精度を復元したとはみなさない。
+
+型付き値比較はsemantic_types.same_in_domain / compare_in_domain、ownerが選ぶ日時bindingはbind_in_domainで明示する。JSONではobjectキー順を無視、array順を保持し、数値1/1.0と0/-0を同値とするが真偽と数値は区別する。既存の型なしsameは変更しない。nullable/record/sequence/setと名前付き参照を辿り、曖昧なunion比較やbindingは推測せず拒否する。
+
+semantic_json_instantは大整数/小数を保持するJSON解析・出力、明示offset/aware datetimeのcodecと型付き瞬間transportを提供する。codecの受理は製品入力の認可/書式許可ではない。データ形状以外のowner規則・Provider真正性は別に検証する。
+
+JSON/instantは非有限Domainであり、代表値からfinite coverageを生成しない。現在の型なしAST比較/DomainRule呼出しとVitest rendererにはこれらの意味を暗黙接続せず、明示的な対応bindingがない経路はblockedを維持する。新Domainの登録・構造的包含・Model再生成成功は、自由文規則の意味同値やProcess Closureの合格ではない。
 
 ## 7. TCE
 

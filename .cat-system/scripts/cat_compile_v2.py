@@ -645,6 +645,9 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     if op=='call':
         check_keys(expr,['op','name','args'],where='domain-rule invocation')
         name=expr['name']; require(name in definitions,'unknown DomainRule '+str(name))
+        require(not any(ref in fields and typed.has_semantic_domain(fields[ref]['domain'])
+                        for ref in used_refs(expr,definitions)),
+                'typed JSON/instant expression requires explicit domain binding')
         require(name not in stack,'recursive DomainRule invocation '+str(name))
         defi=definitions[name];require(len(args)==len(defi['params']), 'DomainRule arity mismatch '+name)
         types=[inspect_expr(a,fields,definitions,params,stack) for a in args]
@@ -658,7 +661,11 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     def types_are(permitted):
         require(all(t in permitted or t=='parameter' for t in types),
                 f'{op}: invalid operand types {types}; expected {sorted(permitted)}')
-    if op in ('eq','ne'):return 'boolean'
+    if op in ('eq','ne'):
+        require(not any(ref in fields and typed.has_semantic_domain(fields[ref]['domain'])
+                        for ref in used_refs(expr,definitions)),
+                'typed JSON/instant expression requires explicit domain binding')
+        return 'boolean'
     if op in ('lt','le','gt','ge'):types_are({'integer','real'});return 'boolean'
     if op in ('and','or','not'):types_are({'boolean'});return 'boolean'
     if op in ('add','sub','mul'):
@@ -1570,6 +1577,7 @@ def _vitest_renderer():
 
 
 def emit_vitest(model,vectors,binding_path):
+    require(not any(typed.has_semantic_domain(f['domain']) for f in model.get('fields',[])), 'Vitest renderer requires explicit JSON/instant binding')
     require(not any(f['role'] in ('observation','action') for f in model['fields']),
             'test-code generation for explicit observation/action capabilities requires a technology binding extension; TestModel remains valid')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
@@ -1671,6 +1679,8 @@ def format_domain(d, language='en'):
     t=d['type']
     if t=='reference':return ('型参照<' if language=='ja' else 'ref<')+d['name']+'>'
     if t=='null':return '明示null' if language=='ja' else 'null'
+    if t=='json':return ('JSON値' if d['root']=='value' else 'JSONオブジェクト') if language=='ja' else ('json' if d['root']=='value' else 'json-object')
+    if t=='instant':return '瞬間値' if language=='ja' else 'instant'
     names={'ja':{'boolean':'真偽','integer':'整数','string':'文字列','set':'集合','sequence':'列','enum':'列挙'},
            'en':{'boolean':'boolean','integer':'integer','string':'string','set':'set','sequence':'sequence','enum':'enum'}}[language]
     if t=='boolean':return names['boolean']
