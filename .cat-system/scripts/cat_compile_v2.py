@@ -1397,8 +1397,7 @@ def _vector_input_value(domain,presence,payload,name):
                 'vector missing required/undefined input '+name)
         return typed.MISSING
     value=payload[name]
-    if value=={'$cat_presence':'undefined'}:
-        require(presence=='undefined','undefined input not allowed by Presence '+name)
+    if presence=='undefined' and value=={'$cat_presence':'undefined'}:
         return typed.UNDEFINED
     require(presence not in ('absent','undefined'),
             'value input incompatible with Presence '+name)

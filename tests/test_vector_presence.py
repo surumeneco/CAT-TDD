@@ -59,6 +59,27 @@ class ExplicitPresenceVectorTest(unittest.TestCase):
                 with self.assertRaises(compiler.Blocked):
                     compiler.expand_cases(m,vectors(case(payload)))
 
+    def test_literal_json_object_named_like_presence_marker_is_data(self):
+        marker={'$cat_presence':'undefined'}
+        for presence in ('required','optional'):
+            for root in ('value','object'):
+                with self.subTest(presence=presence,root=root):
+                    m=model(presence)
+                    m['fields'][0]['domain']={'type':'json','root':root}
+                    v=vectors(case({'input.flag':marker}))
+                    expanded=compiler.expand_cases(m,v)
+                    self.assertEqual(expanded[0]['input']['input.flag'],marker)
+                    with tempfile.TemporaryDirectory() as td:
+                        binding=Path(td)/'binding.json'
+                        binding.write_text(json.dumps({'schema':compiler.D,'process':'demo.process','driver':'./driver'}))
+                        with self.assertRaisesRegex(compiler.Blocked,'explicit JSON/instant binding'):
+                            compiler.emit_vitest(m,v,binding)
+
+    def test_presence_marker_literal_cannot_bypass_boolean_domain(self):
+        m=model('required')
+        with self.assertRaisesRegex(compiler.Blocked,'out of domain'):
+            compiler.expand_cases(m,vectors(case({'input.flag':{'$cat_presence':'undefined'}})))
+
     def test_operation_override_does_not_rewrite_domain(self):
         m=model('absent')
         compiler.expand_cases(m,vectors(case({})))
