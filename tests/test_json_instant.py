@@ -252,6 +252,24 @@ class JsonInstantTests(unittest.TestCase):
         self.assertIsNone(sub.subset(types.parse('nullable<ref<Unknown>>'),
                                      types.parse('union<null,json>')))
 
+    def test_nullable_null_inner_is_covered_by_nullable_targets(self):
+        for source,target in (
+            ('nullable<null>','nullable<boolean>'),
+            ('nullable<null>','nullable<json-object>'),
+            ('nullable<union<null,boolean>>','nullable<boolean>'),
+            ('nullable<union<null,integer[0..1]>>','nullable<integer>'),
+        ):
+            self.assertIs(sub.subset(types.parse(source),types.parse(target)),True,
+                          f'{source} <= {target}')
+        for source,target in (
+            ('nullable<boolean>','nullable<integer>'),
+            ('nullable<instant>','nullable<json>'),
+            ('nullable<integer>','nullable<string>'),
+        ):
+            self.assertIsNot(sub.subset(types.parse(source),types.parse(target)),True)
+        self.assertIsNone(sub.subset(types.parse('nullable<ref<Unknown>>'),
+                                     types.parse('nullable<json>')))
+
     def test_subtyping_is_conservative(self):
         value=types.parse('json');obj=types.parse('json-object');instant=types.parse('instant')
         self.assertTrue(sub.subset(obj,value));self.assertFalse(sub.subset(value,obj))

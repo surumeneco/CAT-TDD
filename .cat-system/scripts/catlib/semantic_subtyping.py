@@ -87,7 +87,10 @@ def subset(source,target):
         except semantic_types.DomainError:return None
     if b=='nullable':
         if a=='null':return True
-        return subset(source['of'],target['of']) if a=='nullable' else subset(source,target['of'])
+        # Null is already included by the target. For a nullable source,
+        # compare its inner values against the whole target so redundant
+        # inner null members do not create a false rejection.
+        return subset(source['of'],target) if a=='nullable' else subset(source,target['of'])
     if a=='nullable':
         if b=='null':return subset(source['of'],target)
         # General JSON includes null; prove the non-null part separately.
