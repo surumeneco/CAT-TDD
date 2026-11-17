@@ -76,7 +76,7 @@ def render_junit(model, cases, binding):
         "import org.junit.jupiter.api.DisplayName;",
         "import static org.junit.jupiter.api.Assertions.*;",
         "",
-        "public final class " + class_name + " {",
+        "final class " + class_name + " {",
 
         "    private record Allowed(Map<String,Object> state, Map<String,Object> output) {}",
         "    private static boolean accepts(Map<String,Object> state, Map<String,Object> output, List<Allowed> alternatives) {",
