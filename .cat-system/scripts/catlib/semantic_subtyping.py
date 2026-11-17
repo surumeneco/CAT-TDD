@@ -84,7 +84,11 @@ def subset(source,target):
         return subset(source['of'],target['of']) if a=='nullable' else subset(source,target['of'])
     if a=='nullable':
         if b=='null':return subset(source['of'],target)
-        return False  # Null cannot inhabit any other non-nullable, non-union target.
+        # General JSON includes null; prove the non-null part separately.
+        # Object-only JSON and other non-nullable targets still exclude null.
+        if b=='json' and target['root']=='value':
+            return subset(source['of'],target)
+        return False  # Other non-nullable, non-union targets exclude null.
     if a=='enum':
         if b=='enum':
             return all(any(semantic_types.same(v,x) for x in target['values'])

@@ -218,6 +218,22 @@ class JsonInstantTests(unittest.TestCase):
     def test_new_domains_do_not_fabricate_finite_coverage(self):
         for d in ('json','json-object','instant'):self.assertIsNone(types.finite_values(types.parse(d)))
 
+    def test_nullable_json_values_are_included_in_general_json_only_when_proved(self):
+        general=types.parse('json')
+        object_only=types.parse('json-object')
+        for name in ('nullable<json>', 'nullable<json-object>', 'nullable<integer>',
+                     'nullable<record<a:integer>>', 'nullable<sequence<json>>'):
+            domain=types.parse(name)
+            self.assertTrue(types.contains(domain,None),name)
+            self.assertTrue(types.contains(general,None),name)
+            self.assertIs(sub.subset(domain,general),True,name)
+        for name in ('nullable<instant>','nullable<record<a[undefined]:integer>>'):
+            self.assertIs(sub.subset(types.parse(name),general),False,name)
+        self.assertIs(sub.subset(types.parse('nullable<json-object>'),object_only),False)
+        self.assertIs(sub.subset(types.parse('nullable<json-object>'),types.parse('nullable<json>')),True)
+        unresolved=types.parse('nullable<ref<Unresolved>>')
+        self.assertIsNone(sub.subset(unresolved,general))
+
     def test_subtyping_is_conservative(self):
         value=types.parse('json');obj=types.parse('json-object');instant=types.parse('instant')
         self.assertTrue(sub.subset(obj,value));self.assertFalse(sub.subset(value,obj))
