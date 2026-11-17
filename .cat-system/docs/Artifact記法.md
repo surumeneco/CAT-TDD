@@ -185,6 +185,22 @@ PIはProcess間の境界状態空間であり、実装上の型定義そのも�
 
 PresenceはCATとして有効な意味であり、Domainの`nullable`とは独立している。`optional` の欠落、`absent`、`undefined`、`null`、空文字列、0、falseを同一値に変換しない。
 
+### 非required Presenceを条件で扱う機械的表現
+
+入力Presenceは `required / optional / absent / undefined`、Domainの `nullable` は独立する。非required入力を読むConditionは、値の通常参照に暗黙の既定値を設定しない。
+
+| 条件式 | 意味 |
+| --- | --- |
+| `is_missing(input.x)` | PI入力のキーが存在しない場合のみ真 |
+| `is_undefined(input.x)` | PI入力が明示的なundefined状態の場合のみ真 |
+| `is_present(input.x)` | キーが実在する値である場合のみ真。`null` も値として存在するため真 |
+
+これらの関数には**直接のPI入力フィールド参照1個のみ**渡せる。Conditionは`and`/`or`を左から短絡評価するため、例えば `is_present(input.x) and input.x > 0` は値欠落時に通常参照を行わない。`is_missing`による欠落と`nullable`による`null`は別状態である。欠落/undefinedを通常演算で読む場合はClosureを`unproven`とし、TestModelの正本合格を認めない。
+
+正規Compilerは、閉じた有限Domainの`optional`に欠落＋各値、`absent`に欠落のみ、`undefined`に明示undefinedのみ、`required`に各値を割り当てる。単一の受付Operationに対する操作別Presenceも適用する。受付Operationが曖昧な場合、出力のnonrequired Presence、無限・列挙上限超のDomain、nonrequired入力を直接読むEffectなどはまだ完全証明しない。
+
+決定論的Vectorsでは欠落をキー省略、undefinedを `{"$cat_presence":"undefined"}` として区別する。undefinedをVitestで伝送する場合は、実装側のDriver Bindingに`undefined_transport: "js-undefined/v1"`を明示した場合だけ生成を許可する。生成されたテストはJSONの一時マーカーを**実際のJavaScript `undefined`**に変換してDriverへ渡し、Driverの`undefinedTransport`属性が同じプロトコルを申告することを実行時に確認する。未設定・別プロトコルはblockedを維持し、nullや通常値への置換を認めない。この契約は**Driverが実際に外部境界まで同値転送した証明ではなく**、正規の実テスト実行・Implementation Conformanceが別途必要。
+
 PI全体の既定Presenceと操作別の例外を区別する場合、必要な行だけ`## 操作別存在`（英語:`## Operation presence`）に宣言する。
 
 | 操作 | 項目 | 存在 |
@@ -195,7 +211,32 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 明示的なテストベクトルでは、受付操作を`operation`で特定し、任意項目の欠落は`input`のキーを省略し、`undefined`は`{"$cat_presence":"undefined"}`と表す。提供操作に応じた出力Presenceがある場合は`output_operation`も必須となる。これらは値の同一性の規則であって、実装の動作確認結果ではない。
 
-現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作の識別や`undefined`のドライバー伝送を確立できないVitestコード生成も拒否する。補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
+現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作が明示されたVectorsは、Driver Bindingの`output_operation_transport: "js-driver-provide/v1"`を必須とし、生成VitestはDriverの`outputOperationTransport`と`triggerProvidedOperation(operationId, triggerId, input)`の実在を検証して、指定された提供操作を呼び出す。宣言がない・未知の方法・曖昧な提供操作はblockedを維持する。`undefined`入力も明示的な`js-undefined/v1` Bindingがなければ拒否する。**これらのBindingは検査可能なDriver契約であり、現実の外部送信や複数Processの相互作用の証明ではない。**補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
+
+複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。単一Triggerに対して提供操作が1件であり、`## Operation presence`で出力の操作が明示され、出力がrequiredである範囲のみ、決定論的Vectorsの`output_operation`を導出する。非required出力の意味的証明は依然として未対応。
+
+### 複数peerに対するOperationの明示対応
+
+同一PIの`## 境界 / ## Boundary`に複数の相手Processを宣言する場合は、各`## 操作 / ## Operations`に`相手Process / Peer process`列を追加し、**その操作が対応する相手を一つ明示**する。単一peerのPIでは従来どおり列を省略できる。
+
+~~~md
+## 境界
+| 相手Process | 方向 |
+| --- | --- |
+| xplay.launcher | 双方向 |
+| xplay.command-source | 双方向 |
+
+## 操作
+| ID | 方向 | 起点 | 相手Process |
+| --- | --- | --- | --- |
+| startup_sync | 受付 | startup_sync | xplay.launcher |
+| manual_sync | 受付 | manual_sync | xplay.command-source |
+~~~
+
+- CompilerはOperationとpeerの対応を出典PI付きIRへ保持し、TestModelのJSON・Markdown両方で独立照合する。PIの全peerへOperationを総当たりで割り当てたり、別peerの同名Operationで代用したりしない。
+- 対応先の未指定・境界外のpeer・重複した境界peerは規範上の曖昧さとして拒否する。合成では送受双方のPI／Operation／相手Processを同一接続ごとに検査し、一部のOperationが接続できても別Operationの接続証拠を代用しない。
+- 同じ提供Operationが「今回の実行を開始した相手」に戻るという**実行時の動的対応**は、この単一peer列だけでは表せない。起点ごとに提供Operationを分けるか、別途正当に確定した相関契約と実観測が必要であり、未導入の自動分配・同一実行証明は行わない。
+- `xplay.command-source`のような論理actor識別子を、実在する独立サービスやHTTP境界として捏造しない。対象Processが組立て集合外なら外部境界として`inconclusive`を維持する。型付き接続が成立しても外部Effect/配送/時系列の証明とは別である。
 
 ### 操作方向
 
@@ -299,6 +340,31 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 
 `Verification`はその規則をどのTestModel・静的検査・領域別検証へ接続するかを示す。
 
+### CommonRule / DomainSpecで証明できる機械規則の限定語彙
+
+任意の自然言語Ruleを機械証明へ変換しない。規範Artifactを正当にConfirmedにした上で、次の**完全一致の表現**だけを `cat:intrinsic-model/v1` の意味として扱う。これはあくまで**組み立て済みCATモデルに関する性質**であり、外部システムが実際に送信・反映・表示を行った証明ではない。
+
+~~~md
+## Rules
+| ID | Condition | Requirement | Verification |
+| --- | --- | --- | --- |
+| declared.effects | assembled-process | @cat:effect-targets-declared/v1 | cat:intrinsic-model/v1 |
+| declared.triggers | assembled-process | @cat:tce-triggers-declared/v1 | cat:intrinsic-model/v1 |
+| resolved.domains | assembled-process | @cat:field-domains-resolved/v1 | cat:intrinsic-model/v1 |
+~~~
+
+| Requirement | 厳密な判定対象 |
+| --- | --- |
+| `@cat:effect-targets-declared/v1` | 組み立て済みTCEの全Effect作用先がProcess/PIで宣言済みのstate/output/actionであること |
+| `@cat:tce-triggers-declared/v1` | 組み立て済みTCEの全TriggerがProcessに宣言済みであること |
+| `@cat:field-domains-resolved/v1` | 組み立て済みモデルの全フィールドDomainが再帰的に解決済みであること |
+
+- `Condition` は **`assembled-process`**、`Verification` は **`cat:intrinsic-model/v1`**、`Requirement` は上表の対応する値と完全一致する必要がある。本文の自然言語要求や他のVerifier契約をこの文字列に置き換えて無断で意味変更してはならない。
+- 正当にConfirmedとなった規範Artifactの出典ID・SHA-256と決定根拠が揃い、モデル条件が実証された場合だけ、Compilerが `intrinsic_rule_proofs` を生成する。独立 `model-conformance` は元Artifactから同じ性質を再検査し、結果・出典を比較する。
+- 未承認Artifact、未知の述語、条件の変更、自由記述、外部通信・DOM・データベース・Discord送信等の実装・複数実行に関するRuleは**未証明**である。登録済みfixtureやrunnerの単なる `passed` を自然言語要求の証明に代用しない。
+- この限定語彙を超える意味は、別の規範上の意味定義・Verifierの責任範囲・正当な承認と結合した機械証明手段が成立するまで `inconclusive/blocked` のまま扱う。
+
+
 ## 11. Domain Specification
 
 `kind: domain-spec` はPI/TCE単体では自然に保持しにくいが、プロダクト適合判定には必要な構造・複数実行関係を保持する。
@@ -316,6 +382,54 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 ~~~
 
 対象例はDOM構造、視覚、accessibility、統計的性質、複数実行間の関係等。単にTCEへ書きにくい内容を未定義のまま置く分類ではなく、対象・要求・検証方法を持つ。
+
+### Record内部のPresence記法
+
+構造Recordのフィールドでは、名前の直後に `[optional]`、`[absent]`、`[undefined]` を明示できる。指定しない場合のPresenceは `required`。外側のPIフィールドPresenceと内側のRecordフィールドPresenceは別々に保持する。
+
+~~~text
+レコード<name:文字列,note[optional]:文字列またはnull>
+record<id:integer,note[optional]:nullable<string>>
+record<x[absent]:boolean,y[undefined]:boolean>
+~~~
+
+`note[optional]` はキー欠落を許すが、明示nullを許すかどうかは記述されたDomainで決まる。`[absent]` はキーの不在のみ、`[undefined]` は明示的な未定義状態のみを許す。異なるPresence属性で同一名を2回宣言することも重複として拒否する。ParserはRecord内部のPresenceを型付きIRに保持し、Markdown formatterは同属性を再出力する。JSONでの未定義値のwire符号化や実装テストのtransport証明をこの構文だけで完了とみなさない。 有限Domainとして列挙できるRecordでは、`required`は各Domainの値、`optional`はキー欠落と各Domainの値、`absent`はキー欠落のみを組み合わせる（入れ子Recordも同じ）。有限積が上限を超える場合や要素Domainが無限の場合は列挙せずinconclusiveとし、`undefined`のRecord内部値はJSON標準の値として偽装せず、明示的なtransportがない限り有限列挙を行わない。
+### 汎用型参照（明示的に定義されたDomainへの参照）
+
+`型参照<UUID>` / `ref<UUID>` はRecord型への決め打ちではなく、DomainSpecの `## 型定義 / ## Types` 内に同名で宣言されたDomainを引用する**汎用型参照**である。型本体を創作せず、同名の実定義がないときは `resolved: false` を保持して規範完了に進めない。
+
+`null` / `明示null` は値域が `{null}` の**単一null Domain**である。`nullable<T>` はnullとTの値域を結合するが、`null`は他の通常値を一切許可しない。いずれもフィールドPresenceの`absent`（キー欠落）や`undefined`（未定義）と混同しない。`型参照<明示null>`はこのDomainを自動確定せず、正式なDomainSpecの`## Types`で同名を`null`として明示宣言した場合のみ解決する。有限列挙は`null`に対してちょうど1値であり、`nullable<null>`にも二重のnullを発生させない。
+
+~~~md
+## Types
+| ID | Domain |
+| --- | --- |
+| UUID | string |
+| Edition | enum{JE,BE} |
+| Identity | record<edition:型参照<Edition>,username:string> |
+~~~
+
+ここで `UUID | string` は**宣言された型が文字列である**という構造上の契約に過ぎず、UUIDの妥当な形式、値の同一性、認可条件やwire表現を保証しない。そのような追加制約は独立した規範RuleやDomainSpecへ明記・証明する必要がある。`型参照<UUID>` のような曖昧な既存仕様を、**自動で** `string` に置き換えてはならない。
+
+Resolverは参照先の構造・宣言Artifact ID・SHA-256を型付きIRへ保持し、独立Model Conformanceでソースから照合する。Unknown/循環参照/宣言重複を証明済みとして扱わない。既存の `record<Name>` 記法は引き続き **Recordの形状のみ**参照可能であり、一般の `型参照<Name>` と混同しない。
+### DomainSpec の名前付き構造Domain（宣言のある場合のみ）
+
+DomainSpecでは既存の `## 規則 / ## Rules` に加え、構造Domainを名前で参照するため、`## 型定義 / ## Types` を使用できる。型宣言だけのDomainSpecも有効である。既存の規則のみのDomainSpecとCommonRuleの解釈は変えない。
+
+~~~md
+## Types
+| ID | Domain |
+| --- | --- |
+| User | record<name:string,active:boolean> |
+| Change | record<owner:record<User>,mode:nullable<enum{A,B}>> |
+~~~
+
+- PI/ProcessのDomain欄では `record<Change>`（日本語なら`レコード<Change>`）と参照する。定義の本体は同じProcess、または適用可能な祖先スコープのDomainSpecに置き、実際のCompiler呼出しへ明示的に `--domain-spec` を渡す。
+- Resolverは**明示的なDomainSpec内の構造定義だけ**を使用する。未定義の名前からフィールドを推測しない。型名重複、循環する型定義、構造として解決できない宣言はエラーまたは未解決としてfail closedとする。
+- 変換後のJSON TestModelには、各参照の実際のフィールド構造と、出典Artifact ID、出典SHA-256を保存する。JSONに対する独立 `model-conformance` はこれらをソースから再解決して比較する。
+- 現時点のMarkdown TestModel rendererは型定義の詳細構造・出典を完全表現しないため、**名前付き構造型があるときのMarkdown Model Conformanceを合格証拠としない**。JSONの正式比較を使用する。
+- 型定義はデータ構造の形だけを決める。RuleのVerification（自然言語）を機械的にprovedにしたり、非有限ConditionのProcess Closureを自動証明するものではない。
+- 構造定義はプロダクト固有の規範入力であるため、そのDomainSpecを `confirmed` に昇格するには通常どおり正当な `decision_ref` が必要である。型宣言があるだけで未承認のプロダクト仕様はconfirmedとならない。
 
 ## 12. Issue / Task / Work
 

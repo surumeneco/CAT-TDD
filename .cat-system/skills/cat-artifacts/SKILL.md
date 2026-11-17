@@ -7,14 +7,14 @@ description: "Define and draft CAT Semantic Artifacts in human-readable markdown
 
 使用局面: 要求の意味が決まっており、Process/PI/TCE/CommonRule/DomainRule/DomainSpecをDraftへ具体化するとき。まず`.cat-system/docs/Artifact記法.md`を読み、新規Semantic Artifactは`semantic_contract: markdown-v2`で作成する。未承認の候補なら`cat-reverse`を使う。
 
-1. Workの要求決定、対象Process、外部観測者、親子境界、正本revisionを明示する。
-2. Processの観測可能な責務を先に固定し、内部moduleと混同しない。`Contract / Interfaces / State / Observations / Actions / Triggers`（日本語alias可）を第一級構文として記述する。
+1. Workの要求決定、対象Process、外部観測者、親子境界、正本revisionを明示する。**仕様化前の設計判断**として保証すべき性質・受入条件、観測境界、環境側の前提・対象外を確認する。CATのCompilerやGateに要求範囲の独断的な選択を委ねず、未承認の抽象化を確定仕様にしない。
+2. Processの観測可能な責務を先に固定し、内部moduleと混同しない。具体状態の差異が保証対象の観測・後続の遷移・外部副作用に影響するかを判断し、意味を保持できる場合に限り同値な抽象状態へ統合する。外部サービスのあらゆる非決定的内部状態を列挙して証明することを既定の要求にしない。他方、結果不明の外部処理や再試行・永続化で結果が分かれる状態を根拠なく統合しない。決定済みの境界を`Contract / Interfaces / State / Observations / Actions / Triggers`（日本語alias可）として記述する。
 3. PIはProcess間境界として`Boundary / Fields / Operations / Constraints`を記述する。Fieldsはdirection・domain・presenceを持ち、Process内部stateをPIへ入れない。JSON ASTを手書きしない。
 4. TCEは`Behaviors / 振る舞い`表でTrigger・Condition・Outcome・Effectsを同じ振る舞い単位にまとめる。`Coverage requirement / 網羅要求`は要求であり検証結果ではない。内部SQL・API method呼出しそのものをEffectにしない。
 5. 式はArtifact記法で許可された限定構文だけを使う。任意コード、未定義演算、暗黙の型変換を持ち込まない。
 6. 複数Artifactへ横断するプロダクト規則はCommonRule、PI/TCEへ自然に還元しづらい構造・複数実行・視覚・DOM・accessibility等はDomainSpecとして対象・要求・検証方式を明示する。式として再利用できる計算だけDomainRuleに置く。
 7. 別ProcessへのEffect接続、変更されない宣言済み作用先、親Processの外部結果への経路を追跡する。
-8. 未解消の意味分岐は`unknown`/`conflict`として分離し、confirmedを捏造しない。
+8. 抽象化の採否・環境仮定・対象外に未解消の意味分岐がある場合は`unknown`/`conflict`として分離し、権限ある決定を求める。未検証を`passed`、未承認の設計をconfirmedと偽装しない。
 
 ## 定型構造はスクリプトで生成
 

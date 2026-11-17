@@ -38,6 +38,53 @@ class CompositionTests(unittest.TestCase):
         r.write_text(json.dumps(links if links is not None else binding()))
         return p,q,r
 
+    def test_claimed_confirmed_without_closure_receipt_stays_inconclusive(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            paths=[]
+            for name in ('p.one','p.two'):
+                m=model(name,'outside','send')
+                m['pi_boundaries']=[]
+                # A status string alone is not local-closure evidence.
+                p=root/(name+'.json');p.write_text(json.dumps(m));paths.append(p)
+            result=composer.compose(paths)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertEqual(set(result['unproved_local_processes']),{'p.one','p.two'})
+
+    def test_unproved_coverage_and_unresolved_interface_are_not_silently_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            paths=[]
+            for name in ('p.one','p.two'):
+                m=model(name,'outside','send')
+                m['pi_boundaries']=[]
+                m['coverage_claim']='closed'
+                m['coverage_checks']={'trigger':{'result':'proved'}}
+                m['unresolved_interfaces']=[]
+                if name=='p.one':m['coverage_checks']['trigger']['result']='unproven'
+                if name=='p.two':m['unresolved_interfaces']=['unbound.pi']
+                p=root/(name+'.json');p.write_text(json.dumps(m));paths.append(p)
+            result=composer.compose(paths)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertEqual(set(result['unproved_local_processes']),{'p.one','p.two'})
+
+    def test_consistent_local_claims_without_boundaries_can_be_structurally_closed(self):
+        # This test only checks the composition protocol's local-claim input
+        # contract; independent Source->Model Conformance remains separate.
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            paths=[]
+            for name in ('p.one','p.two'):
+                m=model(name,'outside','send')
+                m['pi_boundaries']=[]
+                m['coverage_claim']='closed'
+                m['coverage_checks']={'trigger':{'result':'proved'}}
+                m['unresolved_interfaces']=[]
+                p=root/(name+'.json');p.write_text(json.dumps(m));paths.append(p)
+            result=composer.compose(paths)
+            self.assertEqual(result['status'],'passed')
+            self.assertEqual(result['unproved_local_processes'],[])
+
     def test_matching_pi_does_not_prove_external_effects(self):
         with tempfile.TemporaryDirectory() as td:
             a,b,links=self.write(Path(td))
@@ -60,6 +107,16 @@ class CompositionTests(unittest.TestCase):
             bad=model('p.two','p.one','receive')
             bad['fields'][0]['domain']={'type':'string'}
             a,b,links=self.write(Path(td),second=bad)
+            with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
+                composer.compose([a,b],links)
+
+    def test_boolean_enum_cannot_bind_to_integer_enum(self):
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            consumer=model('p.two','p.one','receive')
+            producer['fields'][0]['domain']={'type':'enum','values':[True]}
+            consumer['fields'][0]['domain']={'type':'enum','values':[1]}
+            a,b,links=self.write(Path(td),first=producer,second=consumer)
             with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
                 composer.compose([a,b],links)
 
@@ -100,6 +157,31 @@ class CompositionTests(unittest.TestCase):
             a,b,links=self.write(Path(td),first=outgoing,second=receiving)
             with self.assertRaisesRegex(composer.CompositionError,'typed/presence mismatch'):
                 composer.compose([a,b],links)
+
+    def test_missing_reciprocal_pi_boundary_has_distinct_diagnostic(self):
+        with tempfile.TemporaryDirectory() as td:
+            first=model('p.one','p.two','send')
+            second=model('p.two','p.external','receive')
+            links={'schema':'cat-process-bindings/v1','links':[]}
+            a,b,bindings=self.write(Path(td),first=first,second=second,links=links)
+            result=composer.compose([a,b],bindings)
+            internal=[x for x in result['unresolved_connections']
+                      if x['source_process']=='p.one']
+            external=[x for x in result['unresolved_connections']
+                      if x['source_process']=='p.two']
+            self.assertEqual([x['reason'] for x in internal],
+                             ['counterpart PI lacks reciprocal boundary'])
+            self.assertEqual([x['reason'] for x in external],
+                             ['peer outside assembled Process set'])
+
+    def test_declared_reciprocal_boundary_without_binding_is_distinct(self):
+        with tempfile.TemporaryDirectory() as td:
+            links={'schema':'cat-process-bindings/v1','links':[]}
+            a,b,bindings=self.write(Path(td),links=links)
+            result=composer.compose([a,b],bindings)
+            self.assertEqual(len(result['unresolved_connections']),2)
+            self.assertEqual({x['reason'] for x in result['unresolved_connections']},
+                             {'PI connection/effect lacks explicit binding'})
 
     def test_bidirectional_pi_needs_reverse_direction_binding(self):
         with tempfile.TemporaryDirectory() as td:
@@ -172,6 +254,8 @@ class CompositionTests(unittest.TestCase):
             self.assertEqual(result['bindings'][0]['status'],'inconclusive')
             self.assertEqual(result['bindings'][0]['field_links'][0]['status'],'inconclusive')
             self.assertTrue(result['unresolved_connections'])
+            self.assertEqual({x['reason'] for x in result['unresolved_connections']},
+                             {'PI binding exists but structural proof is inconclusive'})
 
     def test_nullable_source_does_not_satisfy_nonnullable_consumer(self):
         with tempfile.TemporaryDirectory() as td:

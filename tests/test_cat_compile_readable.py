@@ -139,6 +139,65 @@ Coverage requirement: closed
 
 
 class ReadableArtifactTests(unittest.TestCase):
+    def test_scalar_collection_elements_are_structured_domain_nodes(self):
+        from cat_compile_v2 import parse_domain_text
+        from catlib import semantic_types
+        for spelling,kind,element in (
+            ('集合<文字列>','set','string'),
+            ('集合<整数>','set','integer'),
+            ('set<string>','set','string'),
+            ('列<整数>','sequence','integer'),
+            ('sequence<string>','sequence','string'),
+        ):
+            with self.subTest(spelling=spelling):
+                domain=parse_domain_text(spelling)
+                self.assertEqual(domain,{'type':kind,'element':{'type':element}})
+                semantic_types.validate(domain)
+
+    def test_scalar_collection_fields_resolve_without_internal_type_exception(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            process,pi,tce=write_v2(root,False)
+            old='| input.enabled | receive | boolean | required |'
+            original=pi.read_text(encoding='utf-8')
+            self.assertIn(old,original)
+            pi.write_text(original.replace(
+                old,old+'\n| input.discord_ids | receive | 集合<文字列> | optional |'),
+                encoding='utf-8')
+            model=load(process,pi,tce,allow_draft=True,allow_partial=True)
+            field=next(x for x in model['fields'] if x['id']=='input.discord_ids')
+            self.assertEqual(field['domain'],
+                             {'type':'set','element':{'type':'string'}})
+            self.assertEqual(field['presence'],'optional')
+            self.assertEqual(model['status'],'draft')  # unbounded input remains unproved
+
+    def test_direct_alias_reference_can_flow_into_same_union_member_but_not_other_alias(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            process,pi,tce=write_v2(root,False)
+            process.write_text(process.read_text(encoding='utf-8').replace(
+                '## Actions',
+                '| observation.daily | external | ref<DailyNotice> |\n## Actions'),
+                encoding='utf-8')
+            pi.write_text(pi.read_text(encoding='utf-8').replace(
+                '| output.accepted | send | boolean | required |',
+                '| output.accepted | send | union<ref<ChangeNotice>,ref<DailyNotice>> | required |'),
+                encoding='utf-8')
+            tce.write_text(tce.read_text(encoding='utf-8')
+                           .replace('output.accepted = true',
+                                    'output.accepted = observation.daily')
+                           .replace('output.accepted = false',
+                                    'output.accepted = observation.daily'),
+                           encoding='utf-8')
+            model=load(process,pi,tce,allow_draft=True,allow_partial=True)
+            self.assertEqual(model['status'],'draft')
+            self.assertEqual(model['unresolved_domains'],
+                             ['observation.daily','output.accepted'])
+            pi.write_text(pi.read_text(encoding='utf-8').replace(
+                'ref<DailyNotice>>','ref<OtherNotice>>'),encoding='utf-8')
+            with self.assertRaisesRegex(Blocked,'Effect output.accepted: type mismatch'):
+                load(process,pi,tce,allow_draft=True,allow_partial=True)
+
     def test_japanese_v2_artifacts_compile_to_symbolic_model(self):
         fixture=Path(__file__).resolve().parent/'fixtures/minimal'
         m=load(fixture/'Process.md',fixture/'PI.md',fixture/'TCE.md',allow_draft=True)
@@ -256,12 +315,12 @@ class ReadableArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(Blocked,'not declared/actuable'):
                 load(process,pi,tce,allow_draft=True)
 
-    def test_closed_requirement_keeps_unproven_result_in_draft_but_blocks_normative_compile(self):
+    def test_arithmetic_guard_keeps_unproven_result_in_draft_but_blocks_normative_compile(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),False)
             pi.write_text(pi.read_text().replace('input.enabled | receive | boolean','input.enabled | receive | integer'),encoding='utf-8')
-            tce.write_text(tce.read_text().replace('`input.enabled`','`input.enabled > 0`',1)
-                           .replace('`not input.enabled`','`input.enabled <= 0`'),encoding='utf-8')
+            tce.write_text(tce.read_text().replace('`input.enabled`','`input.enabled + 1 > 0`',1)
+                           .replace('`not input.enabled`','`input.enabled + 1 <= 0`'),encoding='utf-8')
             model=load(process,pi,tce,allow_draft=True)
             self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
             self.assertEqual(model['status'],'draft')

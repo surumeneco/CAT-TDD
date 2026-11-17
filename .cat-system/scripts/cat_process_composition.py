@@ -10,7 +10,6 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-from catlib import semantic_types
 
 class CompositionError(ValueError):
     pass
@@ -25,7 +24,10 @@ def _bounds(model):
     out=[]
     for bound in model.get('pi_boundaries',[]):
         peers=bound.get('peers',[bound.get('peer')])
-        if not isinstance(peers,list) or any(not isinstance(x,str) or not x for x in peers):
+        if (not isinstance(peers,list) or not peers
+                or any(not isinstance(x,str) or not x for x in peers)
+                or len(set(peers))!=len(peers)
+                or bound.get('peer')!=peers[0]):
             raise CompositionError('invalid PI peer specification')
         for peer in peers:
             directions=('send','receive') if bound['direction']=='bidirectional' else (bound['direction'],)
@@ -46,75 +48,27 @@ def _field(model,id_,role,pi):
                                ' owned by PI '+pi+' in '+model['process'])
     return entries[0]
 
-def _operation(model,id_,source_pi,role):
-    return any(x['id']==id_ and x.get('source_pi')==source_pi and x['direction']==role
-               for x in model.get('pi_operations',[]))
-
-def _unresolved_domain(domain):
-    if not isinstance(domain,dict):
-        return False  # Legacy scalar collection element names.
-    kind=domain.get('type')
-    if kind in (None,'unknown'):
-        return True
-    if kind=='record':
-        return domain.get('resolved') is not True or any(
-            _unresolved_domain(f.get('domain')) for f in domain.get('fields',[]))
-    if kind in ('set','sequence'):
-        return _unresolved_domain(domain.get('element'))
-    if kind=='nullable':
-        return _unresolved_domain(domain.get('of'))
-    if kind=='union':
-        return any(_unresolved_domain(x) for x in domain.get('variants',[]))
-    return False
-
-
-def _type_subset(source,target):
-    """True only for proved inclusion; False for a counterexample; None if unknown."""
-    if _unresolved_domain(source) or _unresolved_domain(target):
-        return None
-    if source==target:
-        return True
-    if isinstance(source,str):
-        source={'type':source}
-    if isinstance(target,str):
-        target={'type':target}
-    a=source.get('type');b=target.get('type')
-    if a=='union':
-        results=[_type_subset(x,target) for x in source['variants']]
-        return False if False in results else (True if all(x is True for x in results) else None)
-    if b=='union':
-        results=[_type_subset(source,x) for x in target['variants']]
-        return True if True in results else None
-    if b=='nullable':
-        return _type_subset(source['of'],target['of']) if a=='nullable' else _type_subset(source,target['of'])
-    if a=='nullable':
-        return False  # Null cannot inhabit any non-nullable, non-union target.
-    if a=='enum':
-        if b=='enum':
-            return all(any(semantic_types.same(v,x) for x in target['values'])
-                       for v in source['values'])
-        try:
-            return all(semantic_types.contains(target,v) for v in source['values'])
-        except semantic_types.DomainError:
-            return None
-    if a==b and a in ('integer','real'):
-        return ((target.get('min') is None or (source.get('min') is not None
-                                               and source['min']>=target['min']))
-                and (target.get('max') is None or (source.get('max') is not None
-                                                   and source['max']<=target['max'])))
-    if a==b=='string':
-        return target.get('format','any')=='any'
-    if a in ('set','sequence') and b in ('set','sequence'):
-        if a=='sequence' and b=='set':
-            return False  # Sequence permits duplicates; Set forbids duplicates.
-        return _type_subset(source['element'],target['element'])
-    if a==b=='record':
-        return None  # Non-identical closed record shapes need a dedicated proof.
-    if a=='integer' and b=='real':
-        return None  # Unbounded integers need a representability proof.
-    if a!=b:
+def _operation(model,id_,source_pi,role,peer):
+    # An operation has one normatively declared counterparty. An old PI with
+    # exactly one peer retains its implicit mapping; multi-peer PI must bind
+    # each operation explicitly. Name/role equality is not peer proof.
+    matches=[x for x in model.get('pi_operations',[])
+             if x.get('id')==id_ and x.get('source_pi')==source_pi
+             and x.get('direction')==role]
+    boundaries=[b for b in model.get('pi_boundaries',[])
+                if b.get('artifact')==source_pi]
+    if len(matches)!=1 or len(boundaries)!=1:
         return False
-    return None
+    bound=boundaries[0]
+    peers=bound.get('peers',[bound.get('peer')])
+    if (not isinstance(peers,list) or not peers or len(peers)!=len(set(peers))
+            or bound.get('peer')!=peers[0] or peer not in peers):
+        return False
+    assigned=matches[0].get('peer')
+    return assigned==peer if assigned is not None else len(peers)==1
+
+# Re-export for compatibility with existing composition callers/tests.
+from catlib.semantic_subtyping import subset as _type_subset
 
 
 def _link(binding,models):
@@ -130,23 +84,24 @@ def _link(binding,models):
     target_op=binding.get('target_operation')
     if source_op is None or target_op is None:
         raise CompositionError('connection must name both source and target operations')
-    if not _operation(source,source_op,a,'provide'):
-        raise CompositionError('source operation is not provided by its PI')
-    if not _operation(target,target_op,b,'accept'):
-        raise CompositionError('target operation is not accepted by its PI')
+    if not _operation(source,source_op,a,'provide',target['process']):
+        raise CompositionError('source operation is not provided by its PI or assigned to peer')
+    if not _operation(target,target_op,b,'accept',source['process']):
+        raise CompositionError('target operation is not accepted by its PI or assigned to peer')
     fields=binding.get('field_links')
     if not isinstance(fields,list) or not fields:
         raise CompositionError('connection requires typed field links')
-    seen=set();checks=[]
+    seen=set();seen_targets=set();checks=[]
     for mapping in fields:
         if not isinstance(mapping,dict) or set(mapping)!={'source_field','target_field'}:
             raise CompositionError('field link must identify both endpoints')
         pair=(mapping['source_field'],mapping['target_field'])
         if pair in seen:raise CompositionError('duplicate field binding')
-        seen.add(pair)
+        if pair[1] in seen_targets:
+            raise CompositionError('ambiguous target field binding')
+        seen.add(pair);seen_targets.add(pair[1])
         f=_field(source,pair[0],'output',a)
         t=_field(target,pair[1],'input',b)
-        inclusion=_type_subset(f['domain'],t['domain'])
         f_presence=f.get('presence','required')
         t_presence=t.get('presence','required')
         # Presence is independent of type/nullability: a producer's possible
@@ -156,17 +111,92 @@ def _link(binding,models):
         if f_presence not in states or t_presence not in states:
             raise CompositionError('unsupported boundary presence')
         presences_ok=states[f_presence].issubset(states[t_presence])
+        # Absence-only/undefined-only sources have no value to type-check.
+        # Their declared Domains are irrelevant, not mutually incompatible.
+        transfers_value='value' in states[f_presence]
+        inclusion=_type_subset(f['domain'],t['domain']) if transfers_value else True
         if inclusion is False or not presences_ok:
             raise CompositionError('typed/presence mismatch on '+pair[0]+' -> '+pair[1])
         proof='matched' if inclusion is True else 'inconclusive'
         checks.append({'source_field':f['id'],'target_field':t['id'],
                        'type':f['domain'],'target_type':t['domain'],
-                       'presence':(f_presence,t_presence),'status':proof})
+                       'presence':(f_presence,t_presence),'status':proof,
+                       'value_domain_proof':('proved' if transfers_value and inclusion is True
+                                             else 'not-applicable' if not transfers_value
+                                             else 'inconclusive')})
+    # Partial field links cannot prove the receiver PI boundary. There is no
+    # authorized operation-to-field projection in this schema; any value-
+    # capable receiver field left unmapped remains inconclusive.
+    unmapped_target_fields=sorted(f['id'] for f in target.get('fields',[])
+        if f.get('role')=='input' and f.get('source_pi')==b
+        and f.get('presence','required')!='absent'
+        and f.get('id') not in seen_targets)
     return {'source_process':source['process'],'target_process':target['process'],
             'source_pi':a,'target_pi':b,'source_operation':source_op,
             'target_operation':target_op,'field_links':checks,
-            'status':'structurally-matched' if all(c['status']=='matched' for c in checks) else 'inconclusive',
+            'unmapped_target_fields':unmapped_target_fields,
+            'status':'structurally-matched' if not unmapped_target_fields
+                    and all(c['status']=='matched' for c in checks) else 'inconclusive',
             'external_effects_verified':False}
+
+def _effect_claim_consistent(model):
+    """Require exact declared Effect receipts before accepting local closure.
+
+    This checks internal receipt consistency only, not independent source-to-
+    model or implementation conformance. Missing/foreign/extra proof keys are
+    not evidence of a locally closed Process.
+    """
+    rules=model.get('rules',[])
+    if not isinstance(rules,list):
+        return False
+    expected=[]
+    for rule in rules:
+        if not isinstance(rule,dict) or not isinstance(rule.get('source_artifact'),str) or not isinstance(rule.get('id'),str):
+            return False
+        outcomes=rule.get('allowed')
+        if not isinstance(outcomes,list):
+            return False
+        for outcome_number,outcome in enumerate(outcomes,1):
+            if not isinstance(outcome,dict):
+                return False
+            writes=outcome.get('write',[])
+            if not isinstance(writes,list):
+                return False
+            for write_number,write in enumerate(writes,1):
+                if not isinstance(write,dict) or not isinstance(write.get('target'),str):
+                    return False
+                expected.append(f"{rule['source_artifact']}#{rule['id']}:{outcome_number}:{write_number}:{write['target']}")
+    if len(expected)!=len(set(expected)):
+        return False
+    proofs=model.get('effect_checks')
+    unresolved=model.get('unverified_effect_ids')
+    if not expected and proofs is None and unresolved is None:
+        return True  # legacy synthetic models with no declared Effects
+    return (isinstance(proofs,dict)
+            and set(proofs)==set(expected)
+            and all(isinstance(proofs[key],dict) and proofs[key].get('result')=='proved'
+                    for key in expected)
+            and unresolved==[])
+
+
+def _local_claim_consistent(model):
+    """Check local closure receipts for internal contradictions, not Source conformance.
+
+    Full Process Closure and independent Source->Model Conformance must be
+    checked separately; this structural composition does not replace them.
+    """
+    checks=model.get('coverage_checks')
+    return (model.get('status')=='confirmed'
+            and model.get('coverage_requirement')=='closed'
+            and model.get('coverage_claim')=='closed'
+            and isinstance(checks,dict) and bool(checks)
+            and all(isinstance(v,dict) and v.get('result')=='proved'
+                    for v in checks.values())
+            and model.get('unverified_rule_ids')==[]
+            and _effect_claim_consistent(model)
+            and model.get('unresolved_domains')==[]
+            and model.get('unresolved_interfaces',[])==[]
+            and model.get('presence_unproven')==[])
 
 def compose(model_paths,binding_path=None):
     if len(model_paths)<2:raise CompositionError('composition requires >=2 Processes')
@@ -200,20 +230,62 @@ def compose(model_paths,binding_path=None):
     # Each validated link discharges both the sender's outgoing declaration
     # and the receiver's incoming declaration; neither proves external effects.
     bound_pairs=set()
+    pending_pairs=set()
     for x in proven:
-        if x['status']!='structurally-matched':
-            continue
-        bound_pairs.add((x['source_process'],x['source_pi'],x['target_process'],'send'))
-        bound_pairs.add((x['target_process'],x['target_pi'],x['source_process'],'receive'))
+        pairs=((x['source_process'],x['source_pi'],x['target_process'],'send'),
+               (x['target_process'],x['target_pi'],x['source_process'],'receive'))
+        if x['status']=='structurally-matched':
+            bound_pairs.update(pairs)
+        else:
+            pending_pairs.update(pairs)
+    peer_edge_pairs={(x['source_process'],x['target_process'],x['direction'])
+                     for x in edges}
     for edge in edges:
         key=edge['source_process'],edge['source_pi'],edge['target_process'],edge['direction']
+        reverse='receive' if edge['direction']=='send' else 'send'
+        reciprocal=(edge['target_process'],edge['source_process'],reverse)
         if edge['target_process'] not in models:
             unresolved.append({**edge,'reason':'peer outside assembled Process set'})
+        elif reciprocal not in peer_edge_pairs:
+            unresolved.append({**edge,'reason':'counterpart PI lacks reciprocal boundary'})
+        elif key in pending_pairs:
+            unresolved.append({**edge,'reason':'PI binding exists but structural proof is inconclusive'})
         elif key not in bound_pairs:
             unresolved.append({**edge,'reason':'PI connection/effect lacks explicit binding'})
+    # A single proven operation must not discharge a whole PI when the same
+    # PI declares additional operations to the same peer. Keep missing
+    # operations separate from an absent boundary or an unproved effect.
+    proven_operations=set()
+    for link in proven:
+        if link['status']!='structurally-matched':
+            continue
+        proven_operations.add((link['source_process'],link['source_pi'],
+                               link['source_operation'],link['target_process'],'send'))
+        proven_operations.add((link['target_process'],link['target_pi'],
+                               link['target_operation'],link['source_process'],'receive'))
+    for process,model in models.items():
+        boundaries={b['artifact']:b for b in model.get('pi_boundaries',[])}
+        for op in model.get('pi_operations',[]):
+            pi=op.get('source_pi')
+            if pi not in boundaries:
+                continue
+            boundary=boundaries[pi]
+            declared_peers=boundary.get('peers',[boundary.get('peer')])
+            peer=op.get('peer')
+            candidates=([peer] if peer is not None else
+                        declared_peers[:1] if len(declared_peers)==1 else declared_peers)
+            direction='send' if op.get('direction')=='provide' else 'receive'
+            for target in candidates:
+                edge=(process,pi,target,direction)
+                operation=(process,pi,op.get('id'),target,direction)
+                if edge in bound_pairs and operation not in proven_operations:
+                    unresolved.append({'source_process':process,'source_pi':pi,
+                                       'target_process':target,'direction':direction,
+                                       'operation':op.get('id'),
+                                       'reason':'PI operation lacks explicit binding'})
     unproved_local=[]
     for p,model in models.items():
-        if model.get('status')!='confirmed' or model.get('coverage_requirement')!='closed' or model.get('unverified_rule_ids') or model.get('unresolved_domains') or model.get('presence_unproven'):
+        if not _local_claim_consistent(model):
             unproved_local.append(p)
     # This proves typed links only. External effects, ordering and interleaving
     # are never proved merely by matching source/target schemas.

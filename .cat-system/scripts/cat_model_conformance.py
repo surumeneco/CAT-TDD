@@ -14,8 +14,11 @@ import re
 import sys
 from pathlib import Path
 
-from cat_compile_v2 import Blocked, format_expr, read_artifact
+from cat_compile_v2 import Blocked, format_expr, read_artifact, _effect_totality_checks
 from catlib import semantic_rules
+from catlib import semantic_types
+from catlib import independent_coverage
+from catlib import semantic_named_types as named_types
 
 
 def require(test, message):
@@ -102,6 +105,13 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     rule_paths=[*common_rules,*domain_specs]
     try:rule_docs=semantic_rules.load_many(rule_paths,p['process'],allow_draft)
     except semantic_rules.RuleError as exc:raise Blocked(str(exc)) from exc
+    try:
+        type_registry=named_types.registry(rule_docs)
+        named_type_definitions=named_types.resolved_definitions(type_registry)
+    except (named_types.NamedTypeError,ValueError) as exc:raise Blocked(str(exc)) from exc
+    def resolve_domain(domain):
+        try:return named_types.resolve(domain,type_registry)
+        except (named_types.NamedTypeError,ValueError) as exc:raise Blocked(str(exc)) from exc
     tce_paths = list(tce_path) if isinstance(tce_path, (list, tuple)) else [tce_path]
     require(tce_paths, 'at least one TCE artifact required')
     tces = []
@@ -125,18 +135,18 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         for item in pi['fields']:
             require(item['id'] not in fields,'duplicate PI field '+item['id'])
             fields[item['id']] = item['role']
-            domains[item['id']]=item['domain']
+            domains[item['id']]=resolve_domain(item['domain'])
             presence[item['id']]=item.get('presence','required')
             field_owners[item['id']]=pif['id']
     for item in p.get('state_fields', []):
         fields[item['id']] = 'state'
-        domains[item['id']]=item['domain']
+        domains[item['id']]=resolve_domain(item['domain'])
     for item in p.get('observations', []):
         fields[item['id']] = 'observation'
-        domains[item['id']]=item['domain']
+        domains[item['id']]=resolve_domain(item['domain'])
     for item in p.get('actions', []):
         fields[item['id']] = 'action'
-        domains[item['id']]=item['domain']
+        domains[item['id']]=resolve_domain(item['domain'])
 
     state_ids = {key for key, role in fields.items() if role == 'state'}
     emitted_ids = {key for key, role in fields.items() if role in ('output', 'action')}
@@ -170,7 +180,29 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                 format_expr(item['body'], item['params'], tf.get('language', 'en')),
             )
 
+    # Effect proof inventory is derived from independent normative TCE/PI/Process
+    # reads rather than trusting the submitted JSON TestModel's claimed proofs.
+    effect_fields={ident:{'id':ident,'role':role,'domain':domains[ident],
+                          'presence':presence.get(ident,'required')}
+                   for ident,role in fields.items()}
+    effect_rules=[{**rule,'source_artifact':fm['id']}
+                  for _,fm,tce in tces for rule in tce['rules']]
+    effect_definitions={item['id']:item for item in domain['definitions']} if domain else {}
+    effect_checks=_effect_totality_checks(effect_rules,effect_fields,effect_definitions)
+    unverified_effect_ids=sorted(ident for ident,check in effect_checks.items()
+                                 if check['result']!='proved')
+    source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
+    intrinsic_proofs=_intrinsic_source_proofs(
+        rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
+    intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
+    all_rule_ids={rule['id'] for doc in rule_docs for rule in doc['rules']}
+    source_all_confirmed=(all(fm.get('status')=='confirmed'
+                              for _,fm in files if fm['kind'] not in ('common-rule','domain-spec'))
+                          and all(doc['status']=='confirmed' for doc in rule_docs))
     return {
+        'process':p['process'],
+        'process_closed_world':p['closed_world'],
+        'source_guard_audit':source_guard_audit,
         'sources': {
             fm['id']: (fm['kind'], hashlib.sha256(Path(path).read_bytes()).hexdigest())
             for path, fm in files
@@ -181,7 +213,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'operation_presence':sorted((e['operation'],e['field'],e['presence'],fm['id'])
                                     for _,fm,a in pi_docs for e in a.get('operation_presence',[])),
         'operations': {
-            item['id']: (item['direction'], item.get('trigger')) for _,_,a in pi_docs
+            item['id']: (item['direction'], item.get('trigger'), item.get('peer')) for _,_,a in pi_docs
             for item in a.get('operations', [])
         },
         'operation_owners': {item['id']:fm['id'] for _,fm,artifact in pi_docs
@@ -189,13 +221,61 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'triggers': {item['id']: item['origin'] for item in p['triggers']},
         'fields': fields, 'domains':domains, 'presence':presence,'field_owners':field_owners,
         'normative_rule_inputs': {d['id']:(d['kind'],d['sha256']) for d in rule_docs},
-        'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract']) for d in rule_docs for r in d['rules']},
+        'named_type_definitions':named_type_definitions,
+        'intrinsic_rule_proofs':intrinsic_proofs,
+        'unverified_rule_ids':sorted(all_rule_ids-intrinsic_ids),
+        'effect_checks':effect_checks,
+        'unverified_effect_ids':unverified_effect_ids,
+        'source_all_confirmed':source_all_confirmed,
+        'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],
+                                    'intrinsic-proved' if r['id'] in intrinsic_ids else 'unverified')
+                             for d in rule_docs for r in d['rules']},
         'constraints': tuple(format_expr(expr, language=tf.get('language', 'en')) for _,_,a in pi_docs for expr in a.get('constraints', [])),
         'definitions': definitions,
         'rules': rules,
         'effects': effects,
         'frames': frames,
     }
+
+
+
+# Independently reconstruct intrinsic model-rule evidence from the source.
+# This module deliberately does not invoke the Compiler's proof function.
+def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects):
+    def resolved(d):
+        if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
+        t=d['type']
+        if t=='reference':return bool(d.get('resolved')) and resolved(d['of'])
+        if t=='record':
+            return d.get('resolved') is True and all(resolved(f['domain']) for f in d.get('fields',[]))
+        if t in ('set','sequence'):return resolved(d['element'])
+        if t=='nullable':return resolved(d['of'])
+        if t=='union':return bool(d.get('variants')) and all(resolved(x) for x in d['variants'])
+        return True
+    predicates={
+        '@cat:effect-targets-declared/v1':all(
+            e[2] is None or fields.get(e[2]) in ('output','state','action')
+            for e in effects),
+        '@cat:tce-triggers-declared/v1':all(value[1] in triggers for value in tce_rules.values()),
+        '@cat:field-domains-resolved/v1':all(resolved(d) for d in domains.values()),
+    }
+    proofs=[]
+    for document in rule_docs:
+        if document.get('status')!='confirmed' or not document.get('scope_verified'):
+            continue
+        for rule in document.get('rules',[]):
+            token=rule.get('requirement')
+            if (rule.get('condition')=='assembled-process'
+                    and rule.get('verification_contract')=='cat:intrinsic-model/v1'
+                    and predicates.get(token) is True):
+                proofs.append({
+                    'rule_id':rule['id'],'source_artifact':document['id'],
+                    'source_sha256':document['sha256'],'requirement':token,
+                    'verification_contract':'cat:intrinsic-model/v1',
+                    'proof_method':'cat:intrinsic-model/v1',
+                    'scope':'assembled-process','status':'passed',
+                })
+    return sorted(proofs,key=lambda item:item['rule_id'])
 
 
 ROLE_ALIASES = {'受信': 'input', '送信': 'output', '状態': 'state', '観測': 'observation', '作用': 'action'}
@@ -216,17 +296,24 @@ def markdown_model(path):
     boundary_rows = table(text, 'PI boundary', 'PI境界')
     boundary = None
     if boundary_rows:
-        require(len(boundary_rows) == 1, 'TestModel PI boundary must have one row')
-        direction = cell(boundary_rows[0], 'Direction', '方向')
-        boundary = {'peer': cell(boundary_rows[0], 'Peer process', '相手Process'),
-                    'direction': DIRECTION_ALIASES.get(direction, direction)}
+        peers = [cell(row, 'Peer process', '相手Process') for row in boundary_rows]
+        directions = [DIRECTION_ALIASES.get(cell(row, 'Direction', '方向'),
+                                             cell(row, 'Direction', '方向'))
+                      for row in boundary_rows]
+        require(len(peers)==len(set(peers)) and len(set(directions))==1,
+                'TestModel PI boundary peer set must be unique with one direction')
+        boundary = {'peer':peers[0], 'direction':directions[0]}
+        if len(peers)>1:
+            boundary['peers']=peers
 
     operations = {}
     for row in table(text, 'PI operations', 'PI操作'):
         direction = cell(row, 'Direction', '方向')
         trigger = cell(row, 'Trigger', '起点')
+        peer = row.get('Peer process', row.get('相手Process', '—')).strip()
         operations[cell(row, 'ID')] = (DIRECTION_ALIASES.get(direction, direction),
-                                       None if trigger in ('-', '—', '') else trigger)
+                                       None if trigger in ('-', '—', '') else trigger,
+                                       None if peer in ('-', '—', '') else peer)
 
     triggers = {cell(row, 'ID'): cell(row, 'Origin', '由来')
                 for row in table(text, 'Triggers', '起点')}
@@ -275,7 +362,7 @@ def json_model(path):
     require(isinstance(model,dict),'TestModel JSON must be an object')
     # Inventory comparisons use dictionaries; reject duplicates before their
     # last-wins normalization can conceal a corrupted or forged source entry.
-    for name in ('source_records','triggers','fields','pi_operations','rules',
+    for name in ('source_records','triggers','fields','pi_operations','rules','named_type_definitions',
                  'definitions','normative_rule_inputs','rule_obligations'):
         if name not in model:
             continue
@@ -327,9 +414,10 @@ def json_model(path):
     definitions = {item['id']: (tuple(item['params']),
                    format_expr(item['body'], item['params'], model.get('language', 'en')))
                    for item in model.get('definitions', [])}
-    operations = {item['id']: (item['direction'], item.get('trigger'))
+    operations = {item['id']: (item['direction'], item.get('trigger'), item.get('peer'))
                   for item in model.get('pi_operations', [])}
     return {
+        'process':model.get('process'),
         'sources': sources,
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
         'boundary': model.get('pi_boundary'),
@@ -341,7 +429,19 @@ def json_model(path):
         'triggers': {item['id']: item['origin'] for item in model.get('triggers', [])},
         'fields': fields, 'domains':domains,'presence':presence,'field_owners':field_owners,
         'normative_rule_inputs':{d['id']:(d['kind'],d['sha256']) for d in model.get('normative_rule_inputs',[])},
-        'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract']) for r in model.get('rule_obligations',[])},
+        'named_type_definitions':model.get('named_type_definitions',[]),
+        'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],r.get('verification_status','unverified')) for r in model.get('rule_obligations',[])},
+        'intrinsic_rule_proofs':model.get('intrinsic_rule_proofs',[]),
+        'unverified_rule_ids':model.get('unverified_rule_ids',[]),
+        'effect_checks':model.get('effect_checks'),
+        'unverified_effect_ids':model.get('unverified_effect_ids'),
+        'status':model.get('status'),
+        'coverage_requirement':model.get('coverage_requirement'),
+        'coverage_claim':model.get('coverage_claim'),
+        'coverage_checks':model.get('coverage_checks'),
+        'presence_unproven':model.get('presence_unproven'),
+        'unresolved_domains':model.get('unresolved_domains'),
+        'unresolved_interfaces':model.get('unresolved_interfaces'),
         'constraints': tuple(format_expr(expr, language=model.get('language', 'en'))
                              for expr in model.get('pi_constraints', [])),
         'definitions': definitions,
@@ -358,10 +458,100 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence')
+        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids')
     for key in checks:
-        if actual.get(key) != expected.get(key):
+        # Python structural == conflates bool with int (True == 1). Domains
+        # and named type definitions contain typed literal values and must
+        # retain scalar identity throughout their nested inventory.
+        same=(semantic_types.same(actual.get(key),expected.get(key))
+              if key in ('domains','named_type_definitions')
+              else actual.get(key)==expected.get(key))
+        if not same:
             mismatches.append(key)
+    if Path(model).suffix.lower()=='.json':
+        # Independently recompute Source Guard partitions, not Compiler receipts.
+        source_guard=expected['source_guard_audit']
+        actual_guards=actual.get('coverage_checks')
+        if (not isinstance(actual_guards,dict)
+                or set(actual_guards)!=set(source_guard['triggers'])
+                or any(not isinstance(actual_guards.get(k),dict)
+                       or actual_guards[k].get('result')!=v['result']
+                       for k,v in source_guard['triggers'].items())):
+            mismatches.append('source_guard_coverage')
+        # Proof diagnostics are evidence, not free-form UI labels: validate
+        # finite counterexample witnesses, counts, reachability and Guard refs.
+        receipt_keys=('guard_refs','overlap_count','overlaps','uncovered',
+                      'uncovered_count','unreachable_rules',
+                      'excluded_by_pi_constraints')
+        symbolic_receipt_keys=('proof_method','partition_fields',
+                               'abstract_state_count','proof_scope')
+        if isinstance(actual_guards,dict):
+            for trigger,expected_receipt in source_guard['triggers'].items():
+                if expected_receipt['result'] in ('proved','uncovered','conflict'):
+                    observed=actual_guards.get(trigger)
+                    if (not isinstance(observed,dict) or any(
+                            not semantic_types.same(observed.get(k),expected_receipt[k])
+                            for k in receipt_keys)
+                            or any(not semantic_types.same(observed.get(k),expected_receipt.get(k))
+                                   for k in symbolic_receipt_keys)
+                            or ('proof_method' not in expected_receipt and
+                                any(k in observed for k in symbolic_receipt_keys))):
+                        if 'source_guard_coverage' not in mismatches:
+                            mismatches.append('source_guard_coverage')
+                        break
+        # Exact identity of Source-obligated output fields matters. A nonempty
+        # invented/different pending ID is not proof that the required output
+        # was preserved in the Model's unproved Presence inventory.
+        pending=actual.get('presence_unproven')
+        required_pending=set(source_guard['unproved_output_fields'])
+        if (not isinstance(pending,list)
+                or any(not isinstance(x,str) or x not in expected['fields']
+                       for x in pending)
+                or len(pending)!=len(set(pending))
+                or not required_pending.issubset(set(pending))):
+            mismatches.append('source_output_presence')
+        guard_proved=(bool(source_guard['triggers'])
+                      and all(c['result']=='proved' and not c['unreachable_rules']
+                              for c in source_guard['triggers'].values())
+                      and source_guard['output_presence_proved'])
+        if actual.get('coverage_requirement')=='closed' and not guard_proved:
+            if 'source_guard_coverage' not in mismatches:
+                mismatches.append('source_guard_coverage')
+        if actual.get('status') not in ('draft','confirmed'):
+            mismatches.append('model_status_invalid')
+        # Claims of complete closure must be coherent with both the source
+        # Process and the model's own finite proof records. This comparison
+        # does not replace the independent process-closure Gate.
+        checks_by_trigger=actual.get('coverage_checks')
+        complete_checks=(
+            isinstance(checks_by_trigger,dict)
+            and set(checks_by_trigger)==set(expected['triggers'])
+            and all(isinstance(v,dict) and v.get('result')=='proved'
+                    for v in checks_by_trigger.values()))
+        exact_claim=(actual.get('coverage_requirement') in ('closed','partial')
+                     and actual.get('coverage_claim')==actual.get('coverage_requirement'))
+        if actual.get('coverage_requirement')=='closed' and not expected['process_closed_world']:
+            mismatches.append('closed_world_claim_unjustified')
+        if actual.get('status')=='confirmed' and (
+                not expected['source_all_confirmed']
+                or not guard_proved
+                or not expected['process_closed_world']
+                or expected['unverified_rule_ids']
+                or expected['unverified_effect_ids']
+                or not exact_claim
+                or actual.get('coverage_requirement')!='closed'
+                or not complete_checks
+                or actual.get('unverified_effect_ids')!=[]
+                or actual.get('presence_unproven')!=[]
+                or actual.get('unresolved_domains')!=[]
+                or actual.get('unresolved_interfaces')!=[]):
+            mismatches.append('normative_status_unjustified')
+    if Path(model).suffix.lower()!='.json' and expected.get('unverified_effect_ids'):
+        mismatches.append('effect_totality: Markdown renderer lacks source-bound Effect proof receipts')
+    if Path(model).suffix.lower()!='.json' and expected.get('intrinsic_rule_proofs'):
+        mismatches.append('intrinsic_rule_proofs: Markdown renderer omits source-bound proof evidence')
+    if Path(model).suffix.lower()!='.json' and expected.get('named_type_definitions'):
+        mismatches.append('named_type_definitions: Markdown renderer omits structural type provenance')
     if Path(model).suffix.lower()!='.json' and expected.get('operation_presence'):
         mismatches.append('operation_presence: Markdown renderer omits operation-specific semantics')
     return {

@@ -35,9 +35,20 @@ def read_json(path):
 def resolve(root,name):
     if not isinstance(name,str) or not name or chr(0) in name:
         raise VerifierError('invalid verifier fixture path')
+    relative=Path(name)
+    if relative.is_absolute() or '..' in relative.parts or relative==Path('.'):
+        raise VerifierError('verifier path must be relative and cannot traverse parents')
     root=Path(root).resolve(strict=True)
-    target=(root/name).resolve(strict=True)
-    if target!=root and root not in target.parents:
+    # Resolve the symbolic path only after proving every original component
+    # is a normal directory or file. An in-root symlink is not trusted even
+    # if the target file would have exactly the same SHA256.
+    candidate=root
+    for component in relative.parts:
+        candidate=candidate/component
+        if candidate.is_symlink():
+            raise VerifierError('verifier path contains symlink')
+    target=candidate.resolve(strict=True)
+    if target==root or root not in target.parents:
         raise VerifierError('verifier path outside registry directory')
     if not target.is_file() or target.is_symlink():
         raise VerifierError('verifier source is not a regular file')
@@ -136,8 +147,31 @@ def evaluate(model_file,registry_file):
     entries=registry.get('entries')
     if not isinstance(entries,list):
         raise VerifierError('registry entries must be a list')
-    rules={x['id']:x for x in model.get('rule_obligations',[])}
-    docs={x['id']:x for x in model.get('normative_rule_inputs',[])}
+    # The registry's model hash binds the bytes, not the uniqueness or
+    # authenticity of the model inventory. A re-hashed malformed model must
+    # never collapse two distinct normative obligations into one rule ID.
+    def unique_inventory(items,label):
+        if not isinstance(items,list):
+            raise VerifierError(label+' inventory must be a list')
+        found={}
+        for item in items:
+            if not isinstance(item,dict) or not isinstance(item.get('id'),str) or not item['id']:
+                raise VerifierError(label+' inventory ID missing')
+            if item['id'] in found:
+                raise VerifierError('duplicate '+label+' ID '+item['id'])
+            found[item['id']]=item
+        return found
+    rules=unique_inventory(model.get('rule_obligations',[]),'normative rule')
+    docs=unique_inventory(model.get('normative_rule_inputs',[]),'normative source')
+    records=model.get('source_records')
+    if records is not None:
+        recorded=unique_inventory(records,'source record')
+        for source_id,doc in docs.items():
+            if source_id not in recorded or recorded[source_id].get('sha256')!=doc.get('sha256'):
+                raise VerifierError('source record hash mismatch for '+source_id)
+    for rid,rule in rules.items():
+        if rule.get('source_artifact') not in docs:
+            raise VerifierError('unbound normative rule source '+rid)
     seen=set();out=[]
     for e in entries:
         if not isinstance(e,dict) or not {'rule_id','source_artifact','source_sha256','subject','verifier_id','fixture','assertions'}<=set(e):
@@ -178,6 +212,10 @@ def evaluate(model_file,registry_file):
             state,reason='failed','one or more deterministic assertions failed'
         out.append({'rule_id':rid,'source_artifact':rule['source_artifact'],'subject':subject,
                     'verifier_id':e['verifier_id'],'status':state,'reason':reason,
+                    # Asserted fixture observations are not a semantic proof
+                    # of the normative Requirement (nor independent runtime fact).
+                    'normative_status':'inconclusive',
+                    'verification_scope':'fixture-assertions-only',
                     'fixture_sha256':fixture['sha256'],
                     'runner_sha256':e.get('runner',{}).get('sha256'),
                     'checks':checks})
@@ -190,6 +228,10 @@ def evaluate(model_file,registry_file):
     elif statuses and all(s=='passed' for s in statuses):status='passed'
     else:status='inconclusive'
     return {'schema':'cat-verifier-result/v1','status':status,
+            # The status above is only the fixture assertion verdict.
+            # No arbitrary runner/registry can prove source-text equivalence.
+            'normative_status':'inconclusive',
+            'verification_scope':'fixture-assertions-only',
             'model_sha256':digest(model_bytes),
             'registry_sha256':digest(registry_file.read_bytes()),
             'results':out}

@@ -177,6 +177,11 @@ def read_work_markdown(path):
                    ('Binding','接続'):'binding',('Tests','テスト'):'tests_output',
                    ('Obligations','適合義務'):'obligations',('Conformance binding','適合接続'):'conformance_binding',
                    ('Rule verifier registry','規則検証登録'):'verifier_registry',
+                   ('Effect trace','作用トレース'):'effect_trace',
+                   ('Effect packet','作用証拠パケット'):'effect_packet',
+                   ('Effect driver','作用ドライバ'):'effect_driver',
+                   ('Effect repository','作用リポジトリ'):'effect_repo',
+                   ('Effect driver repo path','作用ドライバ相対パス'):'effect_repo_path',
                    ('Composition models','合成モデル'):'composition_models',
                    ('Composition binding','合成接続'):'composition_binding'}
         for humans, key in mapping.items():
@@ -461,6 +466,18 @@ def validate(w):
                     errs.append('compilation.'+extra_key+' invalid')
             if compilation.get('conformance_binding') is not None and (not isinstance(compilation.get('conformance_binding'), str) or not compilation['conformance_binding']):
                 errs.append('compilation.conformance_binding invalid')
+            evidence_keys=('effect_trace','effect_packet','effect_driver')
+            used=[key for key in evidence_keys if compilation.get(key)]
+            if used and len(used)!=len(evidence_keys):
+                errs.append('effect evidence requires trace, packet and driver together')
+            for key in evidence_keys+('effect_repo','effect_repo_path'):
+                value=compilation.get(key)
+                if value is not None and (not isinstance(value,str) or not value):
+                    errs.append('compilation.'+key+' invalid')
+            if bool(compilation.get('effect_repo'))!=bool(compilation.get('effect_repo_path')):
+                errs.append('effect repository verification requires repository name and driver relative path')
+            if compilation.get('effect_repo') and not used:
+                errs.append('effect repository cannot be specified without an effect evidence packet')
             if not isinstance(compilation.get('allow_draft'), bool):
                 errs.append('compilation.allow_draft must be boolean')
     return errs

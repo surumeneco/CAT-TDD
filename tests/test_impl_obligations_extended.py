@@ -104,6 +104,49 @@ Closed world: true
    self.assertEqual(by['normative-rule.demo.common.one']['status'],'inconclusive')
    self.assertEqual(by['cross-process.boundary.demo.process.first.peer.first']['status'],'inconclusive')
    self.assertEqual(by['normative-rule.demo.domain.two']['status'],'inconclusive')
+ def test_non_deterministic_allowed_set_is_one_runtime_obligation_not_per_outcome_reachability(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);p,a,b,t,cr,ds=self.setup(root)
+   old='| demo.yes | submit | `input.ready` | 1 | `output.result = true` |'
+   new=old+'\n| demo.yes | submit | `input.ready` | 2 | `output.result = false` |'
+   data=t.read_text(encoding='utf-8')
+   self.assertIn(old,data)
+   t.write_text(data.replace(old,new),encoding='utf-8')
+   doc=impl.generate(p,[a,b],[t])
+   ids={x['id'] for x in doc['items']}
+   self.assertIn('behavior.demo.yes',ids)
+   self.assertIn('invariant.demo.yes.allowed-set',ids)
+   self.assertNotIn('invariant.demo.yes.1',ids)
+   self.assertNotIn('invariant.demo.yes.2',ids)
+   frames=[x for x in doc['model_outcome_frames']
+           if x['rule_id']=='demo.yes']
+   self.assertEqual(len(frames),2)
+   self.assertEqual([x['source_ref'].split(':outcome:')[1] for x in frames],['1','2'])
+   # One Green for a selected input establishes only observed membership,
+   # not that both allowed alternatives ever happened.
+   observed=impl.aggregate(doc,
+      verified_green={'demo.yes':['queue:observed-a']},
+      model_conformance={'status':'passed','evidence':'model-source-proof'})
+   by={x['id']:x for x in observed['items']}
+   self.assertEqual(by['behavior.demo.yes']['status'],'passed')
+   self.assertEqual(by['invariant.demo.yes.allowed-set']['status'],'passed')
+   self.assertIn('allowed set',by['invariant.demo.yes.allowed-set']['limitation'])
+   self.assertNotIn('invariant.demo.yes.2',by)
+   self.assertTrue(all('status' not in frame and 'evidence' not in frame for frame in frames))
+   without_model=impl.aggregate(doc,
+      verified_green={'demo.yes':['queue:observed-a']})
+   by={x['id']:x for x in without_model['items']}
+   self.assertEqual(by['behavior.demo.yes']['status'],'passed')
+   self.assertEqual(by['invariant.demo.yes.allowed-set']['status'],'inconclusive')
+   unobserved=impl.aggregate(doc,model_conformance={'status':'passed'})
+   by={x['id']:x for x in unobserved['items']}
+   self.assertEqual(by['invariant.demo.yes.allowed-set']['status'],'inconclusive')
+   legacy={'schema':doc['schema'],'source_sha256':doc['source_sha256'],
+           'items':[impl.item('invariant.demo.yes.2','invariant',
+                   'demo.process.tce#demo.yes:outcome:2','generated-test-frame')]}
+   stale=impl.aggregate(legacy,verified_green={'demo.yes':['queue:observed-a']})
+   self.assertEqual(stale['items'][0]['status'],'inconclusive')
+
  def test_shared_domain_rule_requires_ancestor_scope_and_explicit_references(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);p,a,b,t,cr,ds=self.setup(root)
@@ -145,12 +188,55 @@ Closed world: true
          'source_artifact':'demo.process.common','status':'passed'}]}
    result=impl.aggregate(doc,rule_verification=evidence)
    by={x['id']:x for x in result['items']}
-   self.assertEqual(by['normative-rule.demo.common.one']['status'],'passed')
+   self.assertEqual(by['normative-rule.demo.common.one']['status'],'inconclusive')
    self.assertEqual(by['normative-rule.demo.domain.two']['status'],'inconclusive')
    evidence['results'][0]['source_artifact']='unrelated.contract'
    result=impl.aggregate(doc,rule_verification=evidence)
    by={x['id']:x for x in result['items']}
    self.assertEqual(by['normative-rule.demo.common.one']['status'],'inconclusive')
+
+ def test_intrinsic_proof_requires_fresh_model_conformance_and_source_sha(self):
+  from test_intrinsic_rule_proofs import build
+  from test_intrinsic_rule_proofs import PROOF
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);p,pi,t,rule=build(root)
+   doc=impl.generate(p,pi,[t],common_rules=[rule])
+   self.assertEqual(doc['unresolved_rule_ids'],[])
+   self.assertEqual(len(doc['intrinsic_rule_proofs']),1)
+   proof=doc['intrinsic_rule_proofs'][0]
+   self.assertEqual(proof['rule_id'],'demo.rule.check')
+   self.assertEqual(proof['source_sha256'],doc['source_sha256']['demo.rule.document'])
+   evidence={'status':'passed','evidence':'source-model/sha'}
+   evaluated=impl.aggregate(doc,model_conformance=evidence)
+   by={x['id']:x for x in evaluated['items']}
+   self.assertEqual(by['normative-rule.demo.rule.check']['status'],'passed')
+   self.assertIn('intrinsic-model/v1',by['normative-rule.demo.rule.check']['evidence'])
+   evaluated=impl.aggregate(doc,model_conformance={'status':'inconclusive'})
+   by={x['id']:x for x in evaluated['items']}
+   self.assertEqual(by['normative-rule.demo.rule.check']['status'],'inconclusive')
+   doc['intrinsic_rule_proofs'][0]['source_sha256']='0'*64
+   evaluated=impl.aggregate(doc,model_conformance=evidence)
+   by={x['id']:x for x in evaluated['items']}
+   self.assertEqual(by['normative-rule.demo.rule.check']['status'],'inconclusive')
+
+ def test_executed_external_observation_never_self_confirms_free_text_rule(self):
+  import cat_verifier_contracts as verifier
+  from test_rule_verifier import RuleVerifierTests
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp)
+   model,registry=RuleVerifierTests().prepare(root,'discord',True)
+   observed=verifier.evaluate(model,registry)
+   self.assertEqual(observed['status'],'passed')
+   doc={'schema':'cat-implementation-obligations/v1',
+        'source_sha256':{'demo.spec':'a'*64},
+        'intrinsic_rule_proofs':[],
+        'items':[{'id':'normative-rule.demo.rule','category':'domain',
+                  'source_ref':'demo.spec#demo.rule','method':'normative-rule-verifier',
+                  'status':'not-run','reason':'pending','limitation':'pending'}]}
+   evaluated=impl.aggregate(doc,model_conformance={'status':'passed'},
+                            rule_verification=observed)
+   self.assertEqual(evaluated['items'][0]['status'],'inconclusive')
+   self.assertIn('observation',evaluated['items'][0]['reason'])
 
  def test_flow_does_not_drop_declared_sources(self):
   with tempfile.TemporaryDirectory() as tmp:

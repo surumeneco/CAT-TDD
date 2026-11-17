@@ -46,6 +46,32 @@ class RuleVerifierTests(unittest.TestCase):
             self.assertEqual(result['results'][0]['checks'][0]['status'],'passed')
             self.assertEqual(result['model_sha256'],sha(model.read_bytes()))
 
+    def test_runner_assertion_success_does_not_claim_normative_equivalence(self):
+        for subject in ('static','discord'):
+            with self.subTest(subject=subject), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp)
+                model,registry=self.prepare(root,subject,True)
+                observed=verifier.evaluate(model,registry)
+                self.assertEqual(observed['status'],'passed')
+                self.assertEqual(observed['results'][0]['status'],'passed')
+                self.assertEqual(observed['normative_status'],'inconclusive')
+                self.assertEqual(observed['verification_scope'],'fixture-assertions-only')
+                self.assertEqual(observed['results'][0]['normative_status'],'inconclusive')
+                self.assertEqual(observed['results'][0]['verification_scope'],'fixture-assertions-only')
+
+    def test_failed_registered_assertion_cannot_by_itself_disprove_free_text_rule(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,'discord',True)
+            data=json.loads(registry.read_text(encoding='utf-8'))
+            data['entries'][0]['assertions'][0]['expected']=False
+            registry.write_text(json.dumps(data),encoding='utf-8')
+            result=verifier.evaluate(model,registry)
+            self.assertEqual(result['status'],'failed')
+            self.assertEqual(result['normative_status'],'inconclusive')
+            self.assertEqual(result['results'][0]['status'],'failed')
+            self.assertEqual(result['results'][0]['normative_status'],'inconclusive')
+
     def test_static_fixture_without_runner_is_not_execution_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             model,registry=self.prepare(Path(temp),'static')
@@ -108,6 +134,80 @@ class RuleVerifierTests(unittest.TestCase):
             (root/'fixture.json').write_text('{"message":{"delivered":false}}')
             with self.assertRaisesRegex(verifier.VerifierError,'fixture hash mismatch'):
                 verifier.evaluate(model,registry)
+
+    def test_duplicate_normative_rule_id_is_rejected_even_with_rebound_registry_hash(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            data=json.loads(model.read_text(encoding='utf-8'))
+            data['rule_obligations'].append(dict(data['rule_obligations'][0]))
+            model.write_text(json.dumps(data),encoding='utf-8')
+            entries=json.loads(registry.read_text(encoding='utf-8'))
+            entries['model_sha256']=sha(model.read_bytes())
+            registry.write_text(json.dumps(entries),encoding='utf-8')
+            with self.assertRaisesRegex(verifier.VerifierError,'duplicate normative rule ID'):
+                verifier.evaluate(model,registry)
+
+    def test_duplicate_source_id_is_rejected_even_with_rebound_registry_hash(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            data=json.loads(model.read_text(encoding='utf-8'))
+            data['normative_rule_inputs'].append(dict(data['normative_rule_inputs'][0]))
+            model.write_text(json.dumps(data),encoding='utf-8')
+            entries=json.loads(registry.read_text(encoding='utf-8'))
+            entries['model_sha256']=sha(model.read_bytes())
+            registry.write_text(json.dumps(entries),encoding='utf-8')
+            with self.assertRaisesRegex(verifier.VerifierError,'duplicate normative source ID'):
+                verifier.evaluate(model,registry)
+
+    def test_source_record_hash_cannot_contradict_normative_rule_inventory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            data=json.loads(model.read_text(encoding='utf-8'))
+            data['source_records']=[{'id':'demo.spec','kind':'domain-spec','sha256':'f'*64}]
+            model.write_text(json.dumps(data),encoding='utf-8')
+            entries=json.loads(registry.read_text(encoding='utf-8'))
+            entries['model_sha256']=sha(model.read_bytes())
+            registry.write_text(json.dumps(entries),encoding='utf-8')
+            with self.assertRaisesRegex(verifier.VerifierError,'source record hash mismatch'):
+                verifier.evaluate(model,registry)
+
+    def test_symlinked_fixture_or_runner_cannot_bypass_registry_path_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            metadata=json.loads(registry.read_text())
+            (root/'linked.json').symlink_to(root/'fixture.json')
+            metadata['entries'][0]['fixture']['path']='linked.json'
+            registry.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(verifier.VerifierError,'symlink'):
+                verifier.evaluate(model,registry)
+            metadata['entries'][0]['fixture']['path']='fixture.json'
+            (root/'runner-alias.py').symlink_to(root/'runner.py')
+            metadata['entries'][0]['runner']['path']='runner-alias.py'
+            registry.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(verifier.VerifierError,'symlink'):
+                verifier.evaluate(model,registry)
+            # The same file via a symlinked parent must also fail closed.
+            (root/'shortcut').symlink_to(root,target_is_directory=True)
+            metadata['entries'][0]['runner']['path']='shortcut/runner.py'
+            registry.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(verifier.VerifierError,'symlink'):
+                verifier.evaluate(model,registry)
+
+    def test_absolute_and_dotdot_verifier_file_paths_are_disallowed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            model,registry=self.prepare(root,runner=True)
+            metadata=json.loads(registry.read_text())
+            for path in ('./../'+root.name+'/fixture.json',str(root/'fixture.json')):
+                with self.subTest(path=path):
+                    metadata['entries'][0]['fixture']['path']=path
+                    registry.write_text(json.dumps(metadata))
+                    with self.assertRaisesRegex(verifier.VerifierError,'path'):
+                        verifier.evaluate(model,registry)
 
     def test_nested_presence_and_null_are_distinct(self):
         observed={'missing':{},'null':None,'zero':0,'false':False}

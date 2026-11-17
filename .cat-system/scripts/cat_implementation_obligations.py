@@ -33,6 +33,9 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
     pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
     pi_docs=[read_artifact(path, 'pi', False) for path in pi_paths]
     obligations = []
+    # Alternative frames are source-to-model correspondence metadata.
+    # They are NOT independent runtime reachability obligations.
+    model_outcome_frames = []
 
     for pif,pi in pi_docs:
         operations = pi.get('operations', [])
@@ -72,13 +75,19 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
             source + '#' + rule['id'],
             'generated-test',
         ))
+        obligations.append(item(
+            'invariant.' + rule['id'] + '.allowed-set',
+            'invariant',
+            source + '#' + rule['id'],
+            'generated-test-allowed-set',
+        ))
         for n, _ in enumerate(rule['allowed'], 1):
-            obligations.append(item(
-                'invariant.' + rule['id'] + '.' + str(n),
-                'invariant',
-                source + '#' + rule['id'] + ':outcome:' + str(n),
-                'generated-test-frame',
-            ))
+            model_outcome_frames.append({
+                'rule_id': rule['id'],
+                'outcome': n,
+                'source_ref': source + '#' + rule['id'] + ':outcome:' + str(n),
+                'semantic_role': 'source-to-model-frame-correspondence',
+            })
 
     for pif,pi in pi_docs:
         boundary=pi.get('boundary')
@@ -145,6 +154,12 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
         'model_semantic_authority': model.get('semantic_authority'),
         'model_status': model.get('status'),
         'unresolved_rule_ids': model.get('unverified_rule_ids',[]),
+        # A source-bound Model proof is not a runtime implementation effect.
+        'unresolved_effect_ids': model.get('unverified_effect_ids',[]),
+        # Script-owned, source-digest-bound structural proofs. Observed runner
+        # assertions are separate evidence and cannot self-promote free text.
+        'intrinsic_rule_proofs': model.get('intrinsic_rule_proofs',[]),
+        'model_outcome_frames': model_outcome_frames,
         'items': obligations,
     }
 
@@ -168,28 +183,56 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
         evidence=[]
         limitation=''
         if method=='normative-rule-verifier':
-            rid=source.split('#',1)[1] if '#' in source else ''
-            record=next((r for r in (rule_verification or {}).get('results',[])
-                         if r.get('rule_id')==rid and r.get('source_artifact')==source.split('#',1)[0]),None)
-            if record and record.get('status')=='passed' and rule_verification.get('status')=='passed':
-                ob.update(status='passed',evidence='rule-verifier:'+rid)
+            source_artifact,rid=(source.split('#',1)+[''])[:2]
+            source_hash=result.get('source_sha256',{}).get(source_artifact)
+            proofs=[p for p in result.get('intrinsic_rule_proofs',[])
+                    if p.get('rule_id')==rid
+                    and p.get('source_artifact')==source_artifact
+                    and p.get('source_sha256')==source_hash
+                    and p.get('proof_method')=='cat:intrinsic-model/v1'
+                    and p.get('verification_contract')=='cat:intrinsic-model/v1'
+                    and p.get('scope')=='assembled-process'
+                    and p.get('status')=='passed']
+            if model_pass and source_hash and len(proofs)==1:
+                ob.update(status='passed',evidence='cat:intrinsic-model/v1:'+rid)
                 ob.pop('reason',None)
-                limitation='only machine-bound checked predicates; interpretation of unrelated prose is not proved'
+                limitation='source-bound model predicate only; no external implementation effect is proved'
             else:
-                ob.update(status='inconclusive',reason='missing or non-passing source-bound rule verification')
+                observed=next((r for r in (rule_verification or {}).get('results',[])
+                               if r.get('rule_id')==rid and r.get('source_artifact')==source_artifact),None)
+                detail=('runner observation passed but normative predicate equivalence is unproved'
+                        if observed and observed.get('status')=='passed'
+                        else 'missing or non-passing source-bound rule verification')
+                ob.update(status='inconclusive',reason=detail)
                 ob.pop('evidence',None)
-                limitation='normative rule cannot be discharged by TCE test selection or inventory alone'
-        elif method in ('generated-test','generated-test-frame'):
-            rule=source.split('#',1)[1].split(':outcome:',1)[0] if '#' in source else ''
+                limitation='fixture/runner evidence cannot discharge free-text semantics without a source-bound proof'
+        elif method in ('generated-test','generated-test-allowed-set'):
+            rule=source.split('#',1)[1] if '#' in source else ''
             evidence=done_by_rule.get(rule,[])
-            if evidence:
-                ob.update(status='passed',evidence=';'.join(sorted(set(evidence))))
+            if evidence and (method=='generated-test' or model_pass):
+                proof=';'.join(sorted(set(evidence)))
+                if method=='generated-test-allowed-set':
+                    proof+=';'+(model_evidence or 'model-conformance')
+                ob.update(status='passed',evidence=proof)
                 ob.pop('reason',None)
-                limitation='finite deterministic selected-vector evidence; not a general proof over all executions'
+                limitation=('observed output was a member of the declared allowed set for a selected vector; '
+                            'neither every alternative being reached nor all executions is proved'
+                            if method=='generated-test-allowed-set' else
+                            'finite deterministic selected-vector evidence; not a general proof over all executions')
             else:
-                ob.update(status='inconclusive',reason='no completed Queue evidence for referenced TestModel rule')
+                detail=('independent source-to-model conformance and a verified selected-vector Green required'
+                        if method=='generated-test-allowed-set' else
+                        'no completed Queue evidence for referenced TestModel rule')
+                ob.update(status='inconclusive',reason=detail)
                 ob.pop('evidence',None)
-                limitation='behavior remains unverified for the current implementation state'
+                limitation='absence of an outcome observation is not a proof of impossibility or a reachability requirement'
+        elif method=='generated-test-frame':
+            # Historical v1 skeletons must not self-upgrade each alternative
+            # to a separate observed/reachable outcome on rule-level Green.
+            ob.update(status='inconclusive',
+                      reason='legacy per-outcome invariant cannot be discharged by rule-level Green')
+            ob.pop('evidence',None)
+            limitation='alternative frame source mapping belongs to Model Conformance; occurrence was not established'
         elif method.startswith('technology-inspector:'):
             # A global inspector success is not proof that this particular
             # interface/capability was inspected. Require explicit coverage.

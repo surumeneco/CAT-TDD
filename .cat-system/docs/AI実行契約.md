@@ -49,7 +49,7 @@ confirmed promotion、merge、deploy等の高権限操作は通常の設計・�
 
 execution evidenceはRunner / Validator / Providerが生成する。AI Agentはevidence本文を書き換えない。意味解釈が必要ならReview / Interpretation Artifactからevidenceを参照する。
 
-`passed`は実行した検査だけに有効であり、別Gateへ伝播しない。特にGreen、CI、merge、deployment、real-useは互いに独立する。process-closure / model-conformance / implementation-conformanceはScript所有のconformance evidenceを基準とし、Work本文に`passed`と記載しただけでは成立しない。deterministic verdictが`inconclusive`の場合だけ独立Review evidenceで閉じる。
+`passed`は実行した検査だけに有効であり、別Gateへ伝播しない。特にGreen、CI、merge、deployment、real-useは互いに独立する。process-closure / model-conformance / implementation-conformanceはScript所有のconformance evidenceを基準とし、Work本文に`passed`と記載しただけでは成立しない。deterministic verdictが`inconclusive`の場合は、`--conditional inconclusive`で独立Review/Interpretationを記録できるが、**その判断を機械Gateの`passed`へ昇格させない**。Reviewの承認権限・対象・出典・SHA・鮮度を規定し検証する別契約が未成立であるため、Work内の`review:*`等は`status`報告で`review_claims: unverified-claim`として表示するだけとする。Script所有のGate verdictと人間の判断は異なる事実であり、`blocked/failed/stale/not-run`もReviewで暗黙に上書きしない。
 
 ## 5つのflow
 
