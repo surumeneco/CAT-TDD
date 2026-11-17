@@ -2,17 +2,17 @@
 cat_version: '0.3'
 kind: domain-spec
 id: cat.compiler.json-instant
-status: candidate
+status: confirmed
 process: cat.compiler
 source_refs:
   - https://github.com/surumeneco/CAT-TDD/pull/86
-decision_ref: ''
+decision_ref: Docs/Decisions/CAT31-json-instant-approval-20261118.md
 refs: []
 semantic_contract: markdown-v2
 language: ja
 ---
 
-# CAT-TDD Compiler：JSON構造・時点型の候補意味契約
+# CAT-TDD Compiler：JSON構造・時点型の確定意味契約
 
 ## 対象
 
@@ -34,13 +34,13 @@ language: ja
 | JT.inclusion | 新Domainの包含を判定する | json-objectはjsonへ包含。同一instantは包含するがstringへの暗黙変換をしない。任意JSONを閉じたrecordやscalarへ包含しない。未解決参照・不正Domain・不正循環について真の包含証明を返さない | subtypeの正負・JSON record/collectionとの構造関係・不正Domainの負例・既存全回帰 |
 | JT.source-model | Registry/Modelへ接続する | 新構造と宣言Source ID/SHAを保存して全依存を解決し、Compilerと独立Model Conformanceで照合する。解決をClosureや自由文Rule同値証明へ転用しない | 名前付き型の独立Source→Model照合、stale/改竄負例、未承認Sourceのstrict Gate停止。製品固有の件数は本契約の普遍的受入条件にしない |
 | JT.fail-closed | 新意味の演算を既存経路で扱う | 型付き比較と旧型なし比較を混同しない。型付き意味が必要な未対応AST/rendererは拒否または未証明を保持し、代表fixtureの成功で全域passedにしない | 新型を含む式の反例と明示停止、既存演算の回帰、正式/診断Gateを別記 |
-| JT.authority | 技術契約と製品型を採用する | 本SourceはCAT-TDD本体の未承認技術契約案。新業務規範・数値上限・全日時精度・TTLは追加しない。実装案/回帰成功だけでConfirmedや正式Gateへ昇格しない | 具体SHA・差分・採否文書・正規promoter・fresh Gateを分離 |
+| JT.authority | 技術契約と製品型を採用する | 本Sourceは利用者の承認を得たCAT-TDD本体の技術契約。新業務規範・数値上限・全日時精度・TTLは追加しない。実装案/回帰成功だけでConfirmedや正式Gateへ昇格しない | 具体SHA・差分・採否文書・正規promoter・fresh Gateを分離 |
 
 ## 適用境界
 
-CAT-TDD本体の新しい構文/IR/APIだけを対象とする技術契約候補。製品固有の型宣言、wire、権限、実Provider観測、正式Process Closureは本Artifactに従属しない独立の規範・証拠を要する。既存の誤った型/未知frame/Provider自己申告を真にする検査緩和は行わない。
+CAT-TDD本体の新しい構文/IR/APIだけを対象とする確定技術契約。製品固有の型宣言、wire、権限、実Provider観測、正式Process Closureは本Artifactに従属しない独立の規範・証拠を要する。既存の誤った型/未知frame/Provider自己申告を真にする検査緩和は行わない。
 
-本Candidateは未承認であり、GitHub PRのCI成功は規範採用・確認済みSourceへの昇格を意味しない。実装比較・回帰・判定主体による明示採否後に、採用版SourceのID・SHAを固定してから必要な正規Gateを実行する。
+本Sourceは、利用者の明示承認に基づき正規promoterでConfirmedへ昇格した。承認済み技術仕様の存在と、実装がその全規則を機械的に証明したことは別である。CI成功を正式Gateのpassedとみなさず、必要なGateはこのConfirmed SourceのID・SHAで検証する。
 
 ## 由来と変更理由
 
@@ -48,4 +48,4 @@ CAT-TDD本体の新しい構文/IR/APIだけを対象とする技術契約候補
 - 独立レビューで再現された既存set全体の妥当性検査漏れを `JT.typed-comparison` の前提条件に明文化した。
 - 明示offset codecがASCII数字のみを受理する修正とその負例を `JT.codec` に反映した。
 - 不正Domainから正の包含証明を発行しないW06修正の判定境界を `JT.inclusion` に明記した。
-- 上流の実装提案は Draft PR #86（https://github.com/surumeneco/CAT-TDD/pull/86）。出典は参考であり、製品の採用DecisionはCAT-TDDの技術契約を承認しない。
+- 本体候補実装はPR #86（https://github.com/surumeneco/CAT-TDD/pull/86）。規範承認は本書の`decision_ref`で参照する利用者の採用決定に基づく。製品の採用Decisionは本体の技術契約を承認する根拠ではない。

@@ -20,13 +20,21 @@ from test_named_type_resolution import spec,add_named_field
 
 
 class JsonInstantTests(unittest.TestCase):
-    def test_upstream_core_candidate_source_is_parsed_but_not_confirmed(self):
+    def test_upstream_core_confirmed_source_and_unverified_rule_boundary(self):
         from catlib import semantic_rules
-        path=ROOT/'Lifecycle/CAT/Candidates/cat.compiler.json-instant.domain-spec.md'
-        source=semantic_rules.load(path,'cat.compiler',allow_draft=True)
+        from catlib.markdown import parse_frontmatter
+        path=ROOT/'Docs/Constraints/cat.compiler.json-instant.domain-spec.md'
+        decision=ROOT/'Docs/Decisions/CAT31-json-instant-approval-20261118.md'
+        self.assertTrue(decision.is_file())
+        front=parse_frontmatter(path)
+        self.assertEqual(front['status'],'confirmed')
+        self.assertEqual(front['decision_ref'],decision.relative_to(ROOT).as_posix())
+        self.assertIn('fe6d7ff63928f5b9a243a2e737b6e6b569f7b7d3ecdd83522f57c85baa7d44fe',
+                      decision.read_text(encoding='utf-8'))
+        source=semantic_rules.load(path,'cat.compiler',allow_draft=False)
         self.assertEqual(source['id'],'cat.compiler.json-instant')
         self.assertEqual(source['kind'],'domain-spec')
-        self.assertEqual(source['status'],'candidate')
+        self.assertEqual(source['status'],'confirmed')
         self.assertTrue(source['scope_verified'])
         self.assertEqual({rule['id'] for rule in source['rules']},{
             'JT.domains','JT.json-tree','JT.json-equality','JT.instant',
@@ -34,8 +42,18 @@ class JsonInstantTests(unittest.TestCase):
             'JT.fail-closed','JT.authority'})
         self.assertTrue(all(rule['verification_status']=='unverified'
                             for rule in source['rules']))
-        with self.assertRaisesRegex(semantic_rules.RuleError,'unconfirmed normative input'):
-            semantic_rules.load(path,'cat.compiler',allow_draft=False)
+        with tempfile.TemporaryDirectory() as td:
+            fake=Path(td)/'no-approval.md'
+            text=path.read_text(encoding='utf-8')
+            self.assertIn('status: confirmed',text)
+            fake.write_text(text.replace('decision_ref: '+front['decision_ref'],
+                                         "decision_ref: ''",1),encoding='utf-8')
+            with self.assertRaisesRegex(semantic_rules.RuleError,'missing decision_ref'):
+                semantic_rules.load(fake,'cat.compiler',allow_draft=False)
+            fake.write_text(text.replace('status: confirmed','status: candidate',1),
+                            encoding='utf-8')
+            with self.assertRaisesRegex(semantic_rules.RuleError,'unconfirmed normative input'):
+                semantic_rules.load(fake,'cat.compiler',allow_draft=False)
 
     def test_parse_validate_format_bilingual(self):
         for names,domain in [(['json','JSON値'],{'type':'json','root':'value'}),(['json-object','JSONオブジェクト'],{'type':'json','root':'object'}),(['instant','瞬間値'],{'type':'instant'})]:
