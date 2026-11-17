@@ -27,8 +27,22 @@ def _unresolved_domain(domain):
     return False
 
 
+def _valid_domain(domain):
+    # A malformed Domain is not a mathematically empty set and cannot be
+    # used for a positive proof, even when its declarations compare equal.
+    # Legacy scalar aliases remain compatible with the structural syntax.
+    normalized={'type':domain} if type(domain) is str else domain
+    try:
+        semantic_types.validate(normalized)
+    except (semantic_types.DomainError,KeyError,TypeError,ValueError,RecursionError):
+        return False
+    return True
+
+
 def subset(source,target):
     """True only for proved inclusion; False for a counterexample; None if unknown."""
+    if not _valid_domain(source) or not _valid_domain(target):
+        return None
     # An exact, fully resolved union arm proves inclusion even when another
     # arm is still unresolved. Unresolved source aliases are NOT promoted to
     # a proof, and partial/structural inclusion still requires a separate check.
