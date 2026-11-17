@@ -39,18 +39,34 @@ def _valid_domain(domain):
     return True
 
 
+def _has_nominal_reference(domain):
+    """Do not infer an unapproved alias/provenance match through a partial union."""
+    if not isinstance(domain,dict):
+        return False
+    if domain.get('type')=='reference':
+        return True
+    return (any(_has_nominal_reference(domain[key]) for key in ('of','element') if key in domain)
+            or any(_has_nominal_reference(item) for item in domain.get('variants',[]))
+            or any(_has_nominal_reference(field.get('domain')) for field in domain.get('fields',[])))
+
+
 def subset(source,target):
     """True only for proved inclusion; False for a counterexample; None if unknown."""
     if not _valid_domain(source) or not _valid_domain(target):
         return None
-    # An exact, fully resolved union arm proves inclusion even when another
-    # arm is still unresolved. Unresolved source aliases are NOT promoted to
-    # a proof, and partial/structural inclusion still requires a separate check.
-    if isinstance(target,dict) and target.get('type')=='union':
+    # Any independently proved arm is sufficient for inclusion in a union,
+    # even when another arm remains unresolved. Exact alias identity is safe;
+    # structural proof is restricted to non-nominal Domains so a changed named
+    # definition fingerprint cannot be silently accepted by unwrapping refs.
+    if isinstance(target,dict) and target.get('type')=='union' and not _unresolved_domain(source):
+        structural_source=not _has_nominal_reference(source)
         for arm in target.get('variants',[]):
-            if (not _unresolved_domain(source)
-                    and not _unresolved_domain(arm)
-                    and semantic_types.same(source,arm)):
+            if _unresolved_domain(arm):
+                continue
+            if semantic_types.same(source,arm):
+                return True
+            if (structural_source and not _has_nominal_reference(arm)
+                    and subset(source,arm) is True):
                 return True
     if _unresolved_domain(source) or _unresolved_domain(target):
         return None
