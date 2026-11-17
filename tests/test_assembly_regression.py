@@ -14,7 +14,7 @@ class AssemblyRegressionTests(unittest.TestCase):
    root=Path(td);outside=root.parent/'outside-file-for-regression-test'
    (root/'inner').mkdir()
    (root/'inner'/'test.json').write_text('{}')
-   self.assertEqual(regression.safe(root,'inner/test.json'),root/'inner'/'test.json')
+   self.assertEqual(regression.safe(root,'inner/test.json'),(root/'inner'/'test.json').resolve())
    for name in ('../secret','/etc/passwd','inner\\test.json'):
     with self.assertRaises(Blocked):regression.safe(root,name)
    (root/'link').symlink_to(root/'inner',target_is_directory=True)
