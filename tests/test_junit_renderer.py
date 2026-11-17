@@ -92,8 +92,8 @@ class JUnitRendererTests(unittest.TestCase):
             target = d / 'cat/generated'
             target.mkdir(parents=True)
             import re
-            class_name = re.search(r"public final class ([A-Za-z0-9_]+)", source).group(1)
-             # Java CLI --output is caller-supplied; it need not equal the hashed class name.
+            class_name = re.search(r"(?:public )?final class ([A-Za-z0-9_]+)", source).group(1)
+            # Java CLI --output is caller-supplied; it need not equal the hashed class name.
             (target / (BINDING['test_class'] + '.java')).write_text(source,encoding='utf8')
             (target / 'ImageDriver.java').write_text('''package cat.generated;
 import java.util.Map;
