@@ -88,6 +88,21 @@ def subset(source,target):
                     if values is not None else None)
         except semantic_types.DomainError:
             return None
+    if a==b=='json':return target['root']=='value' or source['root']=='object'
+    if b=='json':
+        if a=='record':
+            for field in source.get('fields',[]):
+                presence=field.get('presence','required')
+                if presence=='absent':continue
+                if presence=='undefined':return False
+                result=subset(field['domain'],{'type':'json','root':'value'})
+                if result is not True:return result
+            return True
+        if target['root']=='object':return False
+        if a in ('null','boolean','string','integer','real'):return True
+        if a in ('set','sequence'):return subset(source['element'],target)
+        return False
+    if a=='json' or a=='instant' or b=='instant':return False
     if a==b and a in ('integer','real'):
         return ((target.get('min') is None or (source.get('min') is not None
                                                and source['min']>=target['min']))
