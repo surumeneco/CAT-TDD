@@ -139,7 +139,7 @@ def validate(d):
         _keys(d,{'type'},{'min','max'})
         for key in ('min','max'):
             if key in d and (type(d[key]) not in ((int,) if t=='integer' else (int,float))
-                              or t=='real' and not math.isfinite(d[key])):
+                              or t=='real' and type(d[key]) is float and not math.isfinite(d[key])):
                 raise DomainError('invalid numeric bound')
         if 'min' in d and 'max' in d and d['min']>d['max']:
             raise DomainError('empty numeric domain')
@@ -245,7 +245,7 @@ def contains(d,value):
     if t=='integer':
         return type(value) is int and (d.get('min') is None or value>=d['min']) and (d.get('max') is None or value<=d['max'])
     if t=='real':
-        return type(value) in (int,float) and math.isfinite(value) and (d.get('min') is None or value>=d['min']) and (d.get('max') is None or value<=d['max'])
+        return type(value) in (int,float) and (type(value) is int or math.isfinite(value)) and (d.get('min') is None or value>=d['min']) and (d.get('max') is None or value<=d['max'])
     if t=='boolean':return type(value) is bool
     if t=='string':
         if type(value) is not str:return False
