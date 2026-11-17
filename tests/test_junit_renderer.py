@@ -53,8 +53,8 @@ class JUnitRendererTests(unittest.TestCase):
         second = [dict(CASES[0], id='case.s1', source_tce='s1')]
         another = module.render_junit(MODEL, second, BINDING)
         import re
-        first_name = re.search(r'public final class (\w+)', source).group(1)
-        second_name = re.search(r'public final class (\w+)', another).group(1)
+        first_name = re.search(r'(?:public )?final class (\w+)', source).group(1)
+        second_name = re.search(r'(?:public )?final class (\w+)', another).group(1)
         self.assertNotEqual(first_name, second_name)
         self.assertTrue(first_name.endswith('Test') and second_name.endswith('Test'))
 
@@ -93,7 +93,8 @@ class JUnitRendererTests(unittest.TestCase):
             target.mkdir(parents=True)
             import re
             class_name = re.search(r"public final class ([A-Za-z0-9_]+)", source).group(1)
-            (target / (class_name + '.java')).write_text(source,encoding='utf8')
+             # Java CLI --output is caller-supplied; it need not equal the hashed class name.
+            (target / (BINDING['test_class'] + '.java')).write_text(source,encoding='utf8')
             (target / 'ImageDriver.java').write_text('''package cat.generated;
 import java.util.Map;
 public final class ImageDriver {
