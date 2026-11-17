@@ -168,5 +168,28 @@ class ExecutionOriginPeerTests(unittest.TestCase):
             diagnose(m, t)
 
 
+    def test_dynamic_trace_peer_requires_concrete_process_id(self):
+        m, t = payload()
+        m['pi_boundaries'][0]['peer'] = ORIGIN
+        m['pi_boundaries'][0]['peers'] = [ORIGIN]
+        m['pi_operations'] = [m['pi_operations'][0], m['pi_operations'][2]]
+        for operation in m['pi_operations']:
+            operation['peer'] = ORIGIN
+
+        # A Japanese source alias is a symbolic descriptor, never a run origin.
+        for invalid in ('実行元Process', ORIGIN, 'component alpha', '123-invalid'):
+            with self.subTest(origin=invalid):
+                t['runs'][0]['peer'] = invalid
+                t['events'][0]['peer'] = invalid
+                t['events'][5]['peer'] = invalid
+                with self.assertRaisesRegex(trace_diagnostic.TraceError, 'peer'):
+                    diagnose(m, t)
+
+        t['runs'][0]['peer'] = 'component.alpha'
+        t['events'][0]['peer'] = 'component.alpha'
+        t['events'][5]['peer'] = 'component.alpha'
+        self.assertEqual(diagnose(m, t)['trace_integrity'], 'consistent')
+
+
 if __name__ == '__main__':
     unittest.main()

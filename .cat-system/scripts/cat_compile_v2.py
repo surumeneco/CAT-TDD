@@ -1001,7 +1001,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             check_keys(pi,['schema','kind','process','boundary','fields','operations'],
                        ['constraints','operation_presence'],where='PI')
             check_keys(pi['boundary'],['peer','direction'],['peers'],where='PI boundary')
-            require(all(x==peer_binding.ORIGIN or ID.fullmatch(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
+            require(all(x==peer_binding.ORIGIN or peer_binding.concrete_process_id(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
                     'PI peer process must use stable Process IDs')
             require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
             peers=pi['boundary'].get('peers',[pi['boundary']['peer']])
