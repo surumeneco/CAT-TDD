@@ -121,6 +121,30 @@ class ModelConformanceTest(unittest.TestCase):
                     self.assertEqual(result['status'],'blocked',result)
                     self.assertIn('source_metadata_integrity',result['mismatches'])
 
+    def test_explicitly_empty_source_record_inventory_cannot_fall_back(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            process, pi, tce = self.confirmed_fixture(root)
+            original = compiler.load(process, pi, tce)
+            self.assertGreater(len(original['source_records']), 0)
+            model_path = root / 'TestModel.json'
+
+            # Legacy models that omit the modern record inventory retain
+            # their deliberately supported redundant-metadata fallback.
+            legacy = json.loads(json.dumps(original))
+            legacy.pop('source_records')
+            model_path.write_text(json.dumps(legacy, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(validator.validate(process, pi, tce, model_path)['status'], 'passed')
+
+            # An *explicit* empty inventory is different from omission:
+            # the other two provenance representations still list sources.
+            forged = json.loads(json.dumps(original))
+            forged['source_records'] = []
+            model_path.write_text(json.dumps(forged, ensure_ascii=False), encoding='utf-8')
+            result = validator.validate(process, pi, tce, model_path)
+            self.assertEqual(result['status'], 'blocked', result)
+            self.assertIn('source_metadata_integrity', result['mismatches'])
+
     def test_open_world_process_cannot_become_closed_by_editing_model_claims(self):
         from test_cat_compile_readable import write_v2
         from test_intrinsic_rule_proofs import approve_fixture
