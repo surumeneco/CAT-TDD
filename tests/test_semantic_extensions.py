@@ -58,6 +58,19 @@ class SemanticTypesTests(unittest.TestCase):
         for v in (-0.1,float('nan'),float('inf'),float('-inf'),True):
             self.assertFalse(types.contains(d,v))
 
+    def test_safe_signed_integer_long_input_is_a_bounded_domain_rejection(self):
+        domain=types.parse('string<safe-signed-integer>')
+        self.assertTrue(types.contains(domain, '9007199254740991'))
+        self.assertTrue(types.contains(domain, '-9007199254740991'))
+        self.assertTrue(types.contains(domain, '+0'))
+        for value in ('9007199254740992', '-9007199254740992',
+                      '9'*5000, '-'+'9'*5000, '0'*5000,
+                      '01', '-01', '+', 'not-an-integer'):
+            with self.subTest(length=len(value),prefix=value[:16]):
+                self.assertIs(types.contains(domain,value),False)
+                self.assertEqual(types.check_presence(domain,'required',value),
+                                 ('out-of-domain',False))
+
     def test_union_and_nullable_are_different(self):
         d=types.parse('Union<文字列,整数>')
         self.assertTrue(types.contains(d,1))

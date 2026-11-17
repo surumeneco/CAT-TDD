@@ -25,6 +25,8 @@ from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
 from catlib import semantic_subtyping
 from catlib import semantic_interval_partition
+from catlib import decimal_integer
+from catlib import peer_binding
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -204,7 +206,7 @@ def _scalar_token(token):
     if low=='false':return False
     if token=='真':return True
     if token=='偽':return False
-    if INT.fullmatch(token):return int(token)
+    if INT.fullmatch(token):return decimal_integer.parse(token)
     require(bool(token),'empty enum value')
     return token
 
@@ -224,8 +226,8 @@ def parse_domain_text(text):
     m=re.fullmatch(r'integer\[\s*([+-]?\d*)\s*\.\.\s*([+-]?\d*)\s*\]',text)
     if m:
         d={'type':'integer'}
-        if m.group(1):d['min']=int(m.group(1))
-        if m.group(2):d['max']=int(m.group(2))
+        if m.group(1):d['min']=decimal_integer.parse(m.group(1))
+        if m.group(2):d['max']=decimal_integer.parse(m.group(2))
         return d
     if text=='string':return {'type':'string'}
     if text=='string<safe-signed-integer>':return {'type':'string','format':'safe-signed-integer'}
@@ -404,7 +406,7 @@ def _readable_spec_v2(path, kind, fm):
         boundary_rows=_table_any(body,('Boundary','境界'))
         require(bool(boundary_rows),'PI Boundary/境界 requires at least one row')
         br=boundary_rows[0]
-        peer=_cell(br,'Peer process','Peer Process','peer','相手Process','相手プロセス')
+        peer=peer_binding.normalize_peer(_cell(br,'Peer process','Peer Process','peer','相手Process','相手プロセス'))
         direction=_canon(_cell(br,'Direction','direction','方向'),
                          {'receive':{'受信'},'send':{'送信'},'bidirectional':{'双方向'}},'PI boundary direction')
         fields=[]
@@ -420,7 +422,7 @@ def _readable_spec_v2(path, kind, fm):
         for row in _table_any(body,('Operations','操作'),required=False):
             odir=_canon(_cell(row,'Direction','direction','方向'),{'accept':{'受付'},'provide':{'提供'}},'PI operation direction')
             trig=_cell(row,'Trigger','trigger','起点',required=False)
-            operation_peer=_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス',required=False)
+            operation_peer=peer_binding.normalize_peer(_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス',required=False))
             operations.append({'id':semantic_ident(_cell(row,'ID','Id','id'),'PI operation ID'),'direction':odir,
                                'trigger':None if trig in ('','-','—','none','なし') else trig,
                                **({'peer':operation_peer} if operation_peer not in ('','-','—','none','なし') else {})})
@@ -435,7 +437,7 @@ def _readable_spec_v2(path, kind, fm):
         constraints=[]
         for row in _table_any(body,('Constraints','制約'),required=False):
             constraints.append(parse_expr_text(_cell(row,'Expression','Condition','expression','condition','式','条件')))
-        extra_peers=[_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス') for row in boundary_rows]
+        extra_peers=[peer_binding.normalize_peer(_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス')) for row in boundary_rows]
         for row in boundary_rows:
             require(_canon(_cell(row,'Direction','direction','方向'),
                            {'receive':{'受信'},'send':{'送信'},'bidirectional':{'双方向'}},'PI boundary direction') == direction,
@@ -570,7 +572,7 @@ def validate_domain(d):
         check_keys(d,['type','values'],where='enum domain')
         require(isinstance(d['values'],list) and bool(d['values']), 'enum nonempty values required')
         require(all(isinstance(v,(str,int,bool)) for v in d['values']), 'enum only str/int/bool')
-        require(len({json.dumps(x,sort_keys=True) for x in d['values']})==len(d['values']), 'enum duplicate')
+        require(len({decimal_integer.dumps(x,sort_keys=True) for x in d['values']})==len(d['values']), 'enum duplicate')
     if t=='boolean':check_keys(d,['type'],where='boolean domain')
     if t=='integer':
         check_keys(d,['type'],['min','max'],where='integer domain')
@@ -645,6 +647,9 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     if op=='call':
         check_keys(expr,['op','name','args'],where='domain-rule invocation')
         name=expr['name']; require(name in definitions,'unknown DomainRule '+str(name))
+        require(not any(ref in fields and typed.has_semantic_domain(fields[ref]['domain'])
+                        for ref in used_refs(expr,definitions)),
+                'typed JSON/instant expression requires explicit domain binding')
         require(name not in stack,'recursive DomainRule invocation '+str(name))
         defi=definitions[name];require(len(args)==len(defi['params']), 'DomainRule arity mismatch '+name)
         types=[inspect_expr(a,fields,definitions,params,stack) for a in args]
@@ -658,7 +663,11 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     def types_are(permitted):
         require(all(t in permitted or t=='parameter' for t in types),
                 f'{op}: invalid operand types {types}; expected {sorted(permitted)}')
-    if op in ('eq','ne'):return 'boolean'
+    if op in ('eq','ne'):
+        require(not any(ref in fields and typed.has_semantic_domain(fields[ref]['domain'])
+                        for ref in used_refs(expr,definitions)),
+                'typed JSON/instant expression requires explicit domain binding')
+        return 'boolean'
     if op in ('lt','le','gt','ge'):types_are({'integer','real'});return 'boolean'
     if op in ('and','or','not'):types_are({'boolean'});return 'boolean'
     if op in ('add','sub','mul'):
@@ -992,7 +1001,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             check_keys(pi,['schema','kind','process','boundary','fields','operations'],
                        ['constraints','operation_presence'],where='PI')
             check_keys(pi['boundary'],['peer','direction'],['peers'],where='PI boundary')
-            require(all(ID.fullmatch(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
+            require(all(x==peer_binding.ORIGIN or peer_binding.concrete_process_id(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
                     'PI peer process must use stable Process IDs')
             require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
             peers=pi['boundary'].get('peers',[pi['boundary']['peer']])
@@ -1004,7 +1013,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 semantic_ident(op['id'],'PI operation ID')
                 require(op['direction'] in ('accept','provide'),'PI operation direction invalid')
                 if 'peer' in op:
-                    require(isinstance(op['peer'],str) and op['peer'] in peers,
+                    require(isinstance(op['peer'],str) and (op['peer']==peer_binding.ORIGIN or op['peer'] in peers),
                             'PI operation peer must match a declared boundary peer')
                 else:
                     require(len(peers)==1,'PI operation peer required for multi-peer boundary')
@@ -1389,8 +1398,7 @@ def _vector_input_value(domain,presence,payload,name):
                 'vector missing required/undefined input '+name)
         return typed.MISSING
     value=payload[name]
-    if value=={'$cat_presence':'undefined'}:
-        require(presence=='undefined','undefined input not allowed by Presence '+name)
+    if presence=='undefined' and value=={'$cat_presence':'undefined'}:
         return typed.UNDEFINED
     require(presence not in ('absent','undefined'),
             'value input incompatible with Presence '+name)
@@ -1570,6 +1578,7 @@ def _vitest_renderer():
 
 
 def emit_vitest(model,vectors,binding_path):
+    require(not any(typed.has_semantic_domain(f['domain']) for f in model.get('fields',[])), 'Vitest renderer requires explicit JSON/instant binding')
     require(not any(f['role'] in ('observation','action') for f in model['fields']),
             'test-code generation for explicit observation/action capabilities requires a technology binding extension; TestModel remains valid')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
@@ -1590,9 +1599,51 @@ def emit_vitest(model,vectors,binding_path):
         raise Blocked('unsupported undefined transport binding')
     if uses_undefined and binding.get('undefined_transport')!='js-undefined/v1':
         raise Blocked('Vitest renderer has no source-backed undefined transport binding; cannot generate a false oracle')
+    # The bundled Vitest renderer emits ordinary JavaScript number literals.
+    # Integers beyond Number.MAX_SAFE_INTEGER would silently lose precision;
+    # require a separately specified BigInt/transport contract instead.
+    stack=[cases]
+    while stack:
+        item=stack.pop()
+        if type(item) is int and abs(item)>SAFE_INT:
+            raise Blocked('Vitest renderer cannot safely encode integer outside JS safe range; explicit transport required')
+        if isinstance(item,dict):stack.extend(item.values())
+        elif isinstance(item,(list,tuple)):stack.extend(item)
     return _vitest_renderer()(model,cases,binding)
 
 
+
+
+def emit_junit(model, vectors, binding_path):
+    """Render current queued CAT cases using the explicitly selected JUnit adapter."""
+    import importlib.util
+    require(not any(f['role'] in ('observation', 'action') for f in model['fields']),
+            'JUnit renderer requires explicit capability binding for observation/action')
+    require(not any(typed.has_semantic_domain(f['domain']) for f in model['fields']),
+            'JUnit renderer requires explicit structured/instant transport binding')
+    require(all(f['domain']['type'] in ('boolean', 'enum', 'integer')
+                and f.get('presence', 'required') == 'required' for f in model['fields']),
+            'JUnit scalar renderer supports only required boolean/enum/integer fields')
+    require(not model.get('operation_presence'),
+            'JUnit scalar renderer does not carry operation-scoped Presence')
+    binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
+    check_keys(binding,['schema','process','test_package','test_class','driver_class'],
+               where='JUnit driver binding')
+    require(binding['schema']=='cat-junit-driver-binding/v1'
+            and binding['process']==model['process'], 'JUnit driver binding incompatible')
+    cases=expand_cases(model,vectors)
+    require(not any('output_operation' in c for c in cases),
+            'JUnit scalar renderer cannot carry output-operation identity')
+    path=ROOT / 'skills' / 'tech-junit' / 'scripts' / 'cat_junit_renderer.py'
+    require(path.is_file(), 'JUnit generation requires installed tech-junit Skill renderer')
+    spec=importlib.util.spec_from_file_location('_cat_junit_renderer',path)
+    require(spec is not None and spec.loader is not None, 'cannot load tech-junit renderer')
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        return module.render_junit(model,cases,binding)
+    except ValueError as e:
+        raise Blocked(str(e)) from e
 
 
 def make_queue(model, vectors, model_bytes, vector_bytes):
@@ -1671,12 +1722,14 @@ def format_domain(d, language='en'):
     t=d['type']
     if t=='reference':return ('型参照<' if language=='ja' else 'ref<')+d['name']+'>'
     if t=='null':return '明示null' if language=='ja' else 'null'
+    if t=='json':return ('JSON値' if d['root']=='value' else 'JSONオブジェクト') if language=='ja' else ('json' if d['root']=='value' else 'json-object')
+    if t=='instant':return '瞬間値' if language=='ja' else 'instant'
     names={'ja':{'boolean':'真偽','integer':'整数','string':'文字列','set':'集合','sequence':'列','enum':'列挙'},
            'en':{'boolean':'boolean','integer':'integer','string':'string','set':'set','sequence':'sequence','enum':'enum'}}[language]
     if t=='boolean':return names['boolean']
     if t=='integer':
         if d.get('min') is None and d.get('max') is None:return names['integer']
-        return f"{names['integer']}[{'' if d.get('min') is None else d['min']}..{'' if d.get('max') is None else d['max']}]"
+        return names['integer']+'['+(decimal_integer.format_int(d['min']) if 'min' in d else '')+'..'+(decimal_integer.format_int(d['max']) if 'max' in d else '')+']'
     if t=='string':
         if d.get('format','any')=='any':return names['string']
         fmt='安全符号付き整数' if language=='ja' and d['format']=='safe-signed-integer' else d['format']
@@ -1686,7 +1739,7 @@ def format_domain(d, language='en'):
         return f"{names[t]}<{format_domain(element,language) if isinstance(element,dict) else names[element]}>"
     if t=='enum':return names['enum']+'{' + ', '.join(_format_literal(v,language) for v in d['values']) + '}'
     if t=='bytes':return 'バイト列' if language=='ja' else 'bytes'
-    if t=='real':return ('実数' if language=='ja' else 'real')+('['+str(d.get('min',''))+'..'+str(d.get('max',''))+']' if 'min' in d or 'max' in d else '')
+    if t=='real':return ('実数' if language=='ja' else 'real')+('['+(decimal_integer.format_int(d['min']) if type(d.get('min')) is int else str(d.get('min','')))+'..'+(decimal_integer.format_int(d['max']) if type(d.get('max')) is int else str(d.get('max','')))+']' if 'min' in d or 'max' in d else '')
     if t=='nullable':return format_domain(d['of'],language)+('またはnull' if language=='ja' else '|null')
     if t=='union':return 'Union<'+', '.join(format_domain(x,language) for x in d['variants'])+'>'
     if t=='record':
@@ -1704,7 +1757,7 @@ def _format_literal(v, language='en'):
     if v is None:return 'なし' if language=='ja' else 'null'
     if isinstance(v,str):return json.dumps(v,ensure_ascii=False)
     if isinstance(v,list):return '['+', '.join(_format_literal(x,language) for x in v)+']'
-    return str(v)
+    return decimal_integer.format_int(v) if type(v) is int else str(v)
 
 
 def format_expr(expr, params=(), language='en'):
@@ -1804,7 +1857,7 @@ def render_model_markdown(model):
     return '\n'.join(lines)+'\n'
 
 def _model_content(model, output_path):
-    return render_model_markdown(model) if Path(output_path).suffix.lower()=='.md' else json.dumps(model,sort_keys=True,ensure_ascii=False,indent=2)+'\n'
+    return render_model_markdown(model) if Path(output_path).suffix.lower()=='.md' else decimal_integer.dumps(model,sort_keys=True,ensure_ascii=False,indent=2)+'\n'
 
 def write(path,content,check):
     p=Path(path);require(not check or (p.exists() and p.read_bytes()==content.encode()),f'{p}: output differs or missing')
@@ -1816,7 +1869,7 @@ def main(argv=None):
     m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('--pi-extra',action='append',default=[]);m.add_argument('--common-rule',action='append',default=[]);m.add_argument('--domain-spec',action='append',default=[]);m.add_argument('--allow-partial',action='store_true');m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
     v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',required=True);v.add_argument('--pi-extra',action='append',default=[]);v.add_argument('--common-rule',action='append',default=[]);v.add_argument('--domain-spec',action='append',default=[]);v.add_argument('--allow-partial',action='store_true');v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
     q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--pi-extra',action='append',default=[]);q.add_argument('--common-rule',action='append',default=[]);q.add_argument('--domain-spec',action='append',default=[]);q.add_argument('--allow-partial',action='store_true');q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
-    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--pi-extra',action='append',default=[]);t.add_argument('--common-rule',action='append',default=[]);t.add_argument('--domain-spec',action='append',default=[]);t.add_argument('--allow-partial',action='store_true');t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
+    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--framework',choices=('vitest','junit'),default='vitest');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--pi-extra',action='append',default=[]);t.add_argument('--common-rule',action='append',default=[]);t.add_argument('--domain-spec',action='append',default=[]);t.add_argument('--allow-partial',action='store_true');t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
     args=cli.parse_args(argv)
     try:
         if args.command=='model':
@@ -1832,30 +1885,31 @@ def main(argv=None):
                         'test model does not match current CAT source: regenerate')
                 model=fresh
             else:
-                model=json.loads(model_bytes.decode('utf-8'))
+                model=decimal_integer.loads(model_bytes.decode('utf-8'))
                 require(model.get('schema')==M,'wrong model schema')
                 require(model.get('status')=='confirmed' or args.allow_draft,'draft model requires --allow-draft')
                 require(model.get('semantic_authority') in (S,'cat-markdown/v1','cat-markdown/v2'),'missing CAT semantic authority')
                 require(model==fresh,'test model does not match current CAT source: regenerate')
             if args.command=='vectors':
                 result=selection_vectors(model,args.selection_rule)
-                write(args.output,json.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
+                write(args.output,decimal_integer.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
             else:
                 vector_bytes=Path(args.vectors).read_bytes()
-                vectors=json.loads(vector_bytes.decode('utf-8'))
+                vectors=decimal_integer.loads(vector_bytes.decode('utf-8'))
                 if not args.allow_draft:
                     require(vectors==selection_vectors(model),
                             'test vectors differ from deterministic test-selection output: regenerate')
                 if args.command=='queue':
                     result=make_queue(model,vectors,model_bytes,vector_bytes)
-                    write(args.output,json.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
+                    write(args.output,decimal_integer.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
                 else:
                     if args.queue:
                         queue=json.loads(Path(args.queue).read_text(encoding='utf-8'))
                         vectors=current_vectors(model,vectors,queue,model_bytes,vector_bytes)
                     else:
                         require(args.allow_draft, 'normative test generation requires --queue with exactly one current item')
-                    write(args.output,emit_vitest(model,vectors,args.binding),args.check)
+                    write(args.output,(emit_junit(model,vectors,args.binding) if args.framework=='junit'
+                                       else emit_vitest(model,vectors,args.binding)),args.check)
         return 0
     except (Blocked,TypeError,KeyError,ValueError,FileNotFoundError) as e:
         print('BLOCKED: '+str(e),file=sys.stderr);return 2

@@ -27,16 +27,46 @@ def _unresolved_domain(domain):
     return False
 
 
+def _valid_domain(domain):
+    # A malformed Domain is not a mathematically empty set and cannot be
+    # used for a positive proof, even when its declarations compare equal.
+    # Legacy scalar aliases remain compatible with the structural syntax.
+    normalized={'type':domain} if type(domain) is str else domain
+    try:
+        semantic_types.validate(normalized)
+    except (semantic_types.DomainError,KeyError,TypeError,ValueError,RecursionError):
+        return False
+    return True
+
+
+def _has_nominal_reference(domain):
+    """Do not infer an unapproved alias/provenance match through a partial union."""
+    if not isinstance(domain,dict):
+        return False
+    if domain.get('type')=='reference':
+        return True
+    return (any(_has_nominal_reference(domain[key]) for key in ('of','element') if key in domain)
+            or any(_has_nominal_reference(item) for item in domain.get('variants',[]))
+            or any(_has_nominal_reference(field.get('domain')) for field in domain.get('fields',[])))
+
+
 def subset(source,target):
     """True only for proved inclusion; False for a counterexample; None if unknown."""
-    # An exact, fully resolved union arm proves inclusion even when another
-    # arm is still unresolved. Unresolved source aliases are NOT promoted to
-    # a proof, and partial/structural inclusion still requires a separate check.
-    if isinstance(target,dict) and target.get('type')=='union':
+    if not _valid_domain(source) or not _valid_domain(target):
+        return None
+    # Any independently proved arm is sufficient for inclusion in a union,
+    # even when another arm remains unresolved. Exact alias identity is safe;
+    # structural proof is restricted to non-nominal Domains so a changed named
+    # definition fingerprint cannot be silently accepted by unwrapping refs.
+    if isinstance(target,dict) and target.get('type')=='union' and not _unresolved_domain(source):
+        structural_source=not _has_nominal_reference(source)
         for arm in target.get('variants',[]):
-            if (not _unresolved_domain(source)
-                    and not _unresolved_domain(arm)
-                    and semantic_types.same(source,arm)):
+            if _unresolved_domain(arm):
+                continue
+            if semantic_types.same(source,arm):
+                return True
+            if (structural_source and not _has_nominal_reference(arm)
+                    and subset(source,arm) is True):
                 return True
     if _unresolved_domain(source) or _unresolved_domain(target):
         return None
@@ -57,6 +87,12 @@ def subset(source,target):
         results=[subset(x,target) for x in source['variants']]
         return False if False in results else (True if all(x is True for x in results) else None)
     if b=='union':
+        # A nullable source is exactly null plus the inner Domain. A union
+        # target may cover these two sets through different arms, even when
+        # the inner Domain is infinite and no finite witness list exists.
+        if a=='nullable' and (subset({'type':'null'},target) is True
+                              and subset(source['of'],target) is True):
+            return True
         results=[subset(source,x) for x in target['variants']]
         if True in results:return True
         # A source can be covered by a union without fitting any one branch.
@@ -67,10 +103,17 @@ def subset(source,target):
         except semantic_types.DomainError:return None
     if b=='nullable':
         if a=='null':return True
-        return subset(source['of'],target['of']) if a=='nullable' else subset(source,target['of'])
+        # Null is already included by the target. For a nullable source,
+        # compare its inner values against the whole target so redundant
+        # inner null members do not create a false rejection.
+        return subset(source['of'],target) if a=='nullable' else subset(source,target['of'])
     if a=='nullable':
         if b=='null':return subset(source['of'],target)
-        return False  # Null cannot inhabit any other non-nullable, non-union target.
+        # General JSON includes null; prove the non-null part separately.
+        # Object-only JSON and other non-nullable targets still exclude null.
+        if b=='json' and target['root']=='value':
+            return subset(source['of'],target)
+        return False  # Other non-nullable, non-union targets exclude null.
     if a=='enum':
         if b=='enum':
             return all(any(semantic_types.same(v,x) for x in target['values'])
@@ -88,6 +131,21 @@ def subset(source,target):
                     if values is not None else None)
         except semantic_types.DomainError:
             return None
+    if a==b=='json':return target['root']=='value' or source['root']=='object'
+    if b=='json':
+        if a=='record':
+            for field in source.get('fields',[]):
+                presence=field.get('presence','required')
+                if presence=='absent':continue
+                if presence=='undefined':return False
+                result=subset(field['domain'],{'type':'json','root':'value'})
+                if result is not True:return result
+            return True
+        if target['root']=='object':return False
+        if a in ('null','boolean','string','integer','real'):return True
+        if a in ('set','sequence'):return subset(source['element'],target)
+        return False
+    if a=='json' or a=='instant' or b=='instant':return False
     if a==b and a in ('integer','real'):
         return ((target.get('min') is None or (source.get('min') is not None
                                                and source['min']>=target['min']))

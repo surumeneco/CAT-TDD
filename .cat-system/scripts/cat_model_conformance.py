@@ -16,6 +16,7 @@ from pathlib import Path
 
 from cat_compile_v2 import Blocked, format_expr, read_artifact, _effect_totality_checks
 from catlib import semantic_rules
+from catlib import decimal_integer
 from catlib import semantic_types
 from catlib import independent_coverage
 from catlib import semantic_named_types as named_types
@@ -358,7 +359,7 @@ def markdown_model(path):
 
 
 def json_model(path):
-    model = json.loads(Path(path).read_text(encoding='utf-8'))
+    model = decimal_integer.loads(Path(path).read_text(encoding='utf-8'))
     require(isinstance(model,dict),'TestModel JSON must be an object')
     # Inventory comparisons use dictionaries; reject duplicates before their
     # last-wins normalization can conceal a corrupted or forged source entry.
@@ -380,9 +381,22 @@ def json_model(path):
     require(all(isinstance(x,str) and x for x in boundary_ids),'PI boundary requires artifact ID')
     require(len(boundary_ids)==len(set(boundary_ids)),'duplicate PI boundary artifact')
     sources = {}
-    if model.get('source_records'):
+    source_metadata_integrity = True
+    if 'source_records' in model:
+        # The compiler emits three representations of the same provenance.
+        # Source-to-Model comparison must reject contradictions among them,
+        # even if the canonical source_records inventory remains accurate.
+        expected_source_ids=[]
+        expected_source_hashes={}
         for item in model['source_records']:
             sources[item['id']] = (item['kind'], item['sha256'])
+            expected_source_ids.append(item['id'])
+            key=(item['kind'] if item['kind'] not in expected_source_hashes
+                 else item['kind']+':'+item['id'])
+            expected_source_hashes[key]=item['sha256']
+        source_metadata_integrity=(
+            model.get('source_artifacts')==expected_source_ids
+            and model.get('source_sha256')==expected_source_hashes)
     else:
         source_ids = model.get('source_artifacts', [])
         source_sha = model.get('source_sha256', {})
@@ -419,6 +433,7 @@ def json_model(path):
     return {
         'process':model.get('process'),
         'sources': sources,
+        'source_metadata_integrity': source_metadata_integrity,
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
         'boundary': model.get('pi_boundary'),
         'pi_boundaries':model.get('pi_boundaries',[]),
@@ -469,6 +484,8 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
         if not same:
             mismatches.append(key)
     if Path(model).suffix.lower()=='.json':
+        if actual.get('source_metadata_integrity') is not True:
+            mismatches.append('source_metadata_integrity')
         # Independently recompute Source Guard partitions, not Compiler receipts.
         source_guard=expected['source_guard_audit']
         actual_guards=actual.get('coverage_checks')

@@ -217,7 +217,7 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 ### 複数peerに対するOperationの明示対応
 
-同一PIの`## 境界 / ## Boundary`に複数の相手Processを宣言する場合は、各`## 操作 / ## Operations`に`相手Process / Peer process`列を追加し、**その操作が対応する相手を一つ明示**する。単一peerのPIでは従来どおり列を省略できる。
+同一PIの`## 境界 / ## Boundary`に複数の相手Processを宣言する場合は、各`## 操作 / ## Operations`に`相手Process / Peer process`列を追加し、**固定Process IDまたは動的な`実行元Process`を明示**する。単一peerのPIでは従来どおり列を省略できる。`実行元Process`の機械表現は`@execution-origin`であり、特定のProcess IDではない。
 
 ~~~md
 ## 境界
@@ -233,10 +233,25 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 | manual_sync | 受付 | manual_sync | xplay.command-source |
 ~~~
 
-- CompilerはOperationとpeerの対応を出典PI付きIRへ保持し、TestModelのJSON・Markdown両方で独立照合する。PIの全peerへOperationを総当たりで割り当てたり、別peerの同名Operationで代用したりしない。
-- 対応先の未指定・境界外のpeer・重複した境界peerは規範上の曖昧さとして拒否する。合成では送受双方のPI／Operation／相手Processを同一接続ごとに検査し、一部のOperationが接続できても別Operationの接続証拠を代用しない。
-- 同じ提供Operationが「今回の実行を開始した相手」に戻るという**実行時の動的対応**は、この単一peer列だけでは表せない。起点ごとに提供Operationを分けるか、別途正当に確定した相関契約と実観測が必要であり、未導入の自動分配・同一実行証明は行わない。
+- CompilerはOperationとpeerの対応を出典PI付きIRへ保持し、TestModelのJSON・Markdown両方で独立照合する。静的な指定を全peerへ自動展開したり、別peerの同名Operationで代用したりしない。`実行元Process`はこの例外として明示的に宣言された場合だけ実行時に束縛する。
+- 複数の静的Peerに対する対応先の未指定、境界外の固定peer、重複した境界peerは規範上の曖昧さとして拒否する。動的指定がなければ、旧単一peerの暗黙対応だけを維持する。合成では送受双方のPI／Operation／相手Processを同一接続ごとに検査し、一部のOperationが接続できても別Operationの接続証拠を代用しない。
+- **動的相手の記法**：PIの`境界`行の相手、および`操作`行の相手として`実行元Process`（英語・内部表現は`@execution-origin`）を指定できる。境界に指定した場合、個々の開始元を事前に有限個列挙する必要はない。同じOperationに指定した場合、相手は各実行の開始Processに解決され、別実行の開始Processを代用しない。既知の静的Peer集合のPIでも、その集合内の実行元へ共通Operationを返す用途で動的指定が可能。静的に型が一致しただけでは配送先の実行時相関は証明できず、Compositionは`inconclusive`を保持する。提出Traceの実行IDとpeerの一致は形式整合性であり、実配送・Provider真正性・規範Gateの`passed`を保証しない。
 - `xplay.command-source`のような論理actor識別子を、実在する独立サービスやHTTP境界として捏造しない。対象Processが組立て集合外なら外部境界として`inconclusive`を維持する。型付き接続が成立しても外部Effect/配送/時系列の証明とは別である。
+
+**実行元を事前列挙しないPIの例**（受付・提供の双方で実行元を参照する場合）：
+
+~~~md
+## 境界
+| 相手Process | 方向 |
+| --- | --- |
+| 実行元Process | 双方向 |
+
+## 操作
+| ID | 方向 | 起点 | 相手Process |
+| --- | --- | --- | --- |
+| request | 受付 | request | 実行元Process |
+| reply | 提供 | — | 実行元Process |
+~~~
 
 ### 操作方向
 
@@ -253,6 +268,9 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 | --- | --- | --- |
 | 真偽値 | `boolean` | `真偽` |
 | 整数 | `integer`, `integer[0..100]` | `整数`, `整数[0..100]` |
+| JSON構造値 | json | JSON値 |
+| JSON属性object | json-object | JSONオブジェクト |
+| 瞬間の抽象値 | instant | 瞬間値 |
 | 文字列 | `string` | `文字列` |
 | 安全な整数文字列 | `string<safe-signed-integer>` | `文字列<安全符号付き整数>` |
 | 列挙 | `enum{draft, published}` | `列挙{下書き, 公開}` |
@@ -260,6 +278,18 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 | 順序列 | `sequence<integer>` | `列<整数>` |
 
 null / undefined / optionalの一般的な値意味を、コンパイラ都合で無理に別Domainへ縮約しない。Presenceまたは領域別仕様として意味を保持し、機械変換非対応ならその事実を明示する。
+
+### JSON・時点の明示Domain
+
+jsonは有限のJSON木、json-objectはそのobject根を表す。null、真偽、文字、有限数値、array順と文字列キーobjectを保持し、循環、undefined、非有限数値、非文字キーを拒否する。深度上限やbinary64上限を型の規範へ追加しない。名前付き型JSONを使用する場合も、DomainSpecの明示宣言が必要で、名前から自動推定しない。
+
+instantは内部の厳密な瞬間carrierを表し、無制約stringや推測した日時精度ではない。明示codecの対象形式/暦範囲と抽象値域を区別し、各APIのwire形式・timezone・epoch単位を統一しない。サブmsの区別を内部で保持できても、既にJS Date等で失われた精度を復元したとはみなさない。
+
+型付き値比較はsemantic_types.same_in_domain / compare_in_domain、ownerが選ぶ日時bindingはbind_in_domainで明示する。JSONではobjectキー順を無視、array順を保持し、数値1/1.0と0/-0を同値とするが真偽と数値は区別する。既存の型なしsameは変更しない。nullable/record/sequence/setと名前付き参照を辿り、曖昧なunion比較やbindingは推測せず拒否する。
+
+semantic_json_instantは大整数/小数を保持するJSON解析・出力、明示offset/aware datetimeのcodecと型付き瞬間transportを提供する。codecの受理は製品入力の認可/書式許可ではない。データ形状以外のowner規則・Provider真正性は別に検証する。
+
+JSON/instantは非有限Domainであり、代表値からfinite coverageを生成しない。現在の型なしAST比較/DomainRule呼出しとVitest rendererにはこれらの意味を暗黙接続せず、明示的な対応bindingがない経路はblockedを維持する。新Domainの登録・構造的包含・Model再生成成功は、自由文規則の意味同値やProcess Closureの合格ではない。
 
 ## 7. TCE
 

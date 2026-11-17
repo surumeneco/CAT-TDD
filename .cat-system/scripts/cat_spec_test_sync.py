@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 import cat_compile_v2 as compiler
+from catlib import decimal_integer
 import cat_flow
 from cat_suite_manifest import (
     checked_path, create_plan, digest, encoded, atomic_write,
@@ -60,10 +61,10 @@ def render_suite(work_path, work, prefix):
     if Path(paths["model"]).suffix.lower() == ".md":
         if model_bytes.decode("utf-8") != compiler.render_model_markdown(model):
             raise Blocked("stale TestModel Markdown")
-    elif json.loads(model_bytes) != model:
+    elif decimal_integer.loads(model_bytes) != model:
         raise Blocked("stale TestModel")
     vector_bytes = Path(paths["vectors"]).read_bytes()
-    vectors = json.loads(vector_bytes)
+    vectors = decimal_integer.loads(vector_bytes)
     if vectors != compiler.selection_vectors(model, "rule-witness/v1"):
         raise Blocked("vectors differ from canonical deterministic selection")
     if not vectors["cases"]:

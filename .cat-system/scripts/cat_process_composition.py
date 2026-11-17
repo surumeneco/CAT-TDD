@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 import sys
 
+from catlib import peer_binding
+
 class CompositionError(ValueError):
     pass
 
@@ -37,8 +39,8 @@ def _bounds(model):
     return out
 
 def _bound(model,pi,peer,direction):
-    return any(x['source_pi']==pi and x['target_process']==peer and
-               x['direction']==direction for x in _bounds(model))
+    return any(x['source_pi']==pi and x['target_process'] in (peer,peer_binding.ORIGIN)
+               and x['direction']==direction for x in _bounds(model))
 
 def _field(model,id_,role,pi):
     entries=[f for f in model.get('fields',[])
@@ -49,9 +51,8 @@ def _field(model,id_,role,pi):
     return entries[0]
 
 def _operation(model,id_,source_pi,role,peer):
-    # An operation has one normatively declared counterparty. An old PI with
-    # exactly one peer retains its implicit mapping; multi-peer PI must bind
-    # each operation explicitly. Name/role equality is not peer proof.
+    # Static operations identify one peer; @execution-origin resolves to the
+    # initiating Process of each run. Static composition alone cannot prove it.
     matches=[x for x in model.get('pi_operations',[])
              if x.get('id')==id_ and x.get('source_pi')==source_pi
              and x.get('direction')==role]
@@ -62,10 +63,9 @@ def _operation(model,id_,source_pi,role,peer):
     bound=boundaries[0]
     peers=bound.get('peers',[bound.get('peer')])
     if (not isinstance(peers,list) or not peers or len(peers)!=len(set(peers))
-            or bound.get('peer')!=peers[0] or peer not in peers):
+            or bound.get('peer')!=peers[0]):
         return False
-    assigned=matches[0].get('peer')
-    return assigned==peer if assigned is not None else len(peers)==1
+    return peer_binding.match_operation(peers,matches[0].get('peer'),peer)
 
 # Re-export for compatibility with existing composition callers/tests.
 from catlib.semantic_subtyping import subset as _type_subset
@@ -84,9 +84,11 @@ def _link(binding,models):
     target_op=binding.get('target_operation')
     if source_op is None or target_op is None:
         raise CompositionError('connection must name both source and target operations')
-    if not _operation(source,source_op,a,'provide',target['process']):
+    source_binding=_operation(source,source_op,a,'provide',target['process'])
+    if not source_binding:
         raise CompositionError('source operation is not provided by its PI or assigned to peer')
-    if not _operation(target,target_op,b,'accept',source['process']):
+    target_binding=_operation(target,target_op,b,'accept',source['process'])
+    if not target_binding:
         raise CompositionError('target operation is not accepted by its PI or assigned to peer')
     fields=binding.get('field_links')
     if not isinstance(fields,list) or not fields:
@@ -135,7 +137,9 @@ def _link(binding,models):
             'source_pi':a,'target_pi':b,'source_operation':source_op,
             'target_operation':target_op,'field_links':checks,
             'unmapped_target_fields':unmapped_target_fields,
+            'operation_peer_binding':{'source':source_binding,'target':target_binding},
             'status':'structurally-matched' if not unmapped_target_fields
+                    and source_binding=='static' and target_binding=='static'
                     and all(c['status']=='matched' for c in checks) else 'inconclusive',
             'external_effects_verified':False}
 
@@ -244,7 +248,9 @@ def compose(model_paths,binding_path=None):
         key=edge['source_process'],edge['source_pi'],edge['target_process'],edge['direction']
         reverse='receive' if edge['direction']=='send' else 'send'
         reciprocal=(edge['target_process'],edge['source_process'],reverse)
-        if edge['target_process'] not in models:
+        if edge['target_process']==peer_binding.ORIGIN:
+            unresolved.append({**edge,'reason':'dynamic execution-origin requires runtime binding'})
+        elif edge['target_process'] not in models:
             unresolved.append({**edge,'reason':'peer outside assembled Process set'})
         elif reciprocal not in peer_edge_pairs:
             unresolved.append({**edge,'reason':'counterpart PI lacks reciprocal boundary'})
