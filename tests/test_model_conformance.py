@@ -98,6 +98,29 @@ class ModelConformanceTest(unittest.TestCase):
             self.assertEqual(result['status'],'blocked')
             self.assertIn('process',result['mismatches'])
 
+    def test_redundant_json_source_provenance_must_match_record_inventory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,t=self.confirmed_fixture(root)
+            original=compiler.load(p,pi,t)
+            path=root/'TestModel.json'
+            path.write_text(json.dumps(original,ensure_ascii=False),encoding='utf-8')
+            self.assertEqual(validator.validate(p,pi,t,path)['status'],'passed')
+            for label,mutate in (
+                ('sha-forged',lambda m:m['source_sha256'].__setitem__(next(iter(m['source_sha256'])),'0'*64)),
+                ('sha-missing',lambda m:m['source_sha256'].pop(next(iter(m['source_sha256'])))),
+                ('sha-extra',lambda m:m['source_sha256'].__setitem__('injected','0'*64)),
+                ('artifacts-forged',lambda m:m['source_artifacts'].__setitem__(0,'foreign.source')),
+                ('artifacts-missing',lambda m:m['source_artifacts'].pop()),
+            ):
+                with self.subTest(case=label):
+                    model=json.loads(json.dumps(original,ensure_ascii=False))
+                    mutate(model)
+                    path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+                    result=validator.validate(p,pi,t,path)
+                    self.assertEqual(result['status'],'blocked',result)
+                    self.assertIn('source_metadata_integrity',result['mismatches'])
+
     def test_open_world_process_cannot_become_closed_by_editing_model_claims(self):
         from test_cat_compile_readable import write_v2
         from test_intrinsic_rule_proofs import approve_fixture
