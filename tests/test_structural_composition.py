@@ -114,7 +114,32 @@ class StructuralSubsetTests(unittest.TestCase):
         self.assertIsNone(_type_subset(parse('integer'),
                                       parse('enum{0,1}')))
 
-    def test_union_members_can_jointly_cover_finite_source(self):
+    def test_invalid_domain_cannot_generate_a_subtyping_proof(self):
+        # Models/bindings may be untrusted input. Invalid domains do not
+        # represent an empty set for the purpose of a proof of inclusion.
+        invalid_domains = (
+            {'type':'enum','values':[]},
+            {'type':'enum','values':[1,1]},
+            {'type':'integer','min':5,'max':3},
+            {'type':'nonexistent'},
+            {'type':'record','resolved':True,'fields':[]},
+            {'type':'set','element':{'type':'enum','values':[]}},
+        )
+        for source in invalid_domains:
+            with self.subTest(source=source):
+                self.assertIsNone(_type_subset(source,parse('integer')))
+                self.assertIsNone(_type_subset(source,source))
+
+    def test_malformed_target_cannot_generate_a_subtyping_proof(self):
+        for target in (
+            {'type':'integer','min':5,'max':3},
+            {'type':'union','variants':[parse('integer'), {'type':'enum','values':[]}]},
+            {'type':'set','element':{'type':'enum','values':[]}},
+        ):
+            with self.subTest(target=target):
+                self.assertIsNone(_type_subset(parse('integer'),target))
+                self.assertIsNone(_type_subset(target,target))
+
         self.assertIs(_type_subset(parse('integer[0..2]'),
                                    parse('Union<enum{0},enum{1},enum{2}>')),True)
         self.assertIs(_type_subset(parse('integer[0..3]'),

@@ -102,6 +102,23 @@ class CompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(composer.CompositionError,'owned by PI p.one.pi'):
                 composer.compose([a,b],links)
 
+    def test_malformed_boundary_domain_never_proves_typed_link(self):
+        for which,invalid in (
+            ('producer', {'type':'enum','values':[]}),
+            ('consumer', {'type':'integer','min':8,'max':3}),
+        ):
+            with self.subTest(which=which), tempfile.TemporaryDirectory() as td:
+                producer=model('p.one','p.two','send')
+                consumer=model('p.two','p.one','receive')
+                selected=producer if which=='producer' else consumer
+                selected['fields'][0]['domain']=invalid
+                a,b,links=self.write(Path(td),first=producer,second=consumer)
+                result=composer.compose([a,b],links)
+                self.assertEqual(result['bindings'][0]['status'],'inconclusive')
+                self.assertEqual(result['bindings'][0]['field_links'][0]['status'],'inconclusive')
+                self.assertIn('PI binding exists but structural proof is inconclusive',
+                              {x['reason'] for x in result['unresolved_connections']})
+
     def test_type_mismatch_blocks_binding(self):
         with tempfile.TemporaryDirectory() as td:
             bad=model('p.two','p.one','receive')
