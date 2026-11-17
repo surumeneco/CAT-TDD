@@ -4,7 +4,7 @@ import sys
 import subprocess
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.cat-system' / 'scripts'))
@@ -35,6 +35,54 @@ def work():
 
 
 class WriteGuardTest(unittest.TestCase):
+    def test_native_windows_path_normalization_does_not_rewrite_posix_names(self):
+        windows = PureWindowsPath(r'Lifecycle\\CAT\\Draft\\demo.md')
+        posix_literal = PurePosixPath(r'Lifecycle\\CAT\\Draft\\demo.md')
+        self.assertEqual(flow._guard_relative_name(windows), 'Lifecycle/CAT/Draft/demo.md')
+        self.assertEqual(flow._guard_relative_name(posix_literal), r'Lifecycle\\CAT\\Draft\\demo.md')
+
+    def test_posix_literal_backslash_filename_is_not_an_allowed_draft_path(self):
+        if sys.platform == 'win32':
+            self.skipTest('POSIX allows literal backslashes in filenames, Windows does not')
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            w = work()
+            wp = root / 'work.json'
+            wp.write_bytes(flow.json_bytes(w))
+            self.assertEqual(flow.guard_work(wp, w, 'spec', 'start')['status'], 'passed')
+            (root / r'Lifecycle\\CAT\\Draft\\fake.md').write_text('outside scope', encoding='utf-8')
+            result = flow.guard_work(wp, w, 'spec', 'finish')
+            self.assertEqual(result['status'], 'blocked')
+            self.assertTrue(any(r'Lifecycle\\CAT\\Draft\\fake.md' in item.get('paths', [])
+                                for item in result['violations']))
+
+    def test_recheck_preserves_blocked_evidence_and_original_baseline(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            w = work()
+            wp = root / 'work.json'
+            wp.write_bytes(flow.json_bytes(w))
+            self.assertEqual(flow.guard_work(wp, w, 'spec', 'start')['status'], 'passed')
+            outside = root / 'unrelated.txt'
+            outside.write_text('first unauthorized change', encoding='utf-8')
+            first = flow.guard_work(wp, w, 'spec', 'finish')
+            self.assertEqual(first['status'], 'blocked')
+            outside.unlink()
+            recovered = flow.guard_work(wp, w, 'spec', 'finish')
+            self.assertEqual(recovered['status'], 'passed')
+            evidence = flow.read_json(Path(recovered['guard']))
+            self.assertEqual(evidence['workspace_state'], {'work.json': flow.sha(wp.read_bytes())})
+            self.assertEqual(evidence['finish_history'][0]['verdict'], 'blocked')
+            self.assertEqual(evidence['finish_history'][0]['violations'], first['violations'])
+            self.assertEqual(evidence['violations'], [])
+            # Repeating finish must retain evidence even if a fresh unauthorized
+            # modification appears after the recovery check.
+            outside.write_text('second unauthorized change', encoding='utf-8')
+            last = flow.guard_work(wp, w, 'spec', 'finish')
+            self.assertEqual(last['status'], 'blocked')
+            history = flow.read_json(Path(last['guard']))['finish_history']
+            self.assertEqual([row['verdict'] for row in history], ['blocked', 'passed'])
+
     def test_workspace_guard_allows_owned_path_and_rejects_other_path(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
