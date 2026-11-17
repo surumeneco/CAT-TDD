@@ -1,6 +1,5 @@
 """GEN-02: execution-origin is a runtime Process peer, not a fixed component."""
 from __future__ import annotations
-import copy
 import json
 import sys
 import tempfile
@@ -14,7 +13,7 @@ sys.path[:0] = [
 import cat_process_composition as composition
 import cat_model_conformance as conformance
 import cat_execution_trace_diagnostic as trace_diagnostic
-from cat_compile_v2 import Blocked, load, render_model_markdown
+from cat_compile_v2 import load, render_model_markdown
 from test_multi_peer_operation_binding import peer_pi, multi_peer_models, link_to, write_models
 from test_process_composition import model, binding
 from test_execution_trace_diagnostic import payload, diagnose
@@ -133,6 +132,13 @@ class ExecutionOriginPeerTests(unittest.TestCase):
         checked = diagnose(m, t)
         self.assertEqual(checked['trace_integrity'], 'consistent')
         self.assertEqual(checked['normative_status'], 'inconclusive')
+        t['events'][-1]['peer'] = 'launcher'  # run-2 must return to command
+        with self.assertRaisesRegex(trace_diagnostic.TraceError, 'peer'):
+            diagnose(m, t)
+        t['events'][-1]['peer'] = 'command'
+        t['runs'].append(dict(t['runs'][0]))  # cannot reuse an execution identity
+        with self.assertRaisesRegex(trace_diagnostic.TraceError, 'duplicate execution'):
+            diagnose(m, t)
 
     def test_dynamic_boundary_matches_concrete_runtime_origin_not_symbolic_placeholder(self):
         m, t = payload()
