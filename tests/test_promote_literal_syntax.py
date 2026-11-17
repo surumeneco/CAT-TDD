@@ -20,7 +20,7 @@ def fixture(body):
     target.write_text('source',encoding='utf-8')
     source.write_text(fm('tce','demo.process.tce',[],language='en')+'\n'+body,
                       encoding='utf-8')
-    output=root/'Docs'/'Processes'/'Demo.md'
+    output=root/'Published'/'Processes'/'Demo.md'
     return td,source,output
 
 

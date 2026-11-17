@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from catlib.common import Blocked, read_json, require
 from catlib.markdown import parse_frontmatter
@@ -411,7 +411,7 @@ def validate(w):
                 errs.append(f'checks[{i}]: exit-only evidence cannot prove {c.get("stage")} gate')
             for path_kind in ('input_paths', 'output_paths'):
                 ins = c.get(path_kind, [])
-                if not isinstance(ins, list) or not all(isinstance(v, str) and v and not Path(v).is_absolute() and '..' not in Path(v).parts for v in ins):
+                if not isinstance(ins, list) or not all(isinstance(v, str) and v and not PurePosixPath(v).is_absolute() and not PureWindowsPath(v).anchor and '\\' not in v and chr(0) not in v and '..' not in PurePosixPath(v).parts for v in ins):
                     errs.append(f'checks[{i}].{path_kind} must be relative names within cwd')
             timeout = c.get('timeout_seconds', 120)
             if not isinstance(timeout, int) or not 1 <= timeout <= 3600:

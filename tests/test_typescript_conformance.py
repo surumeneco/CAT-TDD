@@ -114,6 +114,7 @@ export function provideResult() { return false; }
             result=flow.conformance_work(wp,w,'implementation-conformance')
             self.assertEqual(result['status'],'blocked')
             tech=result['technology_results'][0]
+            self.assertIn('violations',tech,tech)
             self.assertTrue(any(x.get('item')=='network' for x in tech['violations']))
 
     def test_public_interface_not_in_pi_blocks_gate(self):
@@ -127,6 +128,7 @@ export function provideResult() { return false; }
             result=flow.conformance_work(wp,w,'implementation-conformance')
             self.assertEqual(result['status'],'blocked')
             tech=result['technology_results'][0]
+            self.assertIn('violations',tech,tech)
             self.assertTrue(any(x.get('item')=='undocumentedInterface' for x in tech['violations']))
 
     def test_declared_interface_with_no_external_capability_passes_inspector(self):

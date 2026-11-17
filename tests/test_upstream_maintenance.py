@@ -76,7 +76,7 @@ class UpstreamMaintenanceTests(unittest.TestCase):
             target.write_text('requirement',encoding='utf-8')
             src.write_text(fm('tce','demo.process.tce',[],language='en')+
                            '\n[requirements](../../../docs/requirements.md)\n',encoding='utf-8')
-            dst=root/'Docs'/'Processes'/'Demo.md'
+            dst=root/'Published'/'Processes'/'Demo.md'
             result=promote(src,dst,'decision:approved')
             self.assertEqual(result['status'],'passed')
             self.assertFalse(src.exists())

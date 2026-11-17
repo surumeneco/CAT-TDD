@@ -136,7 +136,7 @@ def run_declared_check(work_path, work, root, selected_ids, check_id):
     if not check["cwd"].startswith("@repo:"):
         raise Blocked("suite runner must execute in a declared target repository")
     declared_root = cat_flow.resolve_dir(work_path, work, check["cwd"])
-    if declared_root != root:
+    if declared_root.resolve(strict=True) != root.resolve(strict=True):
         raise Blocked("declared suite-run repository does not match pinned target")
     if cat_flow.route(work, "suite-run")["status"] != "ready":
         raise Blocked("suite-run stage is not ready")

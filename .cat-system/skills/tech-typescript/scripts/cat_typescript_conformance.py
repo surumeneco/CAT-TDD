@@ -210,10 +210,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         result = inspect(args.repo, args.binding, args.process, args.pi,args.pi_extra)
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        print(json.dumps(result, ensure_ascii=True, sort_keys=True))
         return 0 if result['status'] == 'passed' else (3 if result['status'] == 'inconclusive' else 2)
     except (Blocked, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        print(json.dumps({'status': 'blocked', 'error': str(exc)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({'status': 'blocked', 'error': str(exc)}, ensure_ascii=True), file=sys.stderr)
         return 2
 
 

@@ -29,7 +29,7 @@ class RuleVerifierTests(unittest.TestCase):
                'assertions':[{'id':'delivery','path':'message.delivered','op':'eq','expected':True}]}
         if runner:
             code="import json,sys,hashlib\np=sys.argv[1]\na=open(p,'rb').read()\nprint(json.dumps({'schema':'cat-verifier-observation/v1','rule_id':'demo.rule','subject':"+repr(subject)+",'fixture_sha256':hashlib.sha256(a).hexdigest(),'observed':json.loads(a)}))\n"
-            (root/'runner.py').write_text(code,encoding='utf-8')
+            (root/'runner.py').write_bytes(code.encode('utf-8'))
             entry['runner']={'type':'python-json-v1','path':'runner.py',
                              'sha256':sha(code.encode())}
         registry={'schema':verifier.SCHEMA,'model_sha256':sha(model_path.read_bytes()),'entries':[entry]}
