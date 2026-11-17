@@ -71,6 +71,12 @@ def subset(source,target):
         results=[subset(x,target) for x in source['variants']]
         return False if False in results else (True if all(x is True for x in results) else None)
     if b=='union':
+        # A nullable source is exactly null plus the inner Domain. A union
+        # target may cover these two sets through different arms, even when
+        # the inner Domain is infinite and no finite witness list exists.
+        if a=='nullable' and (subset({'type':'null'},target) is True
+                              and subset(source['of'],target) is True):
+            return True
         results=[subset(source,x) for x in target['variants']]
         if True in results:return True
         # A source can be covered by a union without fitting any one branch.

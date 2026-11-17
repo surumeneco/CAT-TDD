@@ -234,6 +234,24 @@ class JsonInstantTests(unittest.TestCase):
         unresolved=types.parse('nullable<ref<Unresolved>>')
         self.assertIsNone(sub.subset(unresolved,general))
 
+    def test_nullable_source_is_covered_by_multiple_union_arms_without_enumeration(self):
+        # Partition a nullable domain into null and its non-null members.
+        for source,target in (
+            ('nullable<json-object>','union<null,json-object>'),
+            ('nullable<integer>','union<null,integer>'),
+            ('nullable<string>','union<null,string>'),
+            ('nullable<record<a:integer>>','union<null,record<a:integer>>'),
+        ):
+            self.assertIs(sub.subset(types.parse(source),types.parse(target)),True,
+                          f'{source} <= {target}')
+        for source,target in (
+            ('nullable<json-object>','union<json-object,string>'),
+            ('nullable<instant>','union<null,json>'),
+        ):
+            self.assertIsNot(sub.subset(types.parse(source),types.parse(target)),True)
+        self.assertIsNone(sub.subset(types.parse('nullable<ref<Unknown>>'),
+                                     types.parse('union<null,json>')))
+
     def test_subtyping_is_conservative(self):
         value=types.parse('json');obj=types.parse('json-object');instant=types.parse('instant')
         self.assertTrue(sub.subset(obj,value));self.assertFalse(sub.subset(value,obj))
