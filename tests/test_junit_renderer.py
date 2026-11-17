@@ -44,12 +44,19 @@ class JUnitRendererTests(unittest.TestCase):
         spec.loader.exec_module(module)
         source = module.render_junit(MODEL, CASES, BINDING)
         self.assertEqual(source, module.render_junit(MODEL, CASES, BINDING))
-        self.assertIn('new cat.generated.ImageDriver()', source)
+        self.assertIn('cat.generated.ImageDriver driver = new cat.generated.ImageDriver()', source)
         self.assertIn('@DisplayName("case.s0")', source)
         self.assertIn('java.util.Map.entry("output.choice", "reject")', source)
         self.assertIn('driver.observeState()', source)
         self.assertIn('accepts(after, output, allowed)', source)
         self.assertNotIn('vitest', source)
+        second = [dict(CASES[0], id='case.s1', source_tce='s1')]
+        another = module.render_junit(MODEL, second, BINDING)
+        import re
+        first_name = re.search(r'public final class (\w+)', source).group(1)
+        second_name = re.search(r'public final class (\w+)', another).group(1)
+        self.assertNotEqual(first_name, second_name)
+        self.assertTrue(first_name.endswith('Test') and second_name.endswith('Test'))
 
     def test_invalid_binding_and_unsupported_transport_are_blocked(self):
         with tempfile.TemporaryDirectory() as td:
@@ -59,7 +66,7 @@ class JUnitRendererTests(unittest.TestCase):
             try:
                 compiler.expand_cases = lambda model, vectors: CASES
                 first = compiler.emit_junit(MODEL, {'cases': []}, p)
-                self.assertIn('GeneratedSelectionContractTest', first)
+                self.assertIn('GeneratedSelectionContractCase', first)
                 for bad in [dict(MODEL, fields=[dict(MODEL['fields'][0], domain={'type':'set'})]),
                             dict(MODEL, fields=[dict(MODEL['fields'][0], role='action')]),
                             dict(MODEL, operation_presence=[{'field': 'output.choice'}])]:
@@ -84,10 +91,12 @@ class JUnitRendererTests(unittest.TestCase):
             d = Path(td)
             target = d / 'cat/generated'
             target.mkdir(parents=True)
-            (target / 'GeneratedSelectionContractTest.java').write_text(source,encoding='utf8')
+            import re
+            class_name = re.search(r"public final class ([A-Za-z0-9_]+)", source).group(1)
+            (target / (class_name + '.java')).write_text(source,encoding='utf8')
             (target / 'ImageDriver.java').write_text('''package cat.generated;
 import java.util.Map;
-public final class ImageDriver implements GeneratedSelectionContractTest.Driver {
+public final class ImageDriver {
     public void prepare(Map<String,Object> s,Map<String,Object> i) {}
     public Map<String,Object> observeState() { return Map.of(); }
     public Map<String,Object> trigger(String t,Map<String,Object> i) {
@@ -108,10 +117,10 @@ public final class Assertions {
             (target / 'Runner.java').write_text('''package cat.generated;
 public final class Runner {
  public static void main(String[] args) throws Exception {
-   new GeneratedSelectionContractTest().catCase0001();
+   new CLASS_HERE().catCase0001();
  }
 }
-''',encoding='utf8')
+'''.replace('CLASS_HERE', class_name),encoding='utf8')
             files = [str(x) for x in d.rglob('*.java')]
             subprocess.run(['javac','-d',str(d),*files],check=True,capture_output=True,text=True)
             passed=subprocess.run(['java','-cp',str(d),'cat.generated.Runner'],capture_output=True,text=True)
