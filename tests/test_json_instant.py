@@ -20,6 +20,23 @@ from test_named_type_resolution import spec,add_named_field
 
 
 class JsonInstantTests(unittest.TestCase):
+    def test_upstream_core_candidate_source_is_parsed_but_not_confirmed(self):
+        from catlib import semantic_rules
+        path=ROOT/'Lifecycle/CAT/Candidates/cat.compiler.json-instant.domain-spec.md'
+        source=semantic_rules.load(path,'cat.compiler',allow_draft=True)
+        self.assertEqual(source['id'],'cat.compiler.json-instant')
+        self.assertEqual(source['kind'],'domain-spec')
+        self.assertEqual(source['status'],'candidate')
+        self.assertTrue(source['scope_verified'])
+        self.assertEqual({rule['id'] for rule in source['rules']},{
+            'JT.domains','JT.json-tree','JT.json-equality','JT.instant',
+            'JT.typed-comparison','JT.codec','JT.inclusion','JT.source-model',
+            'JT.fail-closed','JT.authority'})
+        self.assertTrue(all(rule['verification_status']=='unverified'
+                            for rule in source['rules']))
+        with self.assertRaisesRegex(semantic_rules.RuleError,'unconfirmed normative input'):
+            semantic_rules.load(path,'cat.compiler',allow_draft=False)
+
     def test_parse_validate_format_bilingual(self):
         for names,domain in [(['json','JSON値'],{'type':'json','root':'value'}),(['json-object','JSONオブジェクト'],{'type':'json','root':'object'}),(['instant','瞬間値'],{'type':'instant'})]:
             for name in names:self.assertEqual(types.validate(types.parse(name)),domain)
