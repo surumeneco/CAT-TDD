@@ -217,7 +217,7 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 ### 複数peerに対するOperationの明示対応
 
-同一PIの`## 境界 / ## Boundary`に複数の相手Processを宣言する場合は、各`## 操作 / ## Operations`に`相手Process / Peer process`列を追加し、**その操作が対応する相手を一つ明示**する。単一peerのPIでは従来どおり列を省略できる。
+同一PIの`## 境界 / ## Boundary`に複数の相手Processを宣言する場合は、各`## 操作 / ## Operations`に`相手Process / Peer process`列を追加し、**固定Process IDまたは動的な`実行元Process`を明示**する。単一peerのPIでは従来どおり列を省略できる。`実行元Process`の機械表現は`@execution-origin`であり、特定のProcess IDではない。
 
 ~~~md
 ## 境界
@@ -233,10 +233,25 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 | manual_sync | 受付 | manual_sync | xplay.command-source |
 ~~~
 
-- CompilerはOperationとpeerの対応を出典PI付きIRへ保持し、TestModelのJSON・Markdown両方で独立照合する。PIの全peerへOperationを総当たりで割り当てたり、別peerの同名Operationで代用したりしない。
-- 対応先の未指定・境界外のpeer・重複した境界peerは規範上の曖昧さとして拒否する。合成では送受双方のPI／Operation／相手Processを同一接続ごとに検査し、一部のOperationが接続できても別Operationの接続証拠を代用しない。
-- 同じ提供Operationが「今回の実行を開始した相手」に戻るという**実行時の動的対応**は、この単一peer列だけでは表せない。起点ごとに提供Operationを分けるか、別途正当に確定した相関契約と実観測が必要であり、未導入の自動分配・同一実行証明は行わない。
+- CompilerはOperationとpeerの対応を出典PI付きIRへ保持し、TestModelのJSON・Markdown両方で独立照合する。静的な指定を全peerへ自動展開したり、別peerの同名Operationで代用したりしない。`実行元Process`はこの例外として明示的に宣言された場合だけ実行時に束縛する。
+- 複数の静的Peerに対する対応先の未指定、境界外の固定peer、重複した境界peerは規範上の曖昧さとして拒否する。動的指定がなければ、旧単一peerの暗黙対応だけを維持する。合成では送受双方のPI／Operation／相手Processを同一接続ごとに検査し、一部のOperationが接続できても別Operationの接続証拠を代用しない。
+- **動的相手の記法**：PIの`境界`行の相手、および`操作`行の相手として`実行元Process`（英語・内部表現は`@execution-origin`）を指定できる。境界に指定した場合、個々の開始元を事前に有限個列挙する必要はない。同じOperationに指定した場合、相手は各実行の開始Processに解決され、別実行の開始Processを代用しない。既知の静的Peer集合のPIでも、その集合内の実行元へ共通Operationを返す用途で動的指定が可能。静的に型が一致しただけでは配送先の実行時相関は証明できず、Compositionは`inconclusive`を保持する。提出Traceの実行IDとpeerの一致は形式整合性であり、実配送・Provider真正性・規範Gateの`passed`を保証しない。
 - `xplay.command-source`のような論理actor識別子を、実在する独立サービスやHTTP境界として捏造しない。対象Processが組立て集合外なら外部境界として`inconclusive`を維持する。型付き接続が成立しても外部Effect/配送/時系列の証明とは別である。
+
+**実行元を事前列挙しないPIの例**（受付・提供の双方で実行元を参照する場合）：
+
+~~~md
+## 境界
+| 相手Process | 方向 |
+| --- | --- |
+| 実行元Process | 双方向 |
+
+## 操作
+| ID | 方向 | 起点 | 相手Process |
+| --- | --- | --- | --- |
+| request | 受付 | request | 実行元Process |
+| reply | 提供 | — | 実行元Process |
+~~~
 
 ### 操作方向
 

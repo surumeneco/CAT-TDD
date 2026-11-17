@@ -26,6 +26,7 @@ from catlib import semantic_named_types as named_types
 from catlib import semantic_subtyping
 from catlib import semantic_interval_partition
 from catlib import decimal_integer
+from catlib import peer_binding
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -405,7 +406,7 @@ def _readable_spec_v2(path, kind, fm):
         boundary_rows=_table_any(body,('Boundary','境界'))
         require(bool(boundary_rows),'PI Boundary/境界 requires at least one row')
         br=boundary_rows[0]
-        peer=_cell(br,'Peer process','Peer Process','peer','相手Process','相手プロセス')
+        peer=peer_binding.normalize_peer(_cell(br,'Peer process','Peer Process','peer','相手Process','相手プロセス'))
         direction=_canon(_cell(br,'Direction','direction','方向'),
                          {'receive':{'受信'},'send':{'送信'},'bidirectional':{'双方向'}},'PI boundary direction')
         fields=[]
@@ -421,7 +422,7 @@ def _readable_spec_v2(path, kind, fm):
         for row in _table_any(body,('Operations','操作'),required=False):
             odir=_canon(_cell(row,'Direction','direction','方向'),{'accept':{'受付'},'provide':{'提供'}},'PI operation direction')
             trig=_cell(row,'Trigger','trigger','起点',required=False)
-            operation_peer=_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス',required=False)
+            operation_peer=peer_binding.normalize_peer(_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス',required=False))
             operations.append({'id':semantic_ident(_cell(row,'ID','Id','id'),'PI operation ID'),'direction':odir,
                                'trigger':None if trig in ('','-','—','none','なし') else trig,
                                **({'peer':operation_peer} if operation_peer not in ('','-','—','none','なし') else {})})
@@ -436,7 +437,7 @@ def _readable_spec_v2(path, kind, fm):
         constraints=[]
         for row in _table_any(body,('Constraints','制約'),required=False):
             constraints.append(parse_expr_text(_cell(row,'Expression','Condition','expression','condition','式','条件')))
-        extra_peers=[_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス') for row in boundary_rows]
+        extra_peers=[peer_binding.normalize_peer(_cell(row,'Peer process','Peer Process','peer','相手Process','相手プロセス')) for row in boundary_rows]
         for row in boundary_rows:
             require(_canon(_cell(row,'Direction','direction','方向'),
                            {'receive':{'受信'},'send':{'送信'},'bidirectional':{'双方向'}},'PI boundary direction') == direction,
@@ -1000,7 +1001,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             check_keys(pi,['schema','kind','process','boundary','fields','operations'],
                        ['constraints','operation_presence'],where='PI')
             check_keys(pi['boundary'],['peer','direction'],['peers'],where='PI boundary')
-            require(all(ID.fullmatch(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
+            require(all(x==peer_binding.ORIGIN or ID.fullmatch(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
                     'PI peer process must use stable Process IDs')
             require(pi['boundary']['direction'] in ('receive','send','bidirectional'),'PI boundary direction invalid')
             peers=pi['boundary'].get('peers',[pi['boundary']['peer']])
@@ -1012,7 +1013,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 semantic_ident(op['id'],'PI operation ID')
                 require(op['direction'] in ('accept','provide'),'PI operation direction invalid')
                 if 'peer' in op:
-                    require(isinstance(op['peer'],str) and op['peer'] in peers,
+                    require(isinstance(op['peer'],str) and (op['peer']==peer_binding.ORIGIN or op['peer'] in peers),
                             'PI operation peer must match a declared boundary peer')
                 else:
                     require(len(peers)==1,'PI operation peer required for multi-peer boundary')

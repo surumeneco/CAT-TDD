@@ -13,6 +13,8 @@ import json
 import sys
 from pathlib import Path
 
+from catlib import peer_binding
+
 
 class TraceError(ValueError):
     """Malformed, stale, or internally contradictory trace evidence."""
@@ -72,8 +74,10 @@ def _operations(model):
             _require(len(boundaries[pi]) == 1,
                      'ambiguous operation: multiple peers without mapping')
             peer = boundaries[pi][0]
-        _require(peer in boundaries[pi], 'operation peer outside declared PI boundary')
-        operations[name] = {'direction': role, 'source_pi': pi, 'peer': peer}
+        _require(peer == peer_binding.ORIGIN or peer in boundaries[pi],
+                 'operation peer outside declared PI boundary')
+        operations[name] = {'direction': role, 'source_pi': pi, 'peer': peer,
+                            'declared_peers': boundaries[pi]}
     return operations
 
 
@@ -81,7 +85,9 @@ def _check_operation(operations, op_id, role, peer):
     operation = operations.get(op_id)
     _require(operation is not None, 'unknown operation')
     _require(operation['direction'] == role, 'operation direction mismatch')
-    _require(operation['peer'] == peer, 'operation peer mismatch')
+    _require(peer_binding.match_operation(operation['declared_peers'],
+                                          operation['peer'], peer) is not None,
+             'operation peer mismatch')
 
 
 def evaluate(model, model_bytes, trace):
