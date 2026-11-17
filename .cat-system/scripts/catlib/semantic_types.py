@@ -250,7 +250,13 @@ def contains(d,value):
     if t=='string':
         if type(value) is not str:return False
         if d.get('format','any')=='any':return True
-        return bool(re.fullmatch(r'[+-]?(?:0|[1-9][0-9]*)',value)) and abs(int(value))<=9007199254740991
+        if re.fullmatch(r'[+-]?(?:0|[1-9][0-9]*)',value) is None:
+            return False
+        # Compare canonical decimal digits directly: untrusted input can
+        # exceed Python's int-string conversion limit (4300 digits).
+        digits=value.lstrip('+-')
+        bound='9007199254740991'
+        return len(digits)<len(bound) or (len(digits)==len(bound) and digits<=bound)
     if t=='bytes':
         return isinstance(value,(bytes,bytearray)) or (isinstance(value,list) and all(type(v) is int and 0<=v<=255 for v in value))
     if t in ('set','sequence'):
