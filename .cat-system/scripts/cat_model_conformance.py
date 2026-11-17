@@ -16,6 +16,7 @@ from pathlib import Path
 
 from cat_compile_v2 import Blocked, format_expr, read_artifact, _effect_totality_checks
 from catlib import semantic_rules
+from catlib import decimal_integer
 from catlib import semantic_types
 from catlib import independent_coverage
 from catlib import semantic_named_types as named_types
@@ -358,7 +359,7 @@ def markdown_model(path):
 
 
 def json_model(path):
-    model = json.loads(Path(path).read_text(encoding='utf-8'))
+    model = decimal_integer.loads(Path(path).read_text(encoding='utf-8'))
     require(isinstance(model,dict),'TestModel JSON must be an object')
     # Inventory comparisons use dictionaries; reject duplicates before their
     # last-wins normalization can conceal a corrupted or forged source entry.

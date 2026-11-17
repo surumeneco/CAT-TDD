@@ -25,6 +25,7 @@ from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
 from catlib import semantic_subtyping
 from catlib import semantic_interval_partition
+from catlib import decimal_integer
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -204,7 +205,7 @@ def _scalar_token(token):
     if low=='false':return False
     if token=='真':return True
     if token=='偽':return False
-    if INT.fullmatch(token):return int(token)
+    if INT.fullmatch(token):return decimal_integer.parse(token)
     require(bool(token),'empty enum value')
     return token
 
@@ -224,8 +225,8 @@ def parse_domain_text(text):
     m=re.fullmatch(r'integer\[\s*([+-]?\d*)\s*\.\.\s*([+-]?\d*)\s*\]',text)
     if m:
         d={'type':'integer'}
-        if m.group(1):d['min']=int(m.group(1))
-        if m.group(2):d['max']=int(m.group(2))
+        if m.group(1):d['min']=decimal_integer.parse(m.group(1))
+        if m.group(2):d['max']=decimal_integer.parse(m.group(2))
         return d
     if text=='string':return {'type':'string'}
     if text=='string<safe-signed-integer>':return {'type':'string','format':'safe-signed-integer'}
@@ -570,7 +571,7 @@ def validate_domain(d):
         check_keys(d,['type','values'],where='enum domain')
         require(isinstance(d['values'],list) and bool(d['values']), 'enum nonempty values required')
         require(all(isinstance(v,(str,int,bool)) for v in d['values']), 'enum only str/int/bool')
-        require(len({json.dumps(x,sort_keys=True) for x in d['values']})==len(d['values']), 'enum duplicate')
+        require(len({decimal_integer.dumps(x,sort_keys=True) for x in d['values']})==len(d['values']), 'enum duplicate')
     if t=='boolean':check_keys(d,['type'],where='boolean domain')
     if t=='integer':
         check_keys(d,['type'],['min','max'],where='integer domain')
@@ -1598,6 +1599,16 @@ def emit_vitest(model,vectors,binding_path):
         raise Blocked('unsupported undefined transport binding')
     if uses_undefined and binding.get('undefined_transport')!='js-undefined/v1':
         raise Blocked('Vitest renderer has no source-backed undefined transport binding; cannot generate a false oracle')
+    # The bundled Vitest renderer emits ordinary JavaScript number literals.
+    # Integers beyond Number.MAX_SAFE_INTEGER would silently lose precision;
+    # require a separately specified BigInt/transport contract instead.
+    stack=[cases]
+    while stack:
+        item=stack.pop()
+        if type(item) is int and abs(item)>SAFE_INT:
+            raise Blocked('Vitest renderer cannot safely encode integer outside JS safe range; explicit transport required')
+        if isinstance(item,dict):stack.extend(item.values())
+        elif isinstance(item,(list,tuple)):stack.extend(item)
     return _vitest_renderer()(model,cases,binding)
 
 
@@ -1686,7 +1697,7 @@ def format_domain(d, language='en'):
     if t=='boolean':return names['boolean']
     if t=='integer':
         if d.get('min') is None and d.get('max') is None:return names['integer']
-        return f"{names['integer']}[{'' if d.get('min') is None else d['min']}..{'' if d.get('max') is None else d['max']}]"
+        return names['integer']+'['+(decimal_integer.format_int(d['min']) if 'min' in d else '')+'..'+(decimal_integer.format_int(d['max']) if 'max' in d else '')+']'
     if t=='string':
         if d.get('format','any')=='any':return names['string']
         fmt='安全符号付き整数' if language=='ja' and d['format']=='safe-signed-integer' else d['format']
@@ -1696,7 +1707,7 @@ def format_domain(d, language='en'):
         return f"{names[t]}<{format_domain(element,language) if isinstance(element,dict) else names[element]}>"
     if t=='enum':return names['enum']+'{' + ', '.join(_format_literal(v,language) for v in d['values']) + '}'
     if t=='bytes':return 'バイト列' if language=='ja' else 'bytes'
-    if t=='real':return ('実数' if language=='ja' else 'real')+('['+str(d.get('min',''))+'..'+str(d.get('max',''))+']' if 'min' in d or 'max' in d else '')
+    if t=='real':return ('実数' if language=='ja' else 'real')+('['+(decimal_integer.format_int(d['min']) if type(d.get('min')) is int else str(d.get('min','')))+'..'+(decimal_integer.format_int(d['max']) if type(d.get('max')) is int else str(d.get('max','')))+']' if 'min' in d or 'max' in d else '')
     if t=='nullable':return format_domain(d['of'],language)+('またはnull' if language=='ja' else '|null')
     if t=='union':return 'Union<'+', '.join(format_domain(x,language) for x in d['variants'])+'>'
     if t=='record':
@@ -1714,7 +1725,7 @@ def _format_literal(v, language='en'):
     if v is None:return 'なし' if language=='ja' else 'null'
     if isinstance(v,str):return json.dumps(v,ensure_ascii=False)
     if isinstance(v,list):return '['+', '.join(_format_literal(x,language) for x in v)+']'
-    return str(v)
+    return decimal_integer.format_int(v) if type(v) is int else str(v)
 
 
 def format_expr(expr, params=(), language='en'):
@@ -1814,7 +1825,7 @@ def render_model_markdown(model):
     return '\n'.join(lines)+'\n'
 
 def _model_content(model, output_path):
-    return render_model_markdown(model) if Path(output_path).suffix.lower()=='.md' else json.dumps(model,sort_keys=True,ensure_ascii=False,indent=2)+'\n'
+    return render_model_markdown(model) if Path(output_path).suffix.lower()=='.md' else decimal_integer.dumps(model,sort_keys=True,ensure_ascii=False,indent=2)+'\n'
 
 def write(path,content,check):
     p=Path(path);require(not check or (p.exists() and p.read_bytes()==content.encode()),f'{p}: output differs or missing')
@@ -1842,23 +1853,23 @@ def main(argv=None):
                         'test model does not match current CAT source: regenerate')
                 model=fresh
             else:
-                model=json.loads(model_bytes.decode('utf-8'))
+                model=decimal_integer.loads(model_bytes.decode('utf-8'))
                 require(model.get('schema')==M,'wrong model schema')
                 require(model.get('status')=='confirmed' or args.allow_draft,'draft model requires --allow-draft')
                 require(model.get('semantic_authority') in (S,'cat-markdown/v1','cat-markdown/v2'),'missing CAT semantic authority')
                 require(model==fresh,'test model does not match current CAT source: regenerate')
             if args.command=='vectors':
                 result=selection_vectors(model,args.selection_rule)
-                write(args.output,json.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
+                write(args.output,decimal_integer.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
             else:
                 vector_bytes=Path(args.vectors).read_bytes()
-                vectors=json.loads(vector_bytes.decode('utf-8'))
+                vectors=decimal_integer.loads(vector_bytes.decode('utf-8'))
                 if not args.allow_draft:
                     require(vectors==selection_vectors(model),
                             'test vectors differ from deterministic test-selection output: regenerate')
                 if args.command=='queue':
                     result=make_queue(model,vectors,model_bytes,vector_bytes)
-                    write(args.output,json.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
+                    write(args.output,decimal_integer.dumps(result,sort_keys=True,ensure_ascii=False,indent=2)+'\n',args.check)
                 else:
                     if args.queue:
                         queue=json.loads(Path(args.queue).read_text(encoding='utf-8'))
