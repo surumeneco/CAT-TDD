@@ -125,6 +125,19 @@ class JsonInstantTests(unittest.TestCase):
         with self.assertRaises(codec.BindingError):codec.decode_aware_datetime(datetime(2026,11,16))
         with self.assertRaises(codec.BindingError):codec.InstantValue(1.0)
 
+    def test_offset_datetime_codec_rejects_non_ascii_digits(self):
+        # The explicit offset codec uses a fixed ISO-style lexical grammar.
+        # Python regex \d and int() otherwise accept many Unicode digits.
+        for text in (
+            '２０２６-１１-１６T００:００:００Z',
+            '٢٠٢٦-١١-١٦T٠٠:٠٠:٠٠Z',
+            '2026-11-16T00:00:00.١Z',
+            '2026-11-16T00:00:00+０９:００',
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(codec.BindingError):
+                    codec.decode_offset_datetime(text)
+
     def test_aware_datetime_codec_uses_actual_offset(self):
         value=datetime(2026,11,16,9,0,0,123456,tzinfo=timezone(timedelta(hours=9)))
         self.assertEqual(codec.decode_aware_datetime(value),codec.decode_offset_datetime('2026-11-16T00:00:00.123456Z'))
