@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import os
 import subprocess
 import tempfile
 import unittest
@@ -52,8 +53,10 @@ class NumberedRoomLayoutTest(unittest.TestCase):
                     self.assertEqual(self.git(target, "branch", "--show-current").stdout.strip(),
                                      f"room{number}")
                 entries = self.git(origin, "worktree", "list", "--porcelain").stdout
-                self.assertIn(str(root / "Room1" / repo), entries)
-                self.assertIn(str(root / "Room2" / repo), entries)
+                self.assertIn(os.path.normcase(str((root / "Room1" / repo).resolve())).replace('\\', '/'),
+                              os.path.normcase(entries).replace('\\', '/'))
+                self.assertIn(os.path.normcase(str((root / "Room2" / repo).resolve())).replace('\\', '/'),
+                              os.path.normcase(entries).replace('\\', '/'))
 
 
 if __name__ == "__main__":
