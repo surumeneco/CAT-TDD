@@ -52,6 +52,12 @@ def _enum_scalar(token):
     return token
 
 
+def _parse_real_bound(token):
+    # Integer-valued real limits are exact; binary64 would round large values.
+    # Preserve the existing float semantics of explicitly fractional literals.
+    return float(token) if '.' in token else decimal_integer.parse(token)
+
+
 def parse(text):
     if not isinstance(text,str) or not text.strip():raise DomainError('empty domain')
     text=text.strip().strip(chr(96))
@@ -115,7 +121,7 @@ def parse(text):
                     'resolved':all(f['domain']['type']!='unknown' for f in fields)}
     for pattern,kind,cast in (
         (r'(?:整数|integer)\[\s*([+-]?\d+)?\s*\.\.\s*([+-]?\d+)?\s*\]','integer',decimal_integer.parse),
-        (r'(?:実数|real)\[\s*([+-]?(?:\d+(?:\.\d+)?))?\s*\.\.\s*([+-]?(?:\d+(?:\.\d+)?))?\s*\]','real',float)):
+        (r'(?:実数|real)\[\s*([+-]?(?:\d+(?:\.\d+)?))?\s*\.\.\s*([+-]?(?:\d+(?:\.\d+)?))?\s*\]','real',_parse_real_bound)):
         m=re.fullmatch(pattern,text)
         if m:
             d={'type':kind}
