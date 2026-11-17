@@ -1614,6 +1614,38 @@ def emit_vitest(model,vectors,binding_path):
 
 
 
+def emit_junit(model, vectors, binding_path):
+    """Render current queued CAT cases using the explicitly selected JUnit adapter."""
+    import importlib.util
+    require(not any(f['role'] in ('observation', 'action') for f in model['fields']),
+            'JUnit renderer requires explicit capability binding for observation/action')
+    require(not any(typed.has_semantic_domain(f['domain']) for f in model['fields']),
+            'JUnit renderer requires explicit structured/instant transport binding')
+    require(all(f['domain']['type'] in ('boolean', 'enum', 'integer')
+                and f.get('presence', 'required') == 'required' for f in model['fields']),
+            'JUnit scalar renderer supports only required boolean/enum/integer fields')
+    require(not model.get('operation_presence'),
+            'JUnit scalar renderer does not carry operation-scoped Presence')
+    binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
+    check_keys(binding,['schema','process','test_package','test_class','driver_class'],
+               where='JUnit driver binding')
+    require(binding['schema']=='cat-junit-driver-binding/v1'
+            and binding['process']==model['process'], 'JUnit driver binding incompatible')
+    cases=expand_cases(model,vectors)
+    require(not any('output_operation' in c for c in cases),
+            'JUnit scalar renderer cannot carry output-operation identity')
+    path=ROOT / 'skills' / 'tech-junit' / 'scripts' / 'cat_junit_renderer.py'
+    require(path.is_file(), 'JUnit generation requires installed tech-junit Skill renderer')
+    spec=importlib.util.spec_from_file_location('_cat_junit_renderer',path)
+    require(spec is not None and spec.loader is not None, 'cannot load tech-junit renderer')
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        return module.render_junit(model,cases,binding)
+    except ValueError as e:
+        raise Blocked(str(e)) from e
+
+
 def make_queue(model, vectors, model_bytes, vector_bytes):
     require(model.get('status') == 'confirmed', 'normative Queue requires confirmed TestModel')
     cases = expand_cases(model, vectors)
@@ -1837,7 +1869,7 @@ def main(argv=None):
     m=sub.add_parser('model');m.add_argument('process');m.add_argument('pi');m.add_argument('--pi-extra',action='append',default=[]);m.add_argument('--common-rule',action='append',default=[]);m.add_argument('--domain-spec',action='append',default=[]);m.add_argument('--allow-partial',action='store_true');m.add_argument('tce',nargs='+');m.add_argument('--domain-rule');m.add_argument('--allow-draft',action='store_true');m.add_argument('--check',action='store_true');m.add_argument('-o','--output',required=True)
     v=sub.add_parser('vectors');v.add_argument('model');v.add_argument('--selection-rule',default='rule-witness/v1');v.add_argument('--process',required=True);v.add_argument('--pi',required=True);v.add_argument('--pi-extra',action='append',default=[]);v.add_argument('--common-rule',action='append',default=[]);v.add_argument('--domain-spec',action='append',default=[]);v.add_argument('--allow-partial',action='store_true');v.add_argument('--tce',action='append',required=True);v.add_argument('--domain-rule');v.add_argument('--allow-draft',action='store_true');v.add_argument('--check',action='store_true');v.add_argument('-o','--output',required=True)
     q=sub.add_parser('queue');q.add_argument('model');q.add_argument('vectors');q.add_argument('--process',required=True);q.add_argument('--pi',required=True);q.add_argument('--pi-extra',action='append',default=[]);q.add_argument('--common-rule',action='append',default=[]);q.add_argument('--domain-spec',action='append',default=[]);q.add_argument('--allow-partial',action='store_true');q.add_argument('--tce',action='append',required=True);q.add_argument('--domain-rule');q.add_argument('--allow-draft',action='store_true');q.add_argument('--check',action='store_true');q.add_argument('-o','--output',required=True)
-    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--pi-extra',action='append',default=[]);t.add_argument('--common-rule',action='append',default=[]);t.add_argument('--domain-spec',action='append',default=[]);t.add_argument('--allow-partial',action='store_true');t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
+    t=sub.add_parser('tests');t.add_argument('model');t.add_argument('vectors');t.add_argument('binding');t.add_argument('--queue');t.add_argument('--framework',choices=('vitest','junit'),default='vitest');t.add_argument('--process',required=True);t.add_argument('--pi',required=True);t.add_argument('--pi-extra',action='append',default=[]);t.add_argument('--common-rule',action='append',default=[]);t.add_argument('--domain-spec',action='append',default=[]);t.add_argument('--allow-partial',action='store_true');t.add_argument('--tce',action='append',required=True);t.add_argument('--domain-rule');t.add_argument('--allow-draft',action='store_true');t.add_argument('--check',action='store_true');t.add_argument('-o','--output',required=True)
     args=cli.parse_args(argv)
     try:
         if args.command=='model':
@@ -1876,7 +1908,8 @@ def main(argv=None):
                         vectors=current_vectors(model,vectors,queue,model_bytes,vector_bytes)
                     else:
                         require(args.allow_draft, 'normative test generation requires --queue with exactly one current item')
-                    write(args.output,emit_vitest(model,vectors,args.binding),args.check)
+                    write(args.output,(emit_junit(model,vectors,args.binding) if args.framework=='junit'
+                                       else emit_vitest(model,vectors,args.binding)),args.check)
         return 0
     except (Blocked,TypeError,KeyError,ValueError,FileNotFoundError) as e:
         print('BLOCKED: '+str(e),file=sys.stderr);return 2

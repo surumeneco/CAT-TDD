@@ -48,6 +48,7 @@ CATの仕様記述・開発フロー・TDDをVS Code / GitHub Copilot・Codex・
 | `skills/cat-artifacts/scripts/cat_artifact_scaffold.py` | Semantic Artifactの空構造と必須メタデータを決定論的に生成 | Process/PI/TCE等の意味内容の推測 |
 | `skills/cycle-management/scripts/cat_lifecycle.py` | Issue/Task/Workの現在配置を一意確認し、明示されたLifecycle状態へディレクトリごと安全に移動 | 遷移の意味的妥当性・完了判定 |
 | `skills/tech-vitest/scripts/cat_vitest_renderer.py` | 汎用ケースをVitestソースへ描画する内部renderer | CATモデル・具体値の決定 |
+| `skills/tech-junit/scripts/cat_junit_renderer.py` | 限定されたscalarケースをJUnit Jupiterへ描画する内部renderer | CATモデル・具体値の決定、未対応Domainの推測 |
 
 具体的手順・エラー/ゲートの扱いは[AI実行契約](docs/AI実行契約.md)。モデルの`Draft`は規範oracleではなく、生成コードの成功は実Red/Greenではない。
 
