@@ -381,7 +381,7 @@ def json_model(path):
     require(len(boundary_ids)==len(set(boundary_ids)),'duplicate PI boundary artifact')
     sources = {}
     source_metadata_integrity = True
-    if model.get('source_records'):
+    if 'source_records' in model:
         # The compiler emits three representations of the same provenance.
         # Source-to-Model comparison must reject contradictions among them,
         # even if the canonical source_records inventory remains accurate.
