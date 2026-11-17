@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
 import sys
 from cat_compile_v2 import load, Blocked
@@ -25,7 +25,8 @@ def safe(root,rel):
     if not isinstance(rel,str) or not rel or chr(0) in rel:
         raise Blocked('assembly requires a safe relative path')
     relative=Path(rel)
-    if relative.is_absolute() or '..' in relative.parts or '\\' in rel:
+    if (PurePosixPath(rel).is_absolute() or PureWindowsPath(rel).anchor or
+            '..' in PurePosixPath(rel).parts or '\\' in rel):
         raise Blocked('assembly path escapes review package')
     root=root.resolve(strict=True)
     cursor=root

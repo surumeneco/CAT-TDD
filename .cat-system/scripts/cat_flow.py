@@ -967,6 +967,17 @@ def guard_work(wpath,w,stage,phase,conditional=None):
     bad_ws=[p for p in changed_ws if not any(fnmatch.fnmatchcase(p,pat) for pat in allowed_ws)]
     if bad_ws: violations.append({'workspace':str(workspace_root(wpath)),'paths':bad_ws})
     verdict='blocked' if violations else 'passed'
+    # A re-check must not erase the previous finish decision or replace the
+    # original baseline. Manual correction may change the current verdict,
+    # but a claimed approval never exempts a changed path from the guard.
+    previous_verdict=base.get('verdict')
+    require(previous_verdict in ('pending','passed','blocked'), 'invalid guard verdict')
+    if previous_verdict != 'pending':
+        history=base.setdefault('finish_history',[])
+        require(isinstance(history,list), 'invalid guard finish history')
+        history.append({'verdict':previous_verdict,
+                        'violations':base.get('violations',[]),
+                        'finished_manifest_sha256':base.get('finished_manifest_sha256')})
     base['verdict']=verdict;base['violations']=violations;base['finished_manifest_sha256']=sha(wpath.read_bytes())
     path.write_bytes(json_bytes(base))
     return {'status':verdict,'stage':stage,'conditional':conditional,'violations':violations,

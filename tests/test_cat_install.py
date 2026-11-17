@@ -36,7 +36,7 @@ class InstallTest(unittest.TestCase):
     def test_plan_excludes_unadopted_tech_everywhere(self):
         a,s,e=self.selected()
         rows=installer.plan(self.project,a,s,False,e)
-        rel=[str(dst.relative_to(self.project)) for _,dst,_ in rows]
+        rel=[dst.relative_to(self.project).as_posix() for _,dst,_ in rows]
         self.assertFalse(any('tech-playwright' in x for x in rel))
         self.assertFalse(any('tech-vue' in x for x in rel))
         self.assertTrue(any('tech-vitest' in x for x in rel))
@@ -47,7 +47,7 @@ class InstallTest(unittest.TestCase):
         # Public CAT-TDD must be testable without any private project adapter.
         agents, skills, extension = self.selected()
         self.assertIsNone(extension)
-        baseline = [str(dst.relative_to(self.project))
+        baseline = [dst.relative_to(self.project).as_posix()
                     for _, dst, _ in installer.plan(self.project, agents, skills, False, extension)]
         self.assertFalse(any('/extensions/' in path or '-adapter/' in path for path in baseline))
         with self.assertRaises(flow.Blocked):
@@ -67,7 +67,7 @@ class InstallTest(unittest.TestCase):
             agents, skills, extension = self.selected(name)
             self.assertEqual(extension.name, name)
             rows = installer.plan(self.project, agents, skills, False, extension)
-            installed = {str(dst.relative_to(self.project)) for _, dst, _ in rows}
+            installed = {dst.relative_to(self.project).as_posix() for _, dst, _ in rows}
             self.assertIn(f'.github/skills/{name}/SKILL.md', installed)
             self.assertIn(f'.cat-system/extensions/{name}/AdapterReference.md', installed)
             self.assertEqual(installer.planned_reference_errors(self.project, rows), [])
@@ -92,7 +92,7 @@ class InstallTest(unittest.TestCase):
         agents, skills, extension = self.selected()
         self.assertIn('tech-web-accessibility', {p.parent.name for p in skills})
         rows = installer.plan(self.project, agents, skills, False, extension)
-        targets = {str(dst.relative_to(self.project)) for _, dst, _ in rows}
+        targets = {dst.relative_to(self.project).as_posix() for _, dst, _ in rows}
         self.assertIn('.github/skills/tech-web-accessibility/SKILL.md', targets)
         self.assertIn('.github/skills/tech-web-accessibility/references/evaluation-checklist.md', targets)
         self.assertIn('.cat-system/skills/tech-web-accessibility/references/evaluation-checklist.md', targets)
@@ -104,7 +104,7 @@ class InstallTest(unittest.TestCase):
     def test_all_harnesses_share_selected_skill_set(self):
         agents, skills, extension = self.selected()
         rows = installer.plan(self.project, agents, skills, False, extension)
-        rel = {str(dest.relative_to(self.project)) for _, dest, _ in rows}
+        rel = {dest.relative_to(self.project).as_posix() for _, dest, _ in rows}
         for root in ('.github/skills', '.agents/skills', '.claude/skills'):
             self.assertIn(f'{root}/cat-tdd-entry/SKILL.md', rel)
             self.assertIn(f'{root}/tech-vitest/scripts/cat_vitest_renderer.py', rel)
@@ -144,7 +144,7 @@ class InstallTest(unittest.TestCase):
     def test_copilot_only_installs_shared_contract(self):
         agents, skills, extension = self.selected()
         rows = installer.plan(self.project, agents, skills, False, extension, 'copilot')
-        rel = {str(dest.relative_to(self.project)) for _, dest, _ in rows}
+        rel = {dest.relative_to(self.project).as_posix() for _, dest, _ in rows}
         self.assertIn('AGENTS.md', rel)
         self.assertNotIn('CLAUDE.md', rel)
         self.assertIn('.github/copilot-instructions.md', rel)
@@ -159,7 +159,7 @@ class InstallTest(unittest.TestCase):
         ):
             with self.subTest(harness=harness):
                 rows = installer.plan(self.project, agents, skills, False, extension, harness)
-                rel = {str(dest.relative_to(self.project)) for _, dest, _ in rows}
+                rel = {dest.relative_to(self.project).as_posix() for _, dest, _ in rows}
                 self.assertIn(expected, rel)
                 self.assertNotIn(excluded, rel)
                 self.assertEqual(installer.planned_reference_errors(self.project, rows), [])
@@ -190,7 +190,7 @@ class InstallTest(unittest.TestCase):
     def test_runtime_plan_separates_docs_config_tests(self):
         agents,skills,ext=self.selected()
         rows=installer.plan(self.project,agents,skills,False,ext)
-        rel=[str(dst.relative_to(self.project)) for _,dst,_ in rows]
+        rel=[dst.relative_to(self.project).as_posix() for _,dst,_ in rows]
         self.assertIn('.cat-system/docs/Artifact記法.md', rel)
         self.assertIn('.cat-system/config/routing.json', rel)
         self.assertIn('.cat-system/optional-skills/cat-conformance-review/SKILL.md', rel)

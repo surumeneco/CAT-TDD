@@ -267,18 +267,18 @@ class ReadableArtifactTests(unittest.TestCase):
     def test_v2_expression_rejects_arbitrary_code(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),True)
-            tce.write_text(tce.read_text().replace('`input.enabled`','`__import__("os")`'),encoding='utf-8')
+            tce.write_text(tce.read_text(encoding='utf-8').replace('`input.enabled`','`__import__("os")`'),encoding='utf-8')
             with self.assertRaises(Blocked): load(process,pi,tce,allow_draft=True)
 
     def test_declared_observation_and_action_are_first_class_capabilities(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),True)
-            process.write_text(process.read_text()
+            process.write_text(process.read_text(encoding='utf-8')
                 .replace('| ID | 由来 | Domain |\n| --- | --- | --- |\n',
                          '| ID | 由来 | Domain |\n| --- | --- | --- |\n| observation.allowed | 業務カレンダー | 真偽 |\n',1)
                 .replace('| ID | 対象 | Domain |\n| --- | --- | --- |\n',
                          '| ID | 対象 | Domain |\n| --- | --- | --- |\n| action.audit | 監査通知 | 真偽 |\n',1), encoding='utf-8')
-            tce.write_text(tce.read_text()
+            tce.write_text(tce.read_text(encoding='utf-8')
                 .replace('`input.enabled`', '`input.enabled かつ observation.allowed`',1)
                 .replace('`否定(input.enabled)`', '`否定(input.enabled) または 否定(observation.allowed)`')
                 .replace('`state.ready = 真; output.accepted = 真`',
@@ -293,7 +293,7 @@ class ReadableArtifactTests(unittest.TestCase):
     def test_optional_presence_is_preserved_but_not_silently_compiled_as_required(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),False)
-            pi.write_text(pi.read_text().replace('input.enabled | receive | boolean | required',
+            pi.write_text(pi.read_text(encoding='utf-8').replace('input.enabled | receive | boolean | required',
                                                  'input.enabled | receive | boolean | optional'),encoding='utf-8')
             model=load(process,pi,tce,allow_draft=True)
             field=next(f for f in model['fields'] if f['id']=='input.enabled')
@@ -304,22 +304,22 @@ class ReadableArtifactTests(unittest.TestCase):
     def test_undeclared_observation_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),True)
-            tce.write_text(tce.read_text().replace('`input.enabled`','`観測.天気 == "晴"`',1),encoding='utf-8')
+            tce.write_text(tce.read_text(encoding='utf-8').replace('`input.enabled`','`観測.天気 == "晴"`',1),encoding='utf-8')
             with self.assertRaisesRegex(Blocked,'unknown or non-readable ref'):
                 load(process,pi,tce,allow_draft=True)
 
     def test_undeclared_effect_target_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),True)
-            tce.write_text(tce.read_text().replace('state.ready = 真','作用.外部 = 真'),encoding='utf-8')
+            tce.write_text(tce.read_text(encoding='utf-8').replace('state.ready = 真','作用.外部 = 真'),encoding='utf-8')
             with self.assertRaisesRegex(Blocked,'not declared/actuable'):
                 load(process,pi,tce,allow_draft=True)
 
     def test_arithmetic_guard_keeps_unproven_result_in_draft_but_blocks_normative_compile(self):
         with tempfile.TemporaryDirectory() as d:
             process,pi,tce=write_v2(Path(d),False)
-            pi.write_text(pi.read_text().replace('input.enabled | receive | boolean','input.enabled | receive | integer'),encoding='utf-8')
-            tce.write_text(tce.read_text().replace('`input.enabled`','`input.enabled + 1 > 0`',1)
+            pi.write_text(pi.read_text(encoding='utf-8').replace('input.enabled | receive | boolean','input.enabled | receive | integer'),encoding='utf-8')
+            tce.write_text(tce.read_text(encoding='utf-8').replace('`input.enabled`','`input.enabled + 1 > 0`',1)
                            .replace('`not input.enabled`','`input.enabled + 1 <= 0`'),encoding='utf-8')
             model=load(process,pi,tce,allow_draft=True)
             self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
