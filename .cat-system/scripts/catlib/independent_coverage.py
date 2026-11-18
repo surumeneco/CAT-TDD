@@ -76,6 +76,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
     result={}
     output_ok=True
     output_unproved=set()
+    covered_owners=set()
     for trigger in process['triggers']:
         ident=trigger['id']
         applicable=[r for r in rules if r['trigger']==ident]
@@ -94,7 +95,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                for r in applicable for outcome in r['allowed'] for w in outcome['write']):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
-        names=set(special)
+        names=set()
+        # Only semantically referenced nonrequired inputs partition Guard truth.
         for clause in [*constraints,*(r['when'] for r in applicable)]:
             names.update(used_refs(clause,definitions))
         dimensions=[];possible=True;partition_fields=[]
@@ -159,16 +161,31 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             # Nonrequired output frames need an explicit, unique provider.
             # Required fields must be emitted by each alternative regardless
             # of whether a nonrequired field or a provide operation exists.
-            provider=providers[0] if len(providers)==1 else None
+            # A provide Operation only scopes an output frame when the
+            # Source declares nonrequired or operation-specific output Presence.
+            # Otherwise the legacy direct TCE frame covers all required outputs,
+            # even when an unrelated PI declares a provide Operation.
+            needs_provider=(bool(output_special) or any(ov['field'] in outputs for ov in overrides))
+            provider=providers[0] if needs_provider and len(providers)==1 else None
+            if provider is not None:
+                covered_owners.add(provider['source_pi'])
+            scoped_outputs=(outputs if provider is None else {
+                field:info for field,info in outputs.items()
+                if info['owner']==provider['source_pi']})
             if output_special and (provider is None
-                or any(info['owner']!=provider['source_pi'] for info in outputs.values())
-                or any(ov['operation']!=provider['id'] for ov in overrides if ov['field'] in outputs)):
+                or any(ov['operation']!=provider['id'] for ov in overrides
+                       if ov['field'] in scoped_outputs)):
                 output_ok=False
                 output_unproved.update(output_special)
             for rule in applicable:
                 for outcome in rule['allowed']:
                     emitted={x['target'] for x in outcome['write']}
-                    for field,info in outputs.items():
+                    if provider is not None:
+                        unowned=emitted & (outputs.keys()-scoped_outputs.keys())
+                        if unowned:
+                            output_ok=False
+                            output_unproved.update(unowned)
+                    for field,info in scoped_outputs.items():
                         ps=([ov['presence'] for ov in overrides
                              if ov['field']==field and ov['operation']==provider['id']]
                             if provider is not None else [])
@@ -177,5 +194,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                                 or (presence=='absent' and field in emitted)):
                             output_ok=False
                             output_unproved.add(field)
+    orphaned={field for field in output_special
+              if outputs[field]['owner'] not in covered_owners}
+    if orphaned:
+        output_ok=False
+        output_unproved.update(orphaned)
     return {'triggers':result,'output_presence_proved':output_ok,
             'unproved_output_fields':sorted(output_unproved)}
