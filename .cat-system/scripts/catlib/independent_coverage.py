@@ -161,7 +161,12 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             # Nonrequired output frames need an explicit, unique provider.
             # Required fields must be emitted by each alternative regardless
             # of whether a nonrequired field or a provide operation exists.
-            provider=providers[0] if len(providers)==1 else None
+            # A provide Operation only scopes an output frame when the
+            # Source declares nonrequired or operation-specific output Presence.
+            # Otherwise the legacy direct TCE frame covers all required outputs,
+            # even when an unrelated PI declares a provide Operation.
+            needs_provider=(bool(output_special) or any(ov['field'] in outputs for ov in overrides))
+            provider=providers[0] if needs_provider and len(providers)==1 else None
             if provider is not None:
                 covered_owners.add(provider['source_pi'])
             scoped_outputs=(outputs if provider is None else {
