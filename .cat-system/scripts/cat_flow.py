@@ -362,6 +362,14 @@ def technology_conformance(wpath, w, conf):
         if not isinstance(payload, dict):
             payload = {'status': 'inconclusive', 'error': 'technology inspector produced no structured result'}
         results.append({'technology': 'TypeScript', **payload})
+    # A passing Inspector for one technology does not cover other declared
+    # technologies. In particular, JUnit runs tests but is not itself an
+    # implementation Inspector; a successful TypeScript check cannot cover it.
+    if results:
+        checked = {entry.get('technology') for entry in results}
+        for technology in sorted(technologies - checked):
+            results.append({'technology': technology, 'status': 'inconclusive',
+                            'reason': 'no deterministic implementation inspector available for declared technology'})
     # Other declared technologies may have no implementation Inspector at
     # all. Distinguish that from a Work that declares no technologies.
     if not results:

@@ -151,6 +151,28 @@ export function provideResult() { return false; }
                                 for x in evaluated['items'] if x['category'] in
                                 ('cross-process','implementation-constraint')))
 
+    def test_technology_conformance_does_not_skip_other_declared_skills(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);repo=root/'app';self.write_api(repo)
+            process,pi,tce=self.confirmed_sources(root)
+            binding=self.binding(root);obs=self.passed_obligations(root)
+            w=self.work(root,process,pi,tce,binding,obs)
+            wp=root/'Work.json';wp.write_bytes(flow.json_bytes(w))
+            typescript_only=flow.technology_conformance(wp,w,w['compilation'])
+            self.assertEqual(typescript_only['status'],'passed',typescript_only)
+            self.assertEqual({x['technology'] for x in typescript_only['results']}, {'TypeScript'})
+            # A successful TypeScript interface inspection cannot prove that
+            # an independently declared Docker/JUnit skill was also inspected.
+            for extra in ('Docker','JUnit'):
+                with self.subTest(extra=extra):
+                    w['technologies']=['TypeScript',extra]
+                    result=flow.technology_conformance(wp,w,w['compilation'])
+                    self.assertEqual(result['status'],'inconclusive',result)
+                    by_name={x['technology']:x for x in result['results']}
+                    self.assertEqual(by_name['TypeScript']['status'],'passed')
+                    self.assertEqual(by_name[extra]['status'],'inconclusive')
+                    self.assertIn('inspector',by_name[extra]['reason'])
+
     def test_obligation_generator_derives_all_categories_and_starts_not_run(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);process,pi,tce=self.confirmed_sources(root)
