@@ -150,7 +150,6 @@ class TriggerScopedOutputPresenceTests(unittest.TestCase):
             path.write_text(json.dumps(model), encoding='utf-8')
             self.assertEqual(validate(p, pis, tce, path)['status'], 'passed')
 
-
     def test_two_providers_for_same_trigger_remain_unproved(self):
         with tempfile.TemporaryDirectory() as td:
             p, pis, tce = fixture(Path(td))
