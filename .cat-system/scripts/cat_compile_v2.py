@@ -1198,7 +1198,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         relevant=set().union(
             *(used_refs(r['when'],definitions) for r in rr),
             *(used_refs(c,definitions) for c in constraints)) if rr or constraints else set()
-        relevant.update(special)
+        # Optional Presence is relevant to Guard closure only if the
+        # normative Guard or PI constraint actually observes this field.
+        # Otherwise all present/missing values share the same truth profile.
         # An Effect reading a missing/undefined input cannot be proved total
         # merely because the guards cover all states; keep such a contract open.
         effect_reads=set().union(
@@ -1227,7 +1229,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             per_trigger[trigger]={'result':'unproven',
                                   'reason':'guard reads non-finite or too-large domain/Presence',
                                   'guard_refs':ordered}
-            presence_unproven.update(special)
+            presence_unproven.update(special & relevant)
             continue
         combinations=__import__('math').prod(len(x) for x in domainvalues)
         if combinations>65536:
@@ -1238,7 +1240,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                   'reason':'finite closure exceeds configured 65536 combinations',
                                   'combination_count':combinations,
                                   'guard_refs':ordered}
-            presence_unproven.update(special)
+            presence_unproven.update(special & relevant)
             continue
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr);unknown=None
         for values in itertools.product(*domainvalues):
@@ -1256,7 +1258,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if unknown:
             per_trigger[trigger]={'result':'unproven','reason':unknown,
                                   'guard_refs':ordered}
-            presence_unproven.update(special)
+            presence_unproven.update(special & relevant)
             continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
         check={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered',
@@ -1525,12 +1527,21 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             require(provide_operation is not None,
                     'ambiguous provided output operation for deterministic vectors')
         domains=[]
-        predicates=[*model['pi_constraints'],*(r['when'] for r in model['rules']
-                                                if r['trigger']==trigger)]
+        rules_here=[r for r in model['rules'] if r['trigger']==trigger]
+        predicates=[*model['pi_constraints'],*(r['when'] for r in rules_here)]
+        observed=set().union(*(used_refs(expr,defs) for expr in predicates)) if predicates else set()
+        for rule in rules_here:
+            for outcome in rule['allowed']:
+                for write in outcome['write']:
+                    observed.update(used_refs(write['expr'],defs))
         for field_id in variable_ids:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],presence[field_id])
                     if field_id in presence else typed.finite_values(field['domain']))
+            if values is None and field_id in presence and presence[field_id]=='optional' and field_id not in observed:
+                # The omission is a valid witness of an unobserved optional
+                # value; it is not a sample used as a finite-domain proof.
+                values=[typed.MISSING]
             if values is None and (field_id not in presence
                                    or presence[field_id]=='required'):
                 values=semantic_interval_partition.integer_partition_values(
