@@ -79,6 +79,58 @@ class JUnitRendererTests(unittest.TestCase):
             finally:
                 compiler.expand_cases = original
 
+    def test_capability_model_allows_only_explicitly_unverified_pi_scope(self):
+        # The current TestModel can declare required observation/action
+        # capabilities while the selected TCE only constrains PI input/output.
+        # A scalar JUnit test must not imply that either external capability ran.
+        observation = {
+            'id': 'observation.provider-present', 'role': 'observation',
+            'presence': 'required', 'domain': {'type': 'boolean'},
+        }
+        action = {
+            'id': 'action.hold', 'role': 'action',
+            'presence': 'required', 'domain': {'type': 'boolean'},
+        }
+        model = dict(MODEL, fields=[*MODEL['fields'], observation, action])
+        scope = {
+            'kind': 'pi-only-unverified',
+            'observations': ['observation.provider-present'],
+            'actions': ['action.hold'],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / 'binding.json'
+            original = compiler.expand_cases
+            try:
+                compiler.expand_cases = lambda m, v: CASES
+                # No declaration, missing or wrong identity, duplicate ID,
+                # or an invented coverage mode must all remain blocked.
+                for candidate in [
+                    BINDING,
+                    dict(BINDING, capability_scope={
+                        **scope, 'observations': []}),
+                    dict(BINDING, capability_scope={
+                        **scope, 'actions': ['action.not-declared']}),
+                    dict(BINDING, capability_scope={
+                        **scope, 'actions': ['action.hold', 'action.hold']}),
+                    dict(BINDING, capability_scope={
+                        **scope, 'kind': 'fully-verified'}),
+                ]:
+                    p.write_text(json.dumps(candidate), encoding='utf8')
+                    with self.assertRaises(compiler.Blocked):
+                        compiler.emit_junit(model, {'cases': []}, p)
+                p.write_text(json.dumps(dict(BINDING, capability_scope=scope)),
+                             encoding='utf8')
+                source = compiler.emit_junit(model, {'cases': []}, p)
+                self.assertIn('CAPABILITIES NOT VERIFIED', source)
+                self.assertIn('observation.provider-present', source)
+                self.assertIn('action.hold', source)
+                self.assertIn('@DisplayName("case.s0")', source)
+                # An all-scalar Process cannot receive invented exclusions.
+                with self.assertRaises(compiler.Blocked):
+                    compiler.emit_junit(MODEL, {'cases': []}, p)
+            finally:
+                compiler.expand_cases = original
+
     @unittest.skipUnless(shutil.which('javac') and shutil.which('java'), 'JDK not installed')
     def test_generated_junit_java_executes_and_detects_wrong_actual_output(self):
         from importlib.util import spec_from_file_location, module_from_spec
