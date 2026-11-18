@@ -335,47 +335,40 @@ def technology_conformance(wpath, w, conf):
         if not conf.get('conformance_binding'):
             results.append({'technology': 'TypeScript', 'status': 'inconclusive',
                             'reason': 'Compilation Conformance binding missing'})
-            return {'status': 'inconclusive', 'results': results,
-                    'reason': 'TypeScript implementation-conformance requires Compilation Conformance binding'}
-        binding_path = Path(compilation_path(wpath, w, conf, 'conformance_binding', True))
-        binding = read_json(binding_path)
-        require(binding.get('schema') == 'cat-typescript-conformance-binding/v1',
-                'wrong TypeScript conformance binding schema')
-        repo_name = binding.get('repository')
-        require(isinstance(repo_name, str) and repo_name, 'TypeScript conformance binding repository required')
-        repo_root = resolve_dir(wpath, w, '@repo:' + repo_name)
-        pis=compilation_pi_paths(wpath,w,conf,True)
-        argv = [sys.executable,
-                str(ROOT / 'skills/tech-typescript/scripts/cat_typescript_conformance.py'),
-                '--repo', str(repo_root), '--binding', str(binding_path),
-                '--process', compilation_path(wpath, w, conf, 'process', True),
-                '--pi', pis[0]]
-        for pi in pis[1:]:argv+=['--pi-extra',pi]
-        p = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, timeout=60, check=False)
-        payload = None
-        raw = (p.stdout or p.stderr).strip()
-        if raw:
-            try:
-                payload = __import__('json').loads(raw)
-            except ValueError:
-                payload = {'status': 'inconclusive', 'error': raw[-1600:]}
-        if not isinstance(payload, dict):
-            payload = {'status': 'inconclusive', 'error': 'technology inspector produced no structured result'}
-        results.append({'technology': 'TypeScript', **payload})
+        else:
+            binding_path = Path(compilation_path(wpath, w, conf, 'conformance_binding', True))
+            binding = read_json(binding_path)
+            require(binding.get('schema') == 'cat-typescript-conformance-binding/v1',
+                    'wrong TypeScript conformance binding schema')
+            repo_name = binding.get('repository')
+            require(isinstance(repo_name, str) and repo_name, 'TypeScript conformance binding repository required')
+            repo_root = resolve_dir(wpath, w, '@repo:' + repo_name)
+            pis=compilation_pi_paths(wpath,w,conf,True)
+            argv = [sys.executable,
+                    str(ROOT / 'skills/tech-typescript/scripts/cat_typescript_conformance.py'),
+                    '--repo', str(repo_root), '--binding', str(binding_path),
+                    '--process', compilation_path(wpath, w, conf, 'process', True),
+                    '--pi', pis[0]]
+            for pi in pis[1:]:argv+=['--pi-extra',pi]
+            p = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, timeout=60, check=False)
+            payload = None
+            raw = (p.stdout or p.stderr).strip()
+            if raw:
+                try:
+                    payload = __import__('json').loads(raw)
+                except ValueError:
+                    payload = {'status': 'inconclusive', 'error': raw[-1600:]}
+            if not isinstance(payload, dict):
+                payload = {'status': 'inconclusive', 'error': 'technology inspector produced no structured result'}
+            results.append({'technology': 'TypeScript', **payload})
     # A passing Inspector for one technology does not cover other declared
     # technologies. In particular, JUnit runs tests but is not itself an
     # implementation Inspector; a successful TypeScript check cannot cover it.
-    if results:
-        checked = {entry.get('technology') for entry in results}
-        for technology in sorted(technologies - checked):
-            results.append({'technology': technology, 'status': 'inconclusive',
-                            'reason': 'no deterministic implementation inspector available for declared technology'})
-    # Other declared technologies may have no implementation Inspector at
-    # all. Distinguish that from a Work that declares no technologies.
-    if not results:
-        if technologies:
-            return {'status': 'inconclusive', 'results': [],
-                    'reason': 'no deterministic implementation inspector available for declared technologies'}
+    checked = {entry.get('technology') for entry in results}
+    for technology in sorted(technologies - checked):
+        results.append({'technology': technology, 'status': 'inconclusive',
+                        'reason': 'no deterministic implementation inspector available for declared technology'})
+    if not technologies:
         return {'status': 'passed', 'results': [],
                 'reason': 'no technologies declared; no technology inspector obligations'}
     statuses = [x.get('status', 'inconclusive') for x in results]

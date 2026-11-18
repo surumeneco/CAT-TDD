@@ -102,7 +102,8 @@ class CatFlowTest(unittest.TestCase):
         self.work['technologies'] = ['JUnit']
         result = flow.technology_conformance(self.workpath, self.work, {})
         self.assertEqual(result['status'], 'inconclusive')
-        self.assertEqual(result['results'], [])
+        self.assertEqual([x['technology'] for x in result['results']], ['JUnit'])
+        self.assertEqual(result['results'][0]['status'], 'inconclusive')
 
     def test_no_declared_technology_requires_no_inspector(self):
         self.work['technologies'] = []
