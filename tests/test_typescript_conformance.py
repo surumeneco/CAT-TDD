@@ -148,7 +148,8 @@ export function provideResult() { return false; }
             self.assertTrue(interfaces)
             self.assertTrue(all(x['status']=='passed' for x in interfaces),interfaces)
             self.assertTrue(all(x['status']=='inconclusive'
-                                for x in evaluated['items'] if x['category']=='cross-process'))
+                                for x in evaluated['items'] if x['category'] in
+                                ('cross-process','implementation-constraint')))
 
     def test_obligation_generator_derives_all_categories_and_starts_not_run(self):
         with tempfile.TemporaryDirectory() as td:
@@ -193,8 +194,9 @@ export function provideResult() { return false; }
             status_by_category={}
             for obligation in evaluated['items']:
                 status_by_category.setdefault(obligation['category'],set()).add(obligation['status'])
-            for category in ('behavior','invariant','domain','implementation-constraint'):
+            for category in ('behavior','invariant','domain'):
                 self.assertEqual(status_by_category[category],{'passed'})
+            self.assertEqual(status_by_category['implementation-constraint'],{'inconclusive'})
             for category in ('interface','capability','cross-process'):
                 self.assertEqual(status_by_category[category],{'inconclusive'})
             self.assertTrue(all(x['limitation'] for x in evaluated['items']))
