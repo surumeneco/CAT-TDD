@@ -1,4 +1,4 @@
-"""CAT33 isolated: irrelevant optional input must not force enumerating all strings."""
+"""CAT33: unused optional input and exact Presence-only Guard partition."""
 import json
 import sys
 import tempfile
@@ -41,13 +41,28 @@ class UnusedOptionalNonfiniteTests(unittest.TestCase):
             self.assertEqual(len(vectors['cases']), 2)
             self.assertTrue(all('input.unused' not in c['input'] for c in vectors['cases']))
 
-    def test_used_optional_string_is_not_proved_without_full_coverage_reasoning(self):
+    def test_presence_only_nonfinite_guard_has_exhaustive_missing_present_partition(self):
         with tempfile.TemporaryDirectory() as d:
             process, pi, tce = fixture(Path(d))
             old = tce.read_text('utf-8')
             tce.write_text(old.replace('`input.enabled`',
                  '`input.enabled and is_present(input.unused)`').replace(
                  '`not input.enabled`', '`not(input.enabled and is_present(input.unused))`'),
+                 encoding='utf-8')
+            model = load(process, pi, tce, allow_draft=True, allow_partial=True)
+            self.assertEqual(model['coverage_checks']['submit']['result'], 'proved')
+            self.assertEqual(model['presence_unproven'], [])
+            model_path = Path(d) / 'Model.json'
+            model_path.write_text(json.dumps(model),encoding='utf-8')
+            self.assertEqual(validate(process, pi, tce, model_path, allow_draft=True)['status'], 'passed')
+
+    def test_nonfinite_value_equality_does_not_gain_false_exhaustive_proof(self):
+        with tempfile.TemporaryDirectory() as d:
+            process, pi, tce = fixture(Path(d))
+            old = tce.read_text('utf-8')
+            tce.write_text(old.replace('`input.enabled`',
+                 '`input.enabled and input.unused == "x"`').replace(
+                 '`not input.enabled`', '`not(input.enabled and input.unused == "x")`'),
                  encoding='utf-8')
             model = load(process, pi, tce, allow_draft=True, allow_partial=True)
             self.assertEqual(model['coverage_checks']['submit']['result'], 'unproven')
