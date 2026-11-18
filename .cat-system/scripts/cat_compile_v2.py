@@ -1782,8 +1782,6 @@ def emit_vitest(model,vectors,binding_path):
 def emit_junit(model, vectors, binding_path):
     """Render current queued CAT cases using the explicitly selected JUnit adapter."""
     import importlib.util
-    require(not any(f['role'] in ('observation', 'action') for f in model['fields']),
-            'JUnit renderer requires explicit capability binding for observation/action')
     require(not any(typed.has_semantic_domain(f['domain']) for f in model['fields']),
             'JUnit renderer requires explicit structured/instant transport binding')
     require(all(f['domain']['type'] in ('boolean', 'enum', 'integer')
@@ -1793,9 +1791,31 @@ def emit_junit(model, vectors, binding_path):
             'JUnit scalar renderer does not carry operation-scoped Presence')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','test_package','test_class','driver_class'],
-               where='JUnit driver binding')
+               optional=('capability_scope',), where='JUnit driver binding')
     require(binding['schema']=='cat-junit-driver-binding/v1'
             and binding['process']==model['process'], 'JUnit driver binding incompatible')
+    observations=[f['id'] for f in model['fields'] if f['role']=='observation']
+    actions=[f['id'] for f in model['fields'] if f['role']=='action']
+    capability_scope=binding.get('capability_scope')
+    if observations or actions:
+        # The scalar driver tests only the declared PI inputs/outputs.
+        # Process observation/action capabilities must be explicitly listed
+        # as NOT TESTED, never silently dropped or claimed as verified.
+        require(isinstance(capability_scope,dict),
+                'JUnit renderer requires explicit capability scope for observation/action')
+        check_keys(capability_scope,['kind','observations','actions'],
+                   where='JUnit capability scope')
+        require(capability_scope['kind']=='pi-only-unverified',
+                'JUnit capability scope must be pi-only-unverified')
+        for role,actual in [('observations',observations),('actions',actions)]:
+            declared=capability_scope[role]
+            require(isinstance(declared,list) and all(isinstance(x,str) for x in declared)
+                    and len(declared)==len(set(declared))
+                    and set(declared)==set(actual),
+                    'JUnit PI-only scope must exactly enumerate unverified '+role)
+    else:
+        require(capability_scope is None,
+                'JUnit capability exclusions require declared Process capabilities')
     cases=expand_cases(model,vectors)
     require(not any('output_operation' in c for c in cases),
             'JUnit scalar renderer cannot carry output-operation identity')
