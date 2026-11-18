@@ -325,9 +325,17 @@ def obligations_work(wpath, w, check=False):
 def technology_conformance(wpath, w, conf):
     results = []
     technologies = set(w.get('technologies', []))
+    # A declared Java implementation without a Java Inspector is not
+    # evidence of a checked public interface or capability. JUnit supplies
+    # generated-test execution, not a Java implementation Inspector.
+    if 'Java' in technologies:
+        results.append({'technology': 'Java', 'status': 'inconclusive',
+                        'reason': 'no source-bound Java implementation inspector available'})
     if 'TypeScript' in technologies:
         if not conf.get('conformance_binding'):
-            return {'status': 'inconclusive', 'results': [],
+            results.append({'technology': 'TypeScript', 'status': 'inconclusive',
+                            'reason': 'Compilation Conformance binding missing'})
+            return {'status': 'inconclusive', 'results': results,
                     'reason': 'TypeScript implementation-conformance requires Compilation Conformance binding'}
         binding_path = Path(compilation_path(wpath, w, conf, 'conformance_binding', True))
         binding = read_json(binding_path)
@@ -354,6 +362,14 @@ def technology_conformance(wpath, w, conf):
         if not isinstance(payload, dict):
             payload = {'status': 'inconclusive', 'error': 'technology inspector produced no structured result'}
         results.append({'technology': 'TypeScript', **payload})
+    # Other declared technologies may have no implementation Inspector at
+    # all. Distinguish that from a Work that declares no technologies.
+    if not results:
+        if technologies:
+            return {'status': 'inconclusive', 'results': [],
+                    'reason': 'no deterministic implementation inspector available for declared technologies'}
+        return {'status': 'passed', 'results': [],
+                'reason': 'no technologies declared; no technology inspector obligations'}
     statuses = [x.get('status', 'inconclusive') for x in results]
     if any(x == 'blocked' for x in statuses):
         return {'status': 'blocked', 'results': results, 'reason': 'technology conformance violation'}
