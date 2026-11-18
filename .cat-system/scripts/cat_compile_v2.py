@@ -25,6 +25,7 @@ from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
 from catlib import semantic_subtyping
 from catlib import semantic_interval_partition
+from catlib import semantic_string_partition
 from catlib import decimal_integer
 from catlib import peer_binding
 
@@ -42,6 +43,8 @@ SAFE_INT = 9007199254740991
 OPS = {'eq','ne','lt','le','gt','ge','and','or','not','add','sub','mul',
        'div','floor','abs','length','concat','to-int','set-add','set-remove','call',
        'is-missing','is-undefined','is-present'}
+
+_PRESENT_GUARD_VALUE=object()
 
 class Blocked(ValueError):
     pass
@@ -777,12 +780,103 @@ def _unresolved_domain(d):
     if t=='union':return any(_unresolved_domain(x) for x in d['variants'])
     return False
 
+def _guard_reads_value_before_presence(node, field):
+    if not isinstance(node,dict):return False
+    if node.get('op') in ('is-present','is-missing','is-undefined'):
+        return False  # Presence tests inspect state, not a present value.
+    if node.get('op')=='call':
+        return True  # Unknown function-body evaluation order.
+    return node.get('ref')==field or any(
+        _guard_reads_value_before_presence(arg,field) for arg in node.get('args',[]))
+
+
+def _guard_guarantees_present(expr, field):
+    """Sound, evaluation-order-aware Guard truth implies value Presence."""
+    if expr.get('op')=='is-present' and expr.get('args')==[{'ref':field}]:
+        return True
+    if expr.get('op')=='and':
+        prefix=[]
+        for part in expr['args']:
+            if (_guard_guarantees_present(part,field)
+                    and not any(_guard_reads_value_before_presence(x,field)
+                                for x in prefix)):
+                return True
+            prefix.append(part)
+    if expr.get('op')=='or':
+        return all(_guard_guarantees_present(x,field) for x in expr['args'])
+    return False
+
+
+def _presence_only_guard_use(expr, field):
+    """Only direct Presence predicates may inspect a partitioned value."""
+    if not isinstance(expr,dict):return False
+    if expr.get('op') in ('is-present','is-missing','is-undefined'):
+        return expr.get('args')==[{'ref':field}] or field not in used_refs(expr,{})
+    if expr.get('op')=='call':return False
+    if expr.get('ref')==field:return False
+    if 'args' in expr:
+        return all(_presence_only_guard_use(a,field) for a in expr['args'])
+    return True
+
+
+def _symbolic_effect_containment(expr, target_domain, fields):
+    """Prove only exact, total integer addition and typed Set insertion.
+
+    No representative values, floating-point arithmetic, implicit casts,
+    nominal alias guesses, or arbitrary function-body assumptions are used.
+    None means this fragment cannot establish the proof.
+    """
+    op=expr.get('op')
+    args=expr.get('args',[])
+    if op=='add' and len(args)>=2:
+        domains=[]
+        for arg in args:
+            if set(arg)=={'literal'} and type(arg['literal']) is int:
+                domains.append({'type':'integer','min':arg['literal'],'max':arg['literal']})
+            elif set(arg)=={'ref'} and arg['ref'] in fields:
+                field=fields[arg['ref']]
+                if field['role'] not in ('input','state','observation'):
+                    return None
+                domains.append(field['domain'])
+            else:
+                return None
+        if any(d.get('type')!='integer' for d in domains):
+            return None
+        if any(_unresolved_domain(d) for d in domains):
+            return None
+        # Python integer arithmetic has no overflow; the interval endpoints
+        # are exact integers. An absent endpoint represents infinity.
+        inferred={'type':'integer'}
+        for endpoint in ('min','max'):
+            endpoints=[d.get(endpoint) for d in domains]
+            if all(type(value) is int for value in endpoints):
+                inferred[endpoint]=sum(endpoints)
+        return semantic_subtyping.subset(inferred,target_domain) is True
+    if op=='set-add' and len(args)==2 and all(set(a)=={'ref'} for a in args):
+        set_ref,item_ref=(a['ref'] for a in args)
+        if set_ref not in fields or item_ref not in fields:
+            return None
+        collection=fields[set_ref]; item=fields[item_ref]
+        if collection['role'] not in ('input','state','observation') or item['role'] not in ('input','state','observation'):
+            return None
+        source=collection['domain']
+        if source.get('type')!='set' or target_domain.get('type')!='set':
+            return None
+        if _unresolved_domain(source) or _unresolved_domain(item['domain']):
+            return None
+        return (semantic_subtyping.subset(source,target_domain) is True
+                and semantic_subtyping.subset(item['domain'],target_domain['element']) is True)
+    return None
+
+
 def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
     """Prove Effect target containment separately from Guard closure.
 
-    A direct reference uses structural Domain inclusion. Operator expressions
-    require an exact bounded enumeration of every referenced field's Domain.
-    The proof does not assume a Guard, runtime driver, or external Effect.
+    A direct reference uses structural Domain inclusion. A narrow set of
+    integer and typed-set operators permits exact, non-enumerative closure.
+    Other operators require exhaustive finite Domain enumeration. A positive
+    input-Presence Guard may justify an otherwise unsafe Effect input read,
+    but Guard coverage and external Effect authenticity are separate duties.
     Unsupported, nonfinite or exhausted cases remain unproven.
     """
     checks={}
@@ -803,20 +897,35 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
                     if source_field['role'] in ('output','action'):
                         checks[ident]={'result':'unproven','reason':'Effect reads an unavailable source field'}
                     elif (source_field['role']=='input' and
-                          source_field.get('presence','required')!='required'):
+                          source_field.get('presence','required')!='required' and
+                          not _guard_guarantees_present(rule['when'],expr['ref'])):
                         checks[ident]={'result':'unproven','reason':'Effect reads nonrequired input without a Presence proof'}
                     else:
                         proof=semantic_subtyping.subset(source_field['domain'],domain)
                         checks[ident]=({'result':'proved'} if proof is True
                                       else {'result':'unproven','reason':'Effect source Domain unresolved or inclusion unproved'})
                     continue
+                # Exact algebraic fragments can prove membership even for
+                # infinite Domains. Unsupported expressions keep the existing
+                # exhaustive finite checker; they never become assumed total.
+                if _symbolic_effect_containment(expr,domain,fields) is True:
+                    # A non-required input remains unsafe until the Guard
+                    # separately establishes that the field is present.
+                    refs=used_refs(expr,definitions)
+                    if not any(fields[ref]['role']=='input' and
+                               fields[ref].get('presence','required')!='required' and
+                               not _guard_guarantees_present(rule['when'],ref)
+                               for ref in refs if ref in fields):
+                        checks[ident]={'result':'proved','proof_method':'typed-domain-closure/v1'}
+                        continue
                 refs=sorted(used_refs(expr,definitions))
                 values=[];reason=None
                 for ref in refs:
                     f=fields.get(ref)
                     if f is None or f['role'] in ('output','action'):
                         reason='Effect expression reads an unavailable field';break
-                    if f['role']=='input' and f.get('presence','required')!='required':
+                    if (f['role']=='input' and f.get('presence','required')!='required'
+                            and not _guard_guarantees_present(rule['when'],ref)):
                         reason='Effect expression reads nonrequired input without a Presence proof';break
                     try:
                         vals=typed.finite_values(f['domain'],max_values=max_combinations)
@@ -938,7 +1047,8 @@ def _unproved_output_presence(fields,operations,overrides,rules,triggers):
 
 def _debug_presence_env(env):
     return {key:({'$cat_presence':'missing'} if value is typed.MISSING else
-                 {'$cat_presence':'undefined'} if value is typed.UNDEFINED else value)
+                 {'$cat_presence':'undefined'} if value is typed.UNDEFINED else
+                 {'$cat_presence':'present'} if value is _PRESENT_GUARD_VALUE else value)
             for key,value in env.items()}
 
 
@@ -1219,24 +1329,44 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         effect_reads=set().union(
             *(used_refs(w['expr'],definitions) for r in rr for outcome in r['allowed']
               for w in outcome['write'])) if rr else set()
-        if effect_reads & special:
+        unsafe_effect_reads={ref for r in rr for outcome in r['allowed']
+                             for write in outcome['write']
+                             for ref in used_refs(write['expr'],definitions) & special
+                             if not _guard_guarantees_present(r['when'],ref)}
+        if unsafe_effect_reads:
             per_trigger[trigger]={'result':'unproven','reason':'Effect reads a non-required PI input',
                                   'guard_refs':sorted(relevant)}
-            presence_unproven.update(effect_reads & special)
+            presence_unproven.update(unsafe_effect_reads)
             continue
         ordered=sorted(relevant)
         domainvalues=[]
         partition_fields=[]
+        partition_kinds=set()
         predicates=[*constraints,*(r['when'] for r in rr)]
         for field_id in ordered:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
+            if (values is None and field_id in input_presence
+                    and input_presence[field_id]=='optional'
+                    and all(_presence_only_guard_use(predicate,field_id) for predicate in predicates)):
+                # Every predicate sees presence only, not the arbitrary value.
+                # A marker represents the entire class of present values.
+                values=[typed.MISSING,_PRESENT_GUARD_VALUE]
             if values is None and (field_id not in input_presence
                                    or input_presence[field_id]=='required'):
                 values=semantic_interval_partition.integer_partition_values(
                     field['domain'],field_id,predicates)
-                if values is not None:partition_fields.append(field_id)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('integer')
+            if values is None and (field_id not in input_presence
+                                   or input_presence[field_id]=='required'):
+                values=semantic_string_partition.string_partition_values(
+                    field['domain'],field_id,predicates)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('string')
             domainvalues.append(values)
         if any(values is None for values in domainvalues):
             per_trigger[trigger]={'result':'unproven',
@@ -1281,7 +1411,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                'unreachable_rules':sorted(unreachable),
                'excluded_by_pi_constraints':True if constraints else False}
         if partition_fields:
-            check.update(proof_method='integer-literal-partition/v1',
+            method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
+                    else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'integer-string-literal-partition/v1')
+            check.update(proof_method=method,
                          partition_fields=partition_fields,
                          abstract_state_count=combinations,
                          proof_scope='local-guard-truth-partition-not-effect-or-implementation')
@@ -1563,6 +1696,10 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                                    or presence[field_id]=='required'):
                 values=semantic_interval_partition.integer_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and (field_id not in presence
+                                   or presence[field_id]=='required'):
+                values=semantic_string_partition.string_partition_values(
+                    field['domain'],field_id,predicates,allow_unused=True)
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)
@@ -1645,8 +1782,6 @@ def emit_vitest(model,vectors,binding_path):
 def emit_junit(model, vectors, binding_path):
     """Render current queued CAT cases using the explicitly selected JUnit adapter."""
     import importlib.util
-    require(not any(f['role'] in ('observation', 'action') for f in model['fields']),
-            'JUnit renderer requires explicit capability binding for observation/action')
     require(not any(typed.has_semantic_domain(f['domain']) for f in model['fields']),
             'JUnit renderer requires explicit structured/instant transport binding')
     require(all(f['domain']['type'] in ('boolean', 'enum', 'integer')
@@ -1656,9 +1791,31 @@ def emit_junit(model, vectors, binding_path):
             'JUnit scalar renderer does not carry operation-scoped Presence')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','test_package','test_class','driver_class'],
-               where='JUnit driver binding')
+               optional=('capability_scope',), where='JUnit driver binding')
     require(binding['schema']=='cat-junit-driver-binding/v1'
             and binding['process']==model['process'], 'JUnit driver binding incompatible')
+    observations=[f['id'] for f in model['fields'] if f['role']=='observation']
+    actions=[f['id'] for f in model['fields'] if f['role']=='action']
+    capability_scope=binding.get('capability_scope')
+    if observations or actions:
+        # The scalar driver tests only the declared PI inputs/outputs.
+        # Process observation/action capabilities must be explicitly listed
+        # as NOT TESTED, never silently dropped or claimed as verified.
+        require(isinstance(capability_scope,dict),
+                'JUnit renderer requires explicit capability scope for observation/action')
+        check_keys(capability_scope,['kind','observations','actions'],
+                   where='JUnit capability scope')
+        require(capability_scope['kind']=='pi-only-unverified',
+                'JUnit capability scope must be pi-only-unverified')
+        for role,actual in [('observations',observations),('actions',actions)]:
+            declared=capability_scope[role]
+            require(isinstance(declared,list) and all(isinstance(x,str) for x in declared)
+                    and len(declared)==len(set(declared))
+                    and set(declared)==set(actual),
+                    'JUnit PI-only scope must exactly enumerate unverified '+role)
+    else:
+        require(capability_scope is None,
+                'JUnit capability exclusions require declared Process capabilities')
     cases=expand_cases(model,vectors)
     require(not any('output_operation' in c for c in cases),
             'JUnit scalar renderer cannot carry output-operation identity')

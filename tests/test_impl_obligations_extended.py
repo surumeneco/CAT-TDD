@@ -180,6 +180,37 @@ Closed world: true
    self.assertEqual(lookup['interface.op.first']['status'],'passed')
    self.assertEqual(lookup['interface.op.second']['status'],'inconclusive')
 
+ def test_technology_constraint_needs_its_own_inspection_coverage(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);process,first,second,tce,cr,ds=self.setup(root)
+   skeleton=impl.generate(process,[first,second],[tce],technologies=['TypeScript','JUnit'])
+   constraints={x['id'] for x in skeleton['items'] if x['category']=='implementation-constraint'}
+   self.assertEqual(constraints, {'implementation-constraint.typescript',
+                                  'implementation-constraint.junit'})
+   def statuses(evidence):
+    evaluated=impl.aggregate(skeleton, technology_results=evidence)
+    return {x['id']:x for x in evaluated['items']}
+   # Passing public-interface inspection says nothing about language/runtime constraints.
+   only_interface=statuses([{'technology':'TypeScript','status':'passed',
+                             'covered_obligation_ids':['interface.op.first']}])
+   for cid in constraints:
+    self.assertEqual(only_interface[cid]['status'],'inconclusive',cid)
+   # Even a matching technology with a globally passed inspector needs exact coverage.
+   no_coverage=statuses([{'technology':'TypeScript','status':'passed','checks':[]}])
+   self.assertEqual(no_coverage['implementation-constraint.typescript']['status'],
+                    'inconclusive')
+   # Only an inspector explicitly naming the matching obligation may discharge it.
+   focused=statuses([{'technology':'TypeScript','status':'passed',
+                      'covered_obligation_ids':['implementation-constraint.typescript']},
+                     {'technology':'JUnit','status':'inconclusive',
+                      'covered_obligation_ids':['implementation-constraint.junit']}])
+   self.assertEqual(focused['implementation-constraint.typescript']['status'],'passed')
+   self.assertEqual(focused['implementation-constraint.junit']['status'],'inconclusive')
+   # An unrelated inspector cannot claim a different technology's constraint.
+   cross=statuses([{'technology':'TypeScript','status':'passed',
+                    'covered_obligation_ids':['implementation-constraint.junit']}])
+   self.assertEqual(cross['implementation-constraint.junit']['status'],'inconclusive')
+
  def test_rule_aggregator_requires_source_and_matching_result(self):
   with tempfile.TemporaryDirectory() as tmp:
    r=Path(tmp);p,a,b,t,cr,ds=self.setup(r)

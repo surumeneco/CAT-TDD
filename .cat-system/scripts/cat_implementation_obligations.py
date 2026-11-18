@@ -268,15 +268,19 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
             limitation='model/technology inspection is not remote integration evidence'
         elif method.startswith('technology-skill:'):
             tech_name=method.split(':',1)[1]
-            matched=[x for x in tech if x.get('technology')==tech_name]
-            if matched and all(x.get('status')=='passed' for x in matched):
+            # An Inspector may only have checked PI symbols/capabilities. A
+            # globally passing result does not also prove technology rules.
+            matched=[x for x in tech if x.get('technology')==tech_name
+                     and x.get('status')=='passed'
+                     and ob['id'] in x.get('covered_obligation_ids',[])]
+            if matched:
                 ob.update(status='passed',evidence='technology-inspector:'+tech_name)
                 ob.pop('reason',None)
-                limitation='bounded to checks implemented by the selected technology Skill'
+                limitation='bounded to the explicitly covered implementation constraint'
             else:
-                ob.update(status='inconclusive',reason='selected technology has no passing deterministic constraint evidence')
+                ob.update(status='inconclusive',reason='no passing deterministic inspector explicitly covered this technology constraint')
                 ob.pop('evidence',None)
-                limitation='technology constraint coverage is incomplete'
+                limitation='a technology Inspector pass on another obligation does not prove this constraint'
         else:
             ob.update(status='inconclusive',reason='verification method has no deterministic aggregator')
             ob.pop('evidence',None)

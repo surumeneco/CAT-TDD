@@ -14,6 +14,41 @@ from cat_compile_v2 import eval_expr,used_refs,Blocked
 
 LIMIT=65536
 
+_PRESENT_CLASS=object()
+
+
+def _reads_value(node, name):
+    if not isinstance(node,dict):return False
+    if node.get('op') in ('is-present','is-missing','is-undefined'):
+        return False
+    if node.get('op')=='call':return True
+    return node.get('ref')==name or any(_reads_value(arg,name) for arg in node.get('args',[]))
+
+
+def _implies_value(node, name):
+    if not isinstance(node,dict):return False
+    if node.get('op')=='is-present' and node.get('args')==[{'ref':name}]:
+        return True
+    if node.get('op')=='and':
+        previous=[]
+        for child in node.get('args',[]):
+            if _implies_value(child,name) and not any(_reads_value(p,name) for p in previous):
+                return True
+            previous.append(child)
+    if node.get('op')=='or':
+        return all(_implies_value(item,name) for item in node.get('args',[]))
+    return False
+
+
+def _presence_exclusive(node, name):
+    """Prove all possible reads of name are Presence-only (not its value)."""
+    if not isinstance(node,dict):return False
+    if node.get('op')=='call':return False
+    if node.get('op') in ('is-present','is-missing','is-undefined'):
+        return node.get('args')==[{'ref':name}] or name not in used_refs(node,{})
+    if node.get('ref')==name:return False
+    return all(_presence_exclusive(item,name) for item in node.get('args',[]))
+
 
 def _independent_integer_cells(domain, field, clauses):
     # Independent from compiler's partition helper. Accept ONLY literal
@@ -54,6 +89,43 @@ def _independent_integer_cells(domain, field, clauses):
     return reps if reps and len(reps)<=LIMIT else None
 
 
+def _independent_string_cells(domain, field, clauses):
+    """Independent literal-equality truth cells, without compiler helpers."""
+    if domain != {'type': 'string'}:
+        return None
+    constants=set()
+    def mentions(node):
+        return (isinstance(node,dict) and
+                (node.get('ref') == field or
+                 any(mentions(part) for part in node.get('args',[]))))
+    def check(node):
+        if not isinstance(node,dict) or node.get('op')=='call':
+            return False
+        if not mentions(node):
+            return True
+        op=node.get('op');args=node.get('args',[])
+        if op in ('and','or','not'):
+            if (op=='not' and len(args)!=1) or (op!='not' and len(args)<2):
+                return False
+            return all(check(part) for part in args)
+        if op not in ('eq','ne') or len(args)!=2:
+            return False
+        for left,right in ((args[0],args[1]),(args[1],args[0])):
+            if (isinstance(left,dict) and set(left)=={'ref'} and left['ref']==field
+                    and isinstance(right,dict) and set(right)=={'literal'}
+                    and type(right['literal']) is str):
+                constants.add(right['literal']);return True
+        return False
+    if not all(check(clause) for clause in clauses) or not constants:
+        return None
+    if len(constants)>=LIMIT:
+        return None
+    other=''
+    while other in constants:
+        other+='\x00'
+    return [*sorted(constants),other]
+
+
 def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
     rules=[r for _,_,tce in tces for r in tce['rules']]
     constraints=[c for _,_,pi in pi_docs for c in pi.get('constraints',[])]
@@ -91,7 +163,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                       and ov['field']==field and chosen['source_pi']==info['owner']]
             return selected[0]['presence'] if selected else info['presence']
         special={field for field in inputs if current_presence(field)!='required'}
-        if any(used_refs(w['expr'],definitions)&special
+        if any(any(not _implies_value(r['when'],ref)
+                   for ref in used_refs(w['expr'],definitions)&special)
                for r in applicable for outcome in r['allowed'] for w in outcome['write']):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
@@ -99,7 +172,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         # Only semantically referenced nonrequired inputs partition Guard truth.
         for clause in [*constraints,*(r['when'] for r in applicable)]:
             names.update(used_refs(clause,definitions))
-        dimensions=[];possible=True;partition_fields=[]
+        dimensions=[];possible=True;partition_fields=[];partition_kinds=set()
         for field in sorted(names):
             if field not in domains or roles.get(field) in ('output','action'):
                 possible=False;break
@@ -111,10 +184,22 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     values=types.finite_values(domains[field])
                     if values is not None and presence=='optional':values=[types.MISSING,*values]
             else:values=types.finite_values(domains[field])
+            if (values is None and field in inputs and current_presence(field)=='optional'
+                    and all(_presence_exclusive(predicate,field)
+                            for predicate in [*constraints,*(r['when'] for r in applicable)])):
+                values=[types.MISSING,_PRESENT_CLASS]
             if values is None and (field not in inputs or current_presence(field)=='required'):
                 values=_independent_integer_cells(domains[field],field,
                              [*constraints,*(r['when'] for r in applicable)])
-                if values is not None:partition_fields.append(field)
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('integer')
+            if values is None and (field not in inputs or current_presence(field)=='required'):
+                values=_independent_string_cells(domains[field],field,
+                           [*constraints,*(r['when'] for r in applicable)])
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('string')
             if values is None:
                 possible=False;break
             dimensions.append(values)
@@ -125,7 +210,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         uncovered_examples=[];overlap_examples=[]
         def snapshot(env):
             return {name:({'$cat_presence':'missing'} if value is types.MISSING else
-                          {'$cat_presence':'undefined'} if value is types.UNDEFINED else value)
+                          {'$cat_presence':'undefined'} if value is types.UNDEFINED else
+                          {'$cat_presence':'present'} if value is _PRESENT_CLASS else value)
                     for name,value in env.items()}
         for items in itertools.product(*dimensions):
             env=dict(zip(sorted(names),items))
@@ -150,7 +236,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                  'uncovered':uncovered_examples,'overlaps':overlap_examples,
                  'excluded_by_pi_constraints':bool(constraints)}
         if partition_fields:
-            receipt.update(proof_method='integer-literal-partition/v1',
+            method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
+                    else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'integer-string-literal-partition/v1')
+            receipt.update(proof_method=method,
                            partition_fields=partition_fields,
                            abstract_state_count=math.prod(map(len,dimensions)),
                            proof_scope='local-guard-truth-partition-not-effect-or-implementation')

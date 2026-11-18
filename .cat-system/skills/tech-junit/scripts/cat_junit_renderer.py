@@ -83,6 +83,13 @@ def render_junit(model, cases, binding):
         "        return alternatives.stream().anyMatch(x -> x.state().equals(state) && x.output().equals(output));",
         "    }",
     ]
+    scope = binding.get('capability_scope')
+    if scope is not None:
+        # These Process capabilities are deliberately OUT OF TEST SCOPE:
+        # a passing scalar PI test never proves provider reading or side effects.
+        declared = ('observations=' + ','.join(sorted(scope['observations']))
+                    + ' actions=' + ','.join(sorted(scope['actions'])))
+        lines.insert(2, '// CAPABILITIES NOT VERIFIED (PI input/output only): ' + declared)
     seen = set()
     for i, c in enumerate(cases, 1):
         if c['id'] in seen:

@@ -148,7 +148,59 @@ export function provideResult() { return false; }
             self.assertTrue(interfaces)
             self.assertTrue(all(x['status']=='passed' for x in interfaces),interfaces)
             self.assertTrue(all(x['status']=='inconclusive'
-                                for x in evaluated['items'] if x['category']=='cross-process'))
+                                for x in evaluated['items'] if x['category'] in
+                                ('cross-process','implementation-constraint')))
+
+    def test_technology_conformance_does_not_skip_other_declared_skills(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);repo=root/'app';self.write_api(repo)
+            process,pi,tce=self.confirmed_sources(root)
+            binding=self.binding(root);obs=self.passed_obligations(root)
+            w=self.work(root,process,pi,tce,binding,obs)
+            wp=root/'Work.json';wp.write_bytes(flow.json_bytes(w))
+            typescript_only=flow.technology_conformance(wp,w,w['compilation'])
+            self.assertEqual(typescript_only['status'],'passed',typescript_only)
+            self.assertEqual({x['technology'] for x in typescript_only['results']}, {'TypeScript'})
+            # A successful TypeScript interface inspection cannot prove that
+            # an independently declared Docker/JUnit skill was also inspected.
+            for extra in ('Docker','JUnit'):
+                with self.subTest(extra=extra):
+                    w['technologies']=['TypeScript',extra]
+                    result=flow.technology_conformance(wp,w,w['compilation'])
+                    self.assertEqual(result['status'],'inconclusive',result)
+                    by_name={x['technology']:x for x in result['results']}
+                    self.assertEqual(by_name['TypeScript']['status'],'passed')
+                    self.assertEqual(by_name[extra]['status'],'inconclusive')
+                    self.assertIn('inspector',by_name[extra]['reason'])
+
+    def test_technology_results_account_for_every_declared_skill_even_when_binding_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            process, pi, tce = self.confirmed_sources(root)
+            binding = self.binding(root)
+            obligations_file = self.passed_obligations(root)
+            w = self.work(root, process, pi, tce, binding, obligations_file)
+            wp = root / 'Work.json'
+            wp.write_bytes(flow.json_bytes(w))
+            conf = dict(w['compilation'])
+            conf.pop('conformance_binding')
+            w['technologies'] = ['TypeScript', 'JUnit', 'Docker']
+            result = flow.technology_conformance(wp, w, conf)
+            self.assertEqual(result['status'], 'inconclusive')
+            self.assertEqual({entry['technology'] for entry in result['results']},
+                             {'TypeScript', 'JUnit', 'Docker'}, result)
+            self.assertTrue(all(entry['status'] == 'inconclusive'
+                                for entry in result['results']))
+
+            w['technologies'] = ['Docker']
+            unsupported = flow.technology_conformance(wp, w, conf)
+            self.assertEqual(unsupported['status'], 'inconclusive')
+            self.assertEqual([entry['technology'] for entry in unsupported['results']],
+                             ['Docker'])
+            w['technologies'] = []
+            absent = flow.technology_conformance(wp, w, conf)
+            self.assertEqual(absent['status'], 'passed')
+            self.assertEqual(absent['results'], [])
 
     def test_obligation_generator_derives_all_categories_and_starts_not_run(self):
         with tempfile.TemporaryDirectory() as td:
@@ -193,8 +245,9 @@ export function provideResult() { return false; }
             status_by_category={}
             for obligation in evaluated['items']:
                 status_by_category.setdefault(obligation['category'],set()).add(obligation['status'])
-            for category in ('behavior','invariant','domain','implementation-constraint'):
+            for category in ('behavior','invariant','domain'):
                 self.assertEqual(status_by_category[category],{'passed'})
+            self.assertEqual(status_by_category['implementation-constraint'],{'inconclusive'})
             for category in ('interface','capability','cross-process'):
                 self.assertEqual(status_by_category[category],{'inconclusive'})
             self.assertTrue(all(x['limitation'] for x in evaluated['items']))
