@@ -94,7 +94,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                for r in applicable for outcome in r['allowed'] for w in outcome['write']):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
-        names=set(special)
+        names=set()
+        # Only semantically referenced nonrequired inputs partition Guard truth.
         for clause in [*constraints,*(r['when'] for r in applicable)]:
             names.update(used_refs(clause,definitions))
         dimensions=[];possible=True;partition_fields=[]
