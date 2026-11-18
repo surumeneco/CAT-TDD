@@ -886,12 +886,11 @@ def _provided_output_operation(fields,operations,overrides,trigger):
     if len(candidates)!=1:
         return None
     operation=candidates[0]
-    output_fields=[f for f in fields.values() if f['role']=='output']
-    # Other PI outputs can never be attributed to the chosen operation.
-    if any(f['source_pi']!=operation['source_pi'] for f in output_fields):
-        return None
+    # A distinct PI may provide outputs for a *different* trigger. Only
+    # output-Presence overrides owned by this PI bind this operation.
     if any(item['operation']!=operation['id'] for item in overrides
-           if fields[item['field']]['role']=='output'):
+           if fields[item['field']]['role']=='output'
+           and fields[item['field']]['source_pi']==operation['source_pi']):
         return None
     return operation
 
@@ -905,14 +904,26 @@ def _unproved_output_presence(fields,operations,overrides,rules,triggers):
     special=_nonrequired_output_ids(fields,overrides)
     outputs=[f for f in fields.values() if f['role']=='output']
     errors=set()
+    covered_owners=set()
     for trigger in triggers:
         operation=_provided_output_operation(fields,operations,overrides,trigger)
+        if operation is not None:
+            covered_owners.add(operation['source_pi'])
         if operation is None:
             errors.update(special)
+            scoped_outputs=outputs
+        else:
+            scoped_outputs=[f for f in outputs
+                            if f['source_pi']==operation['source_pi']]
+        scoped_ids={f['id'] for f in scoped_outputs}
         for rule in (r for r in rules if r['trigger']==trigger):
             for outcome in rule['allowed']:
                 emitted={w['target'] for w in outcome['write']}
-                for field in outputs:
+                if operation is not None:
+                    # An unrelated PI may not silently be declared emitted
+                    # under the selected provider for this trigger.
+                    errors.update(emitted & ({f['id'] for f in outputs}-scoped_ids))
+                for field in scoped_outputs:
                     name=field['id']
                     presence=(_presence_for_field(field,operation,overrides)
                               if operation is not None else field.get('presence','required'))
@@ -920,6 +931,8 @@ def _unproved_output_presence(fields,operations,overrides,rules,triggers):
                             or (presence=='required' and name not in emitted)
                             or (presence=='absent' and name in emitted)):
                         errors.add(name)
+    errors.update(f['id'] for f in outputs if f['id'] in special
+                  and f['source_pi'] not in covered_owners)
     return errors
 
 
@@ -1422,8 +1435,9 @@ def _vector_output_operation(model,test,fields):
          and (x.get('trigger') is None or x['trigger']==test['trigger'])]
     require(len(ops)==1,'vector.output_operation is not a provided operation for trigger')
     op=ops[0]
-    require(all(x['source_pi']==op['source_pi'] for x in declared),
-            'multiple output PI owners require explicit multi-operation witness extension')
+    require(all(x['source_pi']==op['source_pi'] for x in declared
+                if x['operation']==op['id']),
+            'output Presence override belongs to another PI')
     return op
 
 
@@ -1466,6 +1480,9 @@ def expand_cases(model, vectors):
                 if fields[target]['role']=='state':after[target]=val
                 else:emitted[target]=val
             if output_operation is not None:
+                require(all(fields[target].get('source_pi')==output_operation['source_pi']
+                            for target in emitted if fields[target]['role']=='output'),
+                        'output Effect belongs to another provided PI')
                 for field in fields.values():
                     if field['role']!='output' or field.get('source_pi')!=output_operation['source_pi']:
                         continue
