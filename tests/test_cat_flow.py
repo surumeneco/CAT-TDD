@@ -83,6 +83,33 @@ class CatFlowTest(unittest.TestCase):
         self.assertEqual(r['status'], 'blocked')
         self.assertEqual(r['unknown_technologies'], ['Rust'])
 
+    def test_java_junit_without_inspector_is_inconclusive(self):
+        self.work['technologies'] = ['Java', 'JUnit']
+        result = flow.technology_conformance(self.workpath, self.work, {})
+        self.assertEqual(result['status'], 'inconclusive')
+        self.assertTrue(any(x['technology'] == 'Java' and x['status'] == 'inconclusive'
+                            for x in result['results']))
+
+    def test_java_mixed_with_existing_inspector_cannot_be_accepted(self):
+        self.work['technologies'] = ['Java', 'TypeScript']
+        # TypeScript's binding-less path is already inconclusive; Java must still
+        # be represented independently, never silently ignored.
+        result = flow.technology_conformance(self.workpath, self.work, {})
+        self.assertEqual(result['status'], 'inconclusive')
+        self.assertTrue(any(x['technology'] == 'Java' for x in result['results']))
+
+    def test_uninspected_declared_technology_does_not_vacuously_pass(self):
+        self.work['technologies'] = ['JUnit']
+        result = flow.technology_conformance(self.workpath, self.work, {})
+        self.assertEqual(result['status'], 'inconclusive')
+        self.assertEqual(result['results'], [])
+
+    def test_no_declared_technology_requires_no_inspector(self):
+        self.work['technologies'] = []
+        result = flow.technology_conformance(self.workpath, self.work, {})
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['results'], [])
+
     def test_no_git_checkout_is_not_run(self):
         self.work['repositories'] = [{'name': 'webapp', 'path': './missing-repo',
                                       'allowed_paths': ['apps/backend/test/*']}]
