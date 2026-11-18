@@ -120,6 +120,37 @@ class TriggerScopedOutputPresenceTests(unittest.TestCase):
                 self.assertTrue(all(name.startswith('output.' + case['trigger'])
                                     for alt in case['allowed'] for name in alt['output']))
 
+    def test_required_direct_frames_with_unrelated_provider_keep_source_model_agreement(self):
+        # CAT33 WebApp requests: one PI supplies an unrelated operation, but
+        # required outputs written directly by TCE are not operation-scoped.
+        with tempfile.TemporaryDirectory() as td:
+            p, pis, tce = fixture(Path(td))
+            for name, path in zip(('first', 'second'), pis):
+                contents = path.read_text(encoding='utf-8')
+                contents = contents.replace(
+                    f'| output.{name} | send | boolean | optional |',
+                    f'| output.{name} | send | boolean | required |')
+                contents = contents.replace(
+                    '## Operation presence\n| Operation | Field | Presence |\n| --- | --- | --- |\n'
+                    + f'| {name}_result | output.{name} | optional |\n\n', '')
+                path.write_text(contents, encoding='utf-8')
+            contents = tce.read_text(encoding='utf-8')
+            for name in ('first', 'second'):
+                contents = contents.replace(
+                    f'| {name}.yes | {name} | `input.{name}` | 1 | `output.{name} = true` |',
+                    f'| {name}.yes | {name} | `input.{name}` | 1 | `output.first = true; output.second = true` |')
+                contents = contents.replace(
+                    f'| {name}.no | {name} | `not(input.{name})` | 1 | 変更なし |',
+                    f'| {name}.no | {name} | `not(input.{name})` | 1 | `output.first = false; output.second = false` |')
+            tce.write_text(contents, encoding='utf-8')
+            model = load(p, pis, tce)
+            self.assertEqual(model['status'], 'confirmed')
+            self.assertEqual(model['presence_unproven'], [])
+            path = Path(td) / 'Model.json'
+            path.write_text(json.dumps(model), encoding='utf-8')
+            self.assertEqual(validate(p, pis, tce, path)['status'], 'passed')
+
+
     def test_two_providers_for_same_trigger_remain_unproved(self):
         with tempfile.TemporaryDirectory() as td:
             p, pis, tce = fixture(Path(td))
