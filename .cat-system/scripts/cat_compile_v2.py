@@ -872,9 +872,11 @@ def _symbolic_effect_containment(expr, target_domain, fields):
 def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
     """Prove Effect target containment separately from Guard closure.
 
-    A direct reference uses structural Domain inclusion. Operator expressions
-    require an exact bounded enumeration of every referenced field's Domain.
-    The proof does not assume a Guard, runtime driver, or external Effect.
+    A direct reference uses structural Domain inclusion. A narrow set of
+    integer and typed-set operators permits exact, non-enumerative closure.
+    Other operators require exhaustive finite Domain enumeration. A positive
+    input-Presence Guard may justify an otherwise unsafe Effect input read,
+    but Guard coverage and external Effect authenticity are separate duties.
     Unsupported, nonfinite or exhausted cases remain unproven.
     """
     checks={}
