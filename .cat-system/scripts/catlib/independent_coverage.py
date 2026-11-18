@@ -89,6 +89,43 @@ def _independent_integer_cells(domain, field, clauses):
     return reps if reps and len(reps)<=LIMIT else None
 
 
+def _independent_string_cells(domain, field, clauses):
+    """Independent literal-equality truth cells, without compiler helpers."""
+    if domain != {'type': 'string'}:
+        return None
+    constants=set()
+    def mentions(node):
+        return (isinstance(node,dict) and
+                (node.get('ref') == field or
+                 any(mentions(part) for part in node.get('args',[]))))
+    def check(node):
+        if not isinstance(node,dict) or node.get('op')=='call':
+            return False
+        if not mentions(node):
+            return True
+        op=node.get('op');args=node.get('args',[])
+        if op in ('and','or','not'):
+            if (op=='not' and len(args)!=1) or (op!='not' and len(args)<2):
+                return False
+            return all(check(part) for part in args)
+        if op not in ('eq','ne') or len(args)!=2:
+            return False
+        for left,right in ((args[0],args[1]),(args[1],args[0])):
+            if (isinstance(left,dict) and set(left)=={'ref'} and left['ref']==field
+                    and isinstance(right,dict) and set(right)=={'literal'}
+                    and type(right['literal']) is str):
+                constants.add(right['literal']);return True
+        return False
+    if not all(check(clause) for clause in clauses) or not constants:
+        return None
+    if len(constants)>=LIMIT:
+        return None
+    other=''
+    while other in constants:
+        other+='\x00'
+    return [*sorted(constants),other]
+
+
 def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
     rules=[r for _,_,tce in tces for r in tce['rules']]
     constraints=[c for _,_,pi in pi_docs for c in pi.get('constraints',[])]
@@ -135,7 +172,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         # Only semantically referenced nonrequired inputs partition Guard truth.
         for clause in [*constraints,*(r['when'] for r in applicable)]:
             names.update(used_refs(clause,definitions))
-        dimensions=[];possible=True;partition_fields=[]
+        dimensions=[];possible=True;partition_fields=[];partition_kinds=set()
         for field in sorted(names):
             if field not in domains or roles.get(field) in ('output','action'):
                 possible=False;break
@@ -154,7 +191,15 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             if values is None and (field not in inputs or current_presence(field)=='required'):
                 values=_independent_integer_cells(domains[field],field,
                              [*constraints,*(r['when'] for r in applicable)])
-                if values is not None:partition_fields.append(field)
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('integer')
+            if values is None and (field not in inputs or current_presence(field)=='required'):
+                values=_independent_string_cells(domains[field],field,
+                           [*constraints,*(r['when'] for r in applicable)])
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('string')
             if values is None:
                 possible=False;break
             dimensions.append(values)
@@ -191,7 +236,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                  'uncovered':uncovered_examples,'overlaps':overlap_examples,
                  'excluded_by_pi_constraints':bool(constraints)}
         if partition_fields:
-            receipt.update(proof_method='integer-literal-partition/v1',
+            method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
+                    else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'integer-string-literal-partition/v1')
+            receipt.update(proof_method=method,
                            partition_fields=partition_fields,
                            abstract_state_count=math.prod(map(len,dimensions)),
                            proof_scope='local-guard-truth-partition-not-effect-or-implementation')

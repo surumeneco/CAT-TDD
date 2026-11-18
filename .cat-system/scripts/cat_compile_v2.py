@@ -25,6 +25,7 @@ from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
 from catlib import semantic_subtyping
 from catlib import semantic_interval_partition
+from catlib import semantic_string_partition
 from catlib import decimal_integer
 from catlib import peer_binding
 
@@ -1338,6 +1339,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         ordered=sorted(relevant)
         domainvalues=[]
         partition_fields=[]
+        partition_kinds=set()
         predicates=[*constraints,*(r['when'] for r in rr)]
         for field_id in ordered:
             field=fields[field_id]
@@ -1353,7 +1355,16 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                    or input_presence[field_id]=='required'):
                 values=semantic_interval_partition.integer_partition_values(
                     field['domain'],field_id,predicates)
-                if values is not None:partition_fields.append(field_id)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('integer')
+            if values is None and (field_id not in input_presence
+                                   or input_presence[field_id]=='required'):
+                values=semantic_string_partition.string_partition_values(
+                    field['domain'],field_id,predicates)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('string')
             domainvalues.append(values)
         if any(values is None for values in domainvalues):
             per_trigger[trigger]={'result':'unproven',
@@ -1398,7 +1409,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                'unreachable_rules':sorted(unreachable),
                'excluded_by_pi_constraints':True if constraints else False}
         if partition_fields:
-            check.update(proof_method='integer-literal-partition/v1',
+            method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
+                    else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'integer-string-literal-partition/v1')
+            check.update(proof_method=method,
                          partition_fields=partition_fields,
                          abstract_state_count=combinations,
                          proof_scope='local-guard-truth-partition-not-effect-or-implementation')
@@ -1679,6 +1693,10 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             if values is None and (field_id not in presence
                                    or presence[field_id]=='required'):
                 values=semantic_interval_partition.integer_partition_values(
+                    field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and (field_id not in presence
+                                   or presence[field_id]=='required'):
+                values=semantic_string_partition.string_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
