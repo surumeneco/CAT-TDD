@@ -34,11 +34,12 @@ class EffectTotalityTests(unittest.TestCase):
             self.assertEqual(model['unverified_effect_ids'],[])
             self.assertTrue(all(v['result']=='proved' for v in model['effect_checks'].values()))
 
-    def test_nonfinite_operator_remains_unproven_not_hypothetically_green(self):
+    def test_unbounded_integer_addition_uses_exact_domain_closure(self):
         with tempfile.TemporaryDirectory() as td:
             model=load(*self.fixture(Path(td),score_domain='integer',output_domain='integer'),allow_partial=True)
-            self.assertEqual(model['status'],'draft')
-            self.assertTrue(model['unverified_effect_ids'])
+            self.assertEqual(model['status'],'confirmed')
+            self.assertEqual(model['unverified_effect_ids'],[])
+            self.assertTrue(all(x['result']=='proved' for x in model['effect_checks'].values()))
 
     def test_independent_model_conformance_checks_effect_proofs(self):
         import json
