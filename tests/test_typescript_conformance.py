@@ -173,6 +173,35 @@ export function provideResult() { return false; }
                     self.assertEqual(by_name[extra]['status'],'inconclusive')
                     self.assertIn('inspector',by_name[extra]['reason'])
 
+    def test_technology_results_account_for_every_declared_skill_even_when_binding_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            process, pi, tce = self.confirmed_sources(root)
+            binding = self.binding(root)
+            obligations_file = self.passed_obligations(root)
+            w = self.work(root, process, pi, tce, binding, obligations_file)
+            wp = root / 'Work.json'
+            wp.write_bytes(flow.json_bytes(w))
+            conf = dict(w['compilation'])
+            conf.pop('conformance_binding')
+            w['technologies'] = ['TypeScript', 'JUnit', 'Docker']
+            result = flow.technology_conformance(wp, w, conf)
+            self.assertEqual(result['status'], 'inconclusive')
+            self.assertEqual({entry['technology'] for entry in result['results']},
+                             {'TypeScript', 'JUnit', 'Docker'}, result)
+            self.assertTrue(all(entry['status'] == 'inconclusive'
+                                for entry in result['results']))
+
+            w['technologies'] = ['Docker']
+            unsupported = flow.technology_conformance(wp, w, conf)
+            self.assertEqual(unsupported['status'], 'inconclusive')
+            self.assertEqual([entry['technology'] for entry in unsupported['results']],
+                             ['Docker'])
+            w['technologies'] = []
+            absent = flow.technology_conformance(wp, w, conf)
+            self.assertEqual(absent['status'], 'passed')
+            self.assertEqual(absent['results'], [])
+
     def test_obligation_generator_derives_all_categories_and_starts_not_run(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);process,pi,tce=self.confirmed_sources(root)
