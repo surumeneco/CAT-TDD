@@ -820,7 +820,7 @@ def _presence_only_guard_use(expr, field):
 
 
 def _symbolic_effect_containment(expr, target_domain, fields):
-    """Prove only exact, total integer addition and typed Set insertion.
+    """Prove only exact, total integer addition and typed Set insertion/removal.
 
     No representative values, floating-point arithmetic, implicit casts,
     nominal alias guesses, or arbitrary function-body assumptions are used.
@@ -866,6 +866,24 @@ def _symbolic_effect_containment(expr, target_domain, fields):
             return None
         return (semantic_subtyping.subset(source,target_domain) is True
                 and semantic_subtyping.subset(item['domain'],target_domain['element']) is True)
+    if op=='set-remove' and len(args)==2 and all(set(a)=={'ref'} for a in args):
+        set_ref,item_ref=(a['ref'] for a in args)
+        if set_ref not in fields or item_ref not in fields:
+            return None
+        collection=fields[set_ref];item=fields[item_ref]
+        if collection['role'] not in ('input','state','observation') or item['role'] not in ('input','state','observation'):
+            return None
+        source=collection['domain']
+        if source.get('type')!='set' or target_domain.get('type')!='set':
+            return None
+        if (_unresolved_domain(source) or _unresolved_domain(item['domain'])
+                or _unresolved_domain(target_domain)):
+            return None
+        # Deletion never adds an element. The source collection must fit
+        # the target Set, and the removal key must belong to the source
+        # element Domain so typed comparison is well defined.
+        return (semantic_subtyping.subset(source,target_domain) is True
+                and semantic_subtyping.subset(item['domain'],source['element']) is True)
     return None
 
 
