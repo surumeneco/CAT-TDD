@@ -34,7 +34,7 @@ class TypedSetRemoveClosureTests(unittest.TestCase):
         if source == 'input.source':
             pi.write_text(pi.read_text(encoding='utf-8').replace(
                 '| input.member | receive |',
-                '| input.source | receive | set<string> | required |\\n'
+                '| input.source | receive | set<string> | required |\n'
                 '| input.member | receive |', 1), encoding='utf-8')
         return process, pi, tce
 
