@@ -55,6 +55,7 @@ class R01FinalClosureGateTests(unittest.TestCase):
             "process": "Process.md",
             "pi": "PI.md",
             "tce": "TCE.md",
+            "model": "Model.json",
             "allow_draft": False,
             "allow_partial": True,
         }
