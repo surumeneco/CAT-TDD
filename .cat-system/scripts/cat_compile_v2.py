@@ -1782,13 +1782,6 @@ def emit_vitest(model,vectors,binding_path):
 def emit_junit(model, vectors, binding_path):
     """Render current queued CAT cases using the explicitly selected JUnit adapter."""
     import importlib.util
-    require(not any(typed.has_semantic_domain(f['domain']) for f in model['fields']),
-            'JUnit renderer requires explicit structured/instant transport binding')
-    require(all(f['domain']['type'] in ('boolean', 'enum', 'integer')
-                and f.get('presence', 'required') == 'required' for f in model['fields']),
-            'JUnit scalar renderer supports only required boolean/enum/integer fields')
-    require(not model.get('operation_presence'),
-            'JUnit scalar renderer does not carry operation-scoped Presence')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','test_package','test_class','driver_class'],
                optional=('capability_scope',), where='JUnit driver binding')
@@ -1816,6 +1809,18 @@ def emit_junit(model, vectors, binding_path):
     else:
         require(capability_scope is None,
                 'JUnit capability exclusions require declared Process capabilities')
+    # Eligibility is a property of the tested PI/state/output contract.
+    # An explicitly excluded Process observation/action is NOT transported
+    # by the scalar PI-only test; its Domain must not reject generation.
+    tested_fields=[f for f in model['fields']
+                   if f['role'] in ('input','state','output')]
+    require(not any(typed.has_semantic_domain(f['domain']) for f in tested_fields),
+            'JUnit renderer requires explicit structured/instant transport binding')
+    require(all(f['domain']['type'] in ('boolean','enum','integer')
+                and f.get('presence','required')=='required' for f in tested_fields),
+            'JUnit scalar renderer supports only required boolean/enum/integer fields')
+    require(not model.get('operation_presence'),
+            'JUnit scalar renderer does not carry operation-scoped Presence')
     cases=expand_cases(model,vectors)
     require(not any('output_operation' in c for c in cases),
             'JUnit scalar renderer cannot carry output-operation identity')
