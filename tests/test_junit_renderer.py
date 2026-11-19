@@ -131,6 +131,57 @@ class JUnitRendererTests(unittest.TestCase):
             finally:
                 compiler.expand_cases = original
 
+    def test_pi_only_ignores_excluded_capability_domains_not_pi_transport(self):
+        # Capability scope has already declared these external fields unverified.
+        # Their transport cannot be a prerequisite for PI-only generation.
+        outside = [
+            {'id': 'observation.payload', 'role': 'observation',
+             'presence': 'optional', 'domain': {'type': 'json', 'root': 'object'}},
+            {'id': 'action.notification', 'role': 'action',
+             'presence': 'optional', 'domain': {'type': 'string'}},
+        ]
+        model = dict(MODEL, fields=[*MODEL['fields'], *outside])
+        scope = {'kind': 'pi-only-unverified',
+                 'observations': ['observation.payload'],
+                 'actions': ['action.notification']}
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / 'binding.json'
+            original = compiler.expand_cases
+            try:
+                compiler.expand_cases = lambda m, v: CASES
+                path.write_text(json.dumps(dict(BINDING, capability_scope=scope)),
+                                encoding='utf-8')
+                generated = compiler.emit_junit(model, {'cases': []}, path)
+                self.assertIn('CAPABILITIES NOT VERIFIED', generated)
+                self.assertIn('observation.payload', generated)
+                self.assertIn('action.notification', generated)
+
+                # Exclusions are explicitly enumerated; never silently omit
+                # another Process capability or claim its verification.
+                path.write_text(json.dumps(BINDING), encoding='utf-8')
+                with self.assertRaises(compiler.Blocked):
+                    compiler.emit_junit(model, {'cases': []}, path)
+                path.write_text(json.dumps(dict(BINDING, capability_scope=scope)),
+                                encoding='utf-8')
+                for role in ('input', 'state', 'output'):
+                    invalid = dict(model, fields=[
+                        *MODEL['fields'],
+                        {'id': role + '.unsupported', 'role': role,
+                         'presence': 'required', 'domain': {'type': 'json', 'root': 'object'}},
+                        *outside,
+                    ])
+                    with self.subTest(role=role), self.assertRaises(compiler.Blocked):
+                        compiler.emit_junit(invalid, {'cases': []}, path)
+                invalid_presence = dict(model, fields=[
+                    dict(MODEL['fields'][0], presence='optional'),
+                    MODEL['fields'][1],
+                    *outside,
+                ])
+                with self.assertRaises(compiler.Blocked):
+                    compiler.emit_junit(invalid_presence, {'cases': []}, path)
+            finally:
+                compiler.expand_cases = original
+
     @unittest.skipUnless(shutil.which('javac') and shutil.which('java'), 'JDK not installed')
     def test_generated_junit_java_executes_and_detects_wrong_actual_output(self):
         from importlib.util import spec_from_file_location, module_from_spec
