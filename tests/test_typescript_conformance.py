@@ -277,6 +277,14 @@ export function provideResult() { return false; }
         canonical = ROOT / '.cat-system' / 'skills' / 'tech-typescript' / 'scripts' / 'cat_typescript_conformance.py'
         distributed = ROOT / '.github' / 'skills' / 'tech-typescript' / 'scripts' / 'cat_typescript_conformance.py'
         self.assertEqual(distributed.read_bytes(), canonical.read_bytes())
+        # Direct invocation must resolve the core parser from the repository,
+        # without relying on an inherited PYTHONPATH.
+        import subprocess
+        cli = subprocess.run(
+            [sys.executable, '-I', str(distributed), '--help'],
+            cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        self.assertIn('--pi-extra', cli.stdout)
         published = runpy.run_path(str(distributed), run_name='published_typescript_inspector')
 
         with tempfile.TemporaryDirectory() as td:
