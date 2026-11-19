@@ -820,7 +820,7 @@ def _presence_only_guard_use(expr, field):
 
 
 def _symbolic_effect_containment(expr, target_domain, fields):
-    """Prove only exact, total integer addition and typed Set insertion.
+    """Prove only exact, total integer addition and typed Set insertion/removal.
 
     No representative values, floating-point arithmetic, implicit casts,
     nominal alias guesses, or arbitrary function-body assumptions are used.
@@ -866,6 +866,24 @@ def _symbolic_effect_containment(expr, target_domain, fields):
             return None
         return (semantic_subtyping.subset(source,target_domain) is True
                 and semantic_subtyping.subset(item['domain'],target_domain['element']) is True)
+    if op=='set-remove' and len(args)==2 and all(set(a)=={'ref'} for a in args):
+        set_ref,item_ref=(a['ref'] for a in args)
+        if set_ref not in fields or item_ref not in fields:
+            return None
+        collection=fields[set_ref];item=fields[item_ref]
+        if collection['role'] not in ('input','state','observation') or item['role'] not in ('input','state','observation'):
+            return None
+        source=collection['domain']
+        if source.get('type')!='set' or target_domain.get('type')!='set':
+            return None
+        if (_unresolved_domain(source) or _unresolved_domain(item['domain'])
+                or _unresolved_domain(target_domain)):
+            return None
+        # Deletion never adds an element. The source collection must fit
+        # the target Set, and the removal key must belong to the source
+        # element Domain so typed comparison is well defined.
+        return (semantic_subtyping.subset(source,target_domain) is True
+                and semantic_subtyping.subset(item['domain'],source['element']) is True)
     return None
 
 
@@ -1782,13 +1800,6 @@ def emit_vitest(model,vectors,binding_path):
 def emit_junit(model, vectors, binding_path):
     """Render current queued CAT cases using the explicitly selected JUnit adapter."""
     import importlib.util
-    require(not any(typed.has_semantic_domain(f['domain']) for f in model['fields']),
-            'JUnit renderer requires explicit structured/instant transport binding')
-    require(all(f['domain']['type'] in ('boolean', 'enum', 'integer')
-                and f.get('presence', 'required') == 'required' for f in model['fields']),
-            'JUnit scalar renderer supports only required boolean/enum/integer fields')
-    require(not model.get('operation_presence'),
-            'JUnit scalar renderer does not carry operation-scoped Presence')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','test_package','test_class','driver_class'],
                optional=('capability_scope',), where='JUnit driver binding')
@@ -1816,6 +1827,18 @@ def emit_junit(model, vectors, binding_path):
     else:
         require(capability_scope is None,
                 'JUnit capability exclusions require declared Process capabilities')
+    # Eligibility is a property of the tested PI/state/output contract.
+    # An explicitly excluded Process observation/action is NOT transported
+    # by the scalar PI-only test; its Domain must not reject generation.
+    tested_fields=[f for f in model['fields']
+                   if f['role'] in ('input','state','output')]
+    require(not any(typed.has_semantic_domain(f['domain']) for f in tested_fields),
+            'JUnit renderer requires explicit structured/instant transport binding')
+    require(all(f['domain']['type'] in ('boolean','enum','integer')
+                and f.get('presence','required')=='required' for f in tested_fields),
+            'JUnit scalar renderer supports only required boolean/enum/integer fields')
+    require(not model.get('operation_presence'),
+            'JUnit scalar renderer does not carry operation-scoped Presence')
     cases=expand_cases(model,vectors)
     require(not any('output_operation' in c for c in cases),
             'JUnit scalar renderer cannot carry output-operation identity')

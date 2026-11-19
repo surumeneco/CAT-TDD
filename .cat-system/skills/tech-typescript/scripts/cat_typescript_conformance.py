@@ -15,6 +15,10 @@ import sys
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[3]
+# A distributed .github Skill in the same checkout uses the canonical
+# CAT runtime parser, not a nonexistent .github/scripts copy.
+if PACKAGE.name == '.github':
+    PACKAGE = PACKAGE.parent / '.cat-system'
 sys.path.insert(0, str(PACKAGE / 'scripts'))
 from cat_compile_v2 import Blocked, read_artifact
 
