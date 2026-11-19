@@ -270,5 +270,43 @@ export function provideResult() { return false; }
             self.assertIn('obligation',result['reason'].lower())
 
 
+    def test_published_typescript_inspector_preserves_canonical_evidence_contract(self):
+        # The distributable Skill and the runtime must not provide divergent
+        # PI operation scopes or claim different covered obligations.
+        import runpy
+        canonical = ROOT / '.cat-system' / 'skills' / 'tech-typescript' / 'scripts' / 'cat_typescript_conformance.py'
+        distributed = ROOT / '.github' / 'skills' / 'tech-typescript' / 'scripts' / 'cat_typescript_conformance.py'
+        self.assertEqual(distributed.read_bytes(), canonical.read_bytes())
+        # Direct invocation must resolve the core parser from the repository,
+        # without relying on an inherited PYTHONPATH.
+        import subprocess
+        cli = subprocess.run(
+            [sys.executable, '-I', str(distributed), '--help'],
+            cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        self.assertIn('--pi-extra', cli.stdout)
+        published = runpy.run_path(str(distributed), run_name='published_typescript_inspector')
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = root / 'app'
+            process, pi, _ = self.confirmed_sources(root)
+            binding = self.binding(root)
+            self.write_api(repo)
+            for source, expected_status in (
+                ('', 'passed'),
+                ('export * from "./other";', 'inconclusive'),
+                ('export async function internalNetwork() { return fetch("https://example.invalid"); }', 'blocked'),
+            ):
+                with self.subTest(expected_status=expected_status):
+                    self.write_api(repo, extra=source)
+                    actual = published['inspect'](repo, binding, process, pi, pi_extras=())
+                    expected = inspector.inspect(repo, binding, process, pi, pi_extras=())
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(actual['status'], expected_status)
+                    if expected_status != 'passed':
+                        self.assertEqual(actual['covered_obligation_ids'], [])
+
+
 if __name__=='__main__':
     unittest.main()
