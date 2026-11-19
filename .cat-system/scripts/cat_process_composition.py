@@ -202,6 +202,28 @@ def _local_claim_consistent(model):
             and model.get('unresolved_interfaces',[])==[]
             and model.get('presence_unproven')==[])
 
+def _unverified_external_action_effects(model):
+    """Find Source-model Action writes, not observed external completions.
+
+    The local Effect proof checks only declared Domain membership; it never
+    verifies the external target performed the action. Inspect declared writes
+    rather than all Action capabilities, some of which are intentionally unused.
+    """
+    actions={f.get('id') for f in model.get('fields',[])
+             if isinstance(f,dict) and f.get('role')=='action'}
+    result=[]
+    for rule in model.get('rules',[]):
+        if not isinstance(rule,dict):
+            continue
+        for outcome_index,outcome in enumerate(rule.get('allowed',[]),1):
+            if not isinstance(outcome,dict):
+                continue
+            for write_index,write in enumerate(outcome.get('write',[]),1):
+                if isinstance(write,dict) and write.get('target') in actions:
+                    result.append(f"{rule.get('source_artifact')}#{rule.get('id')}:{outcome_index}:{write_index}:{write['target']}")
+    return sorted(result)
+
+
 def compose(model_paths,binding_path=None):
     if len(model_paths)<2:raise CompositionError('composition requires >=2 Processes')
     models={};hashes={}
@@ -290,18 +312,27 @@ def compose(model_paths,binding_path=None):
                                        'operation':op.get('id'),
                                        'reason':'PI operation lacks explicit binding'})
     unproved_local=[]
+    unverified_external_effects=[]
     for p,model in models.items():
         if not _local_claim_consistent(model):
             unproved_local.append(p)
-    # This proves typed links only. External effects, ordering and interleaving
-    # are never proved merely by matching source/target schemas.
-    statuses='inconclusive' if unresolved or unproved_local or any(not x['external_effects_verified'] for x in proven) else 'passed'
+        unverified_external_effects.extend(
+            {'process':p,'effect':effect}
+            for effect in _unverified_external_action_effects(model))
+    # A locally type-correct Action write is not a receipt of external
+    # execution, including when no PI links were declared for this assembly.
+    statuses='inconclusive' if (unresolved or unproved_local or unverified_external_effects
+                                or any(not x['external_effects_verified'] for x in proven)) else 'passed'
+    reason=('typed connections match where bound; cross-Process effect/interleaving proof still required'
+            if statuses=='inconclusive' else 'all declared boundaries and external effects proved')
+    if unverified_external_effects:
+        reason+='; external Action writes have no independent execution receipt'
     return {'schema':'cat-process-composition/v1','status':statuses,
             'model_sha256':hashes,'binding_sha256':binding_hash,
             'bindings':proven,'unresolved_connections':unresolved,
             'unproved_local_processes':unproved_local,
-            'reason':'typed connections match where bound; cross-Process effect/interleaving proof still required'
-                     if statuses=='inconclusive' else 'all declared boundaries and external effects proved'}
+            'unverified_external_effects':unverified_external_effects,
+            'reason':reason}
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)

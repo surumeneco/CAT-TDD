@@ -85,6 +85,39 @@ class CompositionTests(unittest.TestCase):
             self.assertEqual(result['status'],'passed')
             self.assertEqual(result['unproved_local_processes'],[])
 
+    def test_unbound_external_action_write_cannot_claim_external_effects_proved(self):
+        # A proven local Effect type is not evidence that an external Action
+        # occurred. No PI link exists to trigger the usual inconclusive path.
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            paths=[]
+            for name in ('p.one','p.two'):
+                m=model(name,'outside','send')
+                m['pi_boundaries']=[]
+                m['pi_operations']=[]
+                m['coverage_claim']='closed'
+                m['coverage_checks']={'run':{'result':'proved'}}
+                m['unresolved_interfaces']=[]
+                if name=='p.one':
+                    m['fields'].append({'id':'action.notify','role':'action',
+                                        'domain':{'type':'boolean'}})
+                    m['rules']=[{'id':'notify','source_artifact':'p.one.tce',
+                                 'allowed':[{'write':[{'target':'action.notify',
+                                                        'expr':{'literal':True}}]}]}]
+                    m['effect_checks']={
+                        'p.one.tce#notify:1:1:action.notify':{'result':'proved'}}
+                    m['unverified_effect_ids']=[]
+                p=root/(name+'.json')
+                p.write_text(json.dumps(m),encoding='utf-8')
+                paths.append(p)
+            result=composer.compose(paths)
+            self.assertEqual(result['unproved_local_processes'],[])
+            self.assertEqual(result['unresolved_connections'],[])
+            self.assertEqual(result['status'],'inconclusive',result)
+            self.assertEqual(result['unverified_external_effects'],[
+                {'process':'p.one','effect':'p.one.tce#notify:1:1:action.notify'}])
+            self.assertIn('external',result['reason'])
+
     def test_matching_pi_does_not_prove_external_effects(self):
         with tempfile.TemporaryDirectory() as td:
             a,b,links=self.write(Path(td))
