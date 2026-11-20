@@ -627,14 +627,17 @@ def conformance_work(wpath, w, kind):
                         verifier_path=runtime/'process-closure-verifiers.json'
                         verifier_path.write_bytes(json_bytes(verified))
                         verifier_evidence=str(verifier_path)
-                        # A pinned runner proves only its fixture assertions,
-                        # never equivalence with free-text CommonRule/DomainSpec.
-                        rule_status=verified.get('normative_status','inconclusive')
+                        # A failing registered assertion invalidates this Gate's
+                        # verification evidence; it does not refute the free-text
+                        # normative Rule. Passing fixture checks still cannot
+                        # elevate an unproved Rule to normative `passed`.
+                        rule_status=('failed' if verified.get('status')=='failed'
+                                     else verified.get('normative_status','inconclusive'))
                     except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
                         return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
             if rule_status=='failed':
                 return {'gate':kind,'status':'blocked','verifier_evidence':verifier_evidence,
-                        'reason':'one or more deterministic normative rule checks failed'}
+                        'reason':'one or more registered verifier fixture assertions failed; normative meaning remains unproved'}
             if model.get('status')!='confirmed' or rule_status!='passed' or model.get('unresolved_domains') or model.get('presence_unproven') or model.get('unresolved_interfaces'):
                 return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
                         'verifier_evidence':verifier_evidence,
