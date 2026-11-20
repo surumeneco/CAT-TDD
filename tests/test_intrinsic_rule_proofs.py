@@ -146,6 +146,36 @@ class IntrinsicRuleProofTests(unittest.TestCase):
             self.assertEqual(check['status'],'blocked')
             self.assertIn('intrinsic_rule_proofs',check['mismatches'])
 
+    def test_free_text_rule_obligation_is_individually_source_bound_in_json_and_markdown(self):
+        # Even an unresolved free-text obligation must preserve the exact
+        # Source hash, not only a link to an indirectly hashed document list.
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p,pi,t,r=build(root,requirement='Deliver an external notification',
+                           verification='provider runtime contract')
+            model=load(p,pi,t,common_rules=[r],allow_draft=True)
+            obligation=model['rule_obligations'][0]
+            source=model['normative_rule_inputs'][0]
+            self.assertEqual(obligation['verification_status'],'unverified')
+            self.assertEqual(obligation['source_kind'],'common-rule')
+            self.assertEqual(obligation['source_sha256'],source['sha256'])
+            for suffix in ('json','md'):
+                with self.subTest(suffix=suffix):
+                    target=root/('Model.'+suffix)
+                    target.write_text(json.dumps(model,ensure_ascii=False)
+                                      if suffix=='json' else render_model_markdown(model),encoding='utf-8')
+                    self.assertEqual(independent.validate(p,pi,[t],target,
+                        common_rules=[r],allow_draft=True)['status'],'passed')
+            for mutation in ('missing','forged'):
+                invalid=json.loads(json.dumps(model))
+                if mutation=='missing':invalid['rule_obligations'][0].pop('source_sha256')
+                else:invalid['rule_obligations'][0]['source_sha256']='0'*64
+                target=root/('Model-'+mutation+'.json')
+                target.write_text(json.dumps(invalid,ensure_ascii=False),encoding='utf-8')
+                verdict=independent.validate(p,pi,[t],target,common_rules=[r],allow_draft=True)
+                self.assertEqual(verdict['status'],'blocked')
+                self.assertIn('rule_obligations',verdict['mismatches'])
+
     def test_unstructured_requirements_cannot_be_elevated_by_any_named_verifier(self):
         for requirement,verification,condition in (
             ('Audit must be sent to Discord','discord','assembled-process'),
