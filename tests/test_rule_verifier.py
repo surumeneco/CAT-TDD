@@ -59,6 +59,36 @@ class RuleVerifierTests(unittest.TestCase):
                 with self.assertRaisesRegex(verifier.VerifierError,'normative rule source (SHA|kind) mismatch'):
                     verifier.evaluate(model_path,registry_path)
 
+    def test_unscoped_rule_receipt_cannot_cross_declared_process_boundary(self):
+        # The Rule has no syntactic Process target list. Its owning Source
+        # still limits which Process may claim its fixture evidence.
+        cases = (
+            ('demo.process', 'demo.process', True),
+            ('demo.process', 'demo.process.child', True),
+            ('demo.process', 'demo.process-other', False),
+            ('demo.process', 'foreign.process', False),
+            ('foreign.process', 'demo.process', False),
+        )
+        for source_process, evaluated_process, allowed in cases:
+            with self.subTest(source=source_process, evaluated=evaluated_process):
+                with tempfile.TemporaryDirectory() as temp:
+                    root=Path(temp)
+                    model_path,registry_path=self.prepare(root,runner=True)
+                    model=json.loads(model_path.read_text(encoding='utf-8'))
+                    model['process']=evaluated_process
+                    model['normative_rule_inputs'][0]['process']=source_process
+                    model['rule_obligations'][0]['condition']='when action completes'
+                    model_path.write_text(json.dumps(model),encoding='utf-8')
+                    registry=json.loads(registry_path.read_text(encoding='utf-8'))
+                    registry['model_sha256']=sha(model_path.read_bytes())
+                    registry_path.write_text(json.dumps(registry),encoding='utf-8')
+                    if allowed:
+                        self.assertEqual(verifier.evaluate(model_path,registry_path)['status'],'passed')
+                    else:
+                        with self.assertRaisesRegex(verifier.VerifierError,
+                                                    'normative rule Process scope mismatch'):
+                            verifier.evaluate(model_path,registry_path)
+
     def test_static_fixture_run_produces_traceable_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
