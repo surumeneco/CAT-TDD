@@ -33,17 +33,12 @@
 !/TestModels/.gitkeep
 !/Room0/.gitkeep
 
-# These specifications and decisions belong to CAT-TDD itself.
+# CAT-TDD's own approved technical Source remains tracked; all private
+# decisions and upstream-development Draft/Candidate artifacts stay ignored.
 !/Docs/Constraints/cat.compiler.json-instant.domain-spec.md
-!/Docs/Decisions/CAT31-json-instant-approval-20261118.md
-!/Docs/Decisions/GEN02-03-04-approval-20261118.md
-!/Lifecycle/CAT/Candidates/cat.process.execution-origin.domain-spec.md
 
-# Shared lowercase docs must remain visible on case-insensitive filesystems too.
+# Non-distributable local development candidates are not public contract docs.
 /docs/cat/**
-!/docs/cat/
-!/docs/cat/spec-test-sync-routing-contract.md
-!/docs/cat/spec-test-sync-suite-plan-candidate.md
 
 # ---------------------------------------------------------------------------
 # Project-specific Copilot/runtime selections
