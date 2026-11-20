@@ -87,6 +87,12 @@ def load(path, process, allow_draft=False):
     scope=fm.get('process')
     if not isinstance(scope,str) or not scope:raise RuleError('missing scope')
     source_sha=hashlib.sha256(raw).hexdigest()
+    # Every normative Rule (including unresolved free-text Rules) is tied to
+    # the *same exact Source bytes* as the document inventory. A Rule that
+    # merely names its Source ID without retaining the SHA is not a complete
+    # provenance-bound obligation for a later machine verification contract.
+    for rule in rules:
+        rule['source_sha256']=source_sha
     for definition in types:
         definition.update(source_artifact=fm['id'],source_sha256=source_sha)
     return {'id':fm['id'],'kind':fm['kind'],'process':scope,
