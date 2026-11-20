@@ -269,6 +269,61 @@ Closed world: true
    self.assertEqual(evaluated['items'][0]['status'],'inconclusive')
    self.assertIn('observation',evaluated['items'][0]['reason'])
 
+ def test_failed_registered_rule_assertion_blocks_implementation_gate(self):
+  # This fixture checks an executable verifier's *failure*, not the truth
+  # of a free-text normative Rule. Its failed evidence must not be softened
+  # to the same inconclusive status as a passing but non-normative fixture.
+  from unittest.mock import patch
+  from test_rule_verifier import RuleVerifierTests
+  import cat_verifier_contracts as verifier
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp)
+   model,registry=RuleVerifierTests().prepare(root,'discord',True)
+   doc={'schema':'cat-implementation-obligations/v1',
+        'source_sha256':{'demo.spec':'a'*64},
+        'intrinsic_rule_proofs':[],
+        'items':[{'id':'normative-rule.demo.rule','category':'domain',
+                  'source_ref':'demo.spec#demo.rule','method':'normative-rule-verifier',
+                  'status':'not-run','reason':'pending','limitation':'pending'}]}
+   for category in ('interface','capability','behavior','invariant',
+                    'cross-process','implementation-constraint'):
+    doc['items'].append({'id':'other.'+category,'category':category,
+                         'source_ref':'demo.spec','method':'model-conformance',
+                         'status':'not-run','reason':'pending','limitation':'pending'})
+   obpath=root/'obligations.json';obpath.write_text(json.dumps(doc),encoding='utf-8')
+   for name in ('process.md','pi.md','tce.md'):
+    (root/name).write_text('fixture',encoding='utf-8')
+   conf={'process':'process.md','pi':'pi.md','tce':'tce.md',
+         'model':'model.json','obligations':'obligations.json',
+         'verifier_registry':'registry.json','allow_draft':False}
+   work={'id':'demo.work','scope':{'process_ids':['demo.process']},
+         'compilation':conf,'technologies':[], 'repositories':[]}
+   workpath=root/'work.json';workpath.write_text(json.dumps(work),encoding='utf-8')
+
+   def inspect(expected, result_status, obligation_status):
+    content=json.loads(registry.read_text(encoding='utf-8'))
+    content['entries'][0]['assertions'][0]['expected']=expected
+    registry.write_text(json.dumps(content),encoding='utf-8')
+    observed=verifier.evaluate(model,registry)
+    evaluated=impl.aggregate(doc,model_conformance={'status':'passed','evidence':'fixture'},
+                             rule_verification=observed)
+    rule=next(item for item in evaluated['items']
+              if item['id']=='normative-rule.demo.rule')
+    self.assertEqual(rule['status'],obligation_status)
+    with patch.object(cat_flow,'obligations_work',return_value={'status':'passed'}),\
+         patch.object(cat_flow,'conformance_evidence_status',
+                      return_value={'status':'passed','evidence':'synthetic'}):
+     verdict=cat_flow.conformance_work(workpath,work,'implementation-conformance')
+    self.assertEqual(verdict['status'],result_status,verdict)
+    return rule,verdict
+
+   failed,blocked=inspect(False,'blocked','failed')
+   self.assertIn('registered verifier',failed['reason'])
+   self.assertIn('fixture',failed['limitation'])
+   self.assertIn('implementation obligations failed',blocked['reason'])
+   successful,inconclusive=inspect(True,'inconclusive','inconclusive')
+   self.assertIn('equivalence is unproved',successful['reason'])
+
  def test_flow_does_not_drop_declared_sources(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);p,a,b,t,cr,ds=self.setup(root)
