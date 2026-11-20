@@ -66,6 +66,7 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 'gate': 'process-closure',
                 'context_sha256': flow.conformance_context_sha(work),
                 'input_sha256': {},
+                'runtime_sha256': flow.conformance_runtime_fingerprint(),
                 'verdict': 'blocked',
                 'reason': 'deterministic failure',
                 'supporting_evidence': None,
@@ -87,6 +88,7 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 'gate': 'process-closure',
                 'context_sha256': flow.conformance_context_sha(work),
                 'input_sha256': {},
+                'runtime_sha256': flow.conformance_runtime_fingerprint(),
                 'verdict': 'inconclusive',
                 'reason': 'composition requires semantic review',
                 'supporting_evidence': None,
@@ -115,6 +117,7 @@ class ConformanceRuntimeTest(unittest.TestCase):
                     'work_id': work['id'], 'gate': gid,
                     'context_sha256': flow.conformance_context_sha(work),
                     'input_sha256': {},
+                'runtime_sha256': flow.conformance_runtime_fingerprint(),
                     **({'repo_state_sha256': flow._implementation_repository_fingerprint(path, work)}
                        if gid == 'implementation-conformance' else {}),
                     'verdict': 'inconclusive', 'reason': 'unproved meaning',
@@ -140,7 +143,8 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 'work_id': 'unrelated.work',
                 'gate': 'model-conformance',
                 'context_sha256': flow.conformance_context_sha(work),
-                'input_sha256': {}, 'verdict': 'inconclusive',
+                'input_sha256': {},
+                'runtime_sha256': flow.conformance_runtime_fingerprint(), 'verdict': 'inconclusive',
             }))
             report = flow.status_work(path, work)
             self.assertEqual(report['gates']['model-conformance']['status'], 'stale')
@@ -160,7 +164,8 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 'schema': 'cat-conformance-evidence/v1',
                 'work_id': work['id'], 'gate': 'model-conformance',
                 'context_sha256': flow.conformance_context_sha(work),
-                'input_sha256': {}, 'verdict': 'passed',
+                'input_sha256': {},
+                'runtime_sha256': flow.conformance_runtime_fingerprint(), 'verdict': 'passed',
             }))
             report = flow.status_work(path, work)
             self.assertEqual(report['gates']['model-conformance']['status'], 'passed')
@@ -274,6 +279,94 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 with self.assertRaisesRegex(flow.Blocked, 'source_ref'):
                     flow.conformance_work(path, work, 'implementation-conformance')
 
+
+    def test_gate_receipt_stales_on_runtime_script_change_without_source_change(self):
+        """U06: new CAT verifier semantics invalidate old Gate receipts."""
+        for gate in flow.CONFORMANCE_GATES:
+            with self.subTest(gate=gate), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                installed = root / 'installed'
+                scripts = installed / 'scripts'
+                scripts.mkdir(parents=True)
+                (scripts / 'cat_flow.py').write_bytes(b'# gate runtime version one\n')
+                config = installed / 'config'
+                config.mkdir()
+                (config / 'routing.json').write_bytes(b'{"schema":"cat-routing/v2"}\n')
+                work = base_work()
+                for name in ('Process.md','PI.md','TCE.md'):
+                    (root / name).write_text('fixture '+name, encoding='utf-8')
+                work['compilation']={'process':'Process.md','pi':'PI.md','tce':'TCE.md'}
+                path = self.write_work(root, work)
+                # Simulate an actual runtime installation update; Source and
+                # Work are byte-identical across both evaluations.
+                with patch.object(flow, 'ROOT', installed):
+                    flow.record_conformance_evidence(path, work, gate,
+                        {'status': 'inconclusive', 'reason': 'bounded evidence'})
+                    self.assertEqual(
+                        flow.conformance_evidence_status(path, work, gate)['status'],
+                        'inconclusive')
+                    (scripts / 'cat_flow.py').write_bytes(b'# gate runtime version two\n')
+                    verdict = flow.conformance_evidence_status(path, work, gate)
+                self.assertEqual(verdict['status'], 'stale', verdict)
+                self.assertIn('runtime', verdict['reason'])
+
+    def test_gate_receipt_stales_on_routing_or_technology_inspector_change(self):
+        for changed in ('routing','inspector'):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                installed=root/'installed'
+                scripts=installed/'scripts'
+                scripts.mkdir(parents=True)
+                (scripts/'cat_flow.py').write_bytes(b'# fixed CAT gate\n')
+                config=installed/'config'
+                config.mkdir()
+                routing=config/'routing.json'
+                routing.write_bytes(b'{"schema":"cat-routing/v2"}\n')
+                tech=installed/'skills'/'tech-typescript'/'scripts'
+                tech.mkdir(parents=True)
+                inspector=tech/'cat_typescript_conformance.py'
+                inspector.write_bytes(b'# inspector v1\n')
+                for name in ('Process.md','PI.md','TCE.md'):
+                    (root/name).write_text('fixture '+name,encoding='utf-8')
+                work=base_work()
+                work['compilation']={'process':'Process.md','pi':'PI.md','tce':'TCE.md'}
+                wp=self.write_work(root,work)
+                with patch.object(flow,'ROOT',installed):
+                    flow.record_conformance_evidence(wp,work,'implementation-conformance',
+                        {'status':'inconclusive','reason':'bounded evidence'})
+                    self.assertEqual(flow.conformance_evidence_status(
+                        wp,work,'implementation-conformance')['status'],'inconclusive')
+                    candidate=routing if changed=='routing' else inspector
+                    candidate.write_bytes(candidate.read_bytes()+b'# new semantics\n')
+                    verdict=flow.conformance_evidence_status(
+                        wp,work,'implementation-conformance')
+                self.assertEqual(verdict['status'],'stale',verdict)
+                self.assertIn('runtime',verdict['reason'])
+
+    def test_gate_receipt_cannot_drop_or_rebind_its_runtime_fingerprint(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            work = base_work()
+            for name in ('Process.md','PI.md','TCE.md'):
+                (root / name).write_text('fixture '+name, encoding='utf-8')
+            work['compilation']={'process':'Process.md','pi':'PI.md','tce':'TCE.md'}
+            path = self.write_work(root, work)
+            outcome = flow.record_conformance_evidence(path, work, 'model-conformance',
+                {'status':'inconclusive', 'reason':'synthetic gate fixture'})
+            receipt = Path(outcome['evidence'])
+            original = json.loads(receipt.read_bytes())
+            self.assertEqual(flow.conformance_evidence_status(path, work,
+                             'model-conformance')['status'], 'inconclusive')
+            missing = dict(original)
+            del missing['runtime_sha256']
+            receipt.write_bytes(flow.json_bytes(missing))
+            self.assertEqual(flow.conformance_evidence_status(path, work,
+                             'model-conformance')['status'], 'stale')
+            rebound = dict(original)
+            rebound['runtime_sha256'] = '0'*64
+            receipt.write_bytes(flow.json_bytes(rebound))
+            self.assertEqual(flow.conformance_evidence_status(path, work,
+                             'model-conformance')['status'], 'stale')
 
     def test_implementation_gate_receipt_stales_when_git_head_changes_without_file_changes(self):
         """U06: identical checkout files at a different HEAD cannot reuse a Gate."""
