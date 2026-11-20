@@ -50,6 +50,58 @@ class ExternalEvidenceTests(unittest.TestCase):
             e.update(reported_status='not-observed',observation_file=None,observation_sha256=None)
             r=evidence.inspect(raw,packet,DRIVER,t)
             self.assertEqual(r['status'],'inconclusive')
+    def test_observation_correlation_agrees_with_declared_receipt(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            ids={'request_id':'req-7','transaction_id':'tx-3','target_id':'object-9'}
+            packet['observations'][0]['correlation']=dict(ids)
+            observed=json.loads((root/'obs.json').read_bytes())
+            observed['correlation']=dict(ids)
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'obs.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            result=evidence.inspect(raw,packet,DRIVER,root)
+            self.assertEqual(result['status'],'consistent-receipts-only')
+            self.assertEqual(result['normative_status'],'inconclusive')
+            self.assertEqual(result['provider_authentication_status'],'not-run')
+
+    def test_observation_correlation_cannot_rebind_transaction_even_with_current_sha(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            packet['observations'][0]['correlation']={
+                'request_id':'req-7','transaction_id':'tx-3','target_id':'object-9'}
+            observed=json.loads((root/'obs.json').read_bytes())
+            observed['correlation']={
+                'request_id':'req-7','transaction_id':'tx-other','target_id':'object-9'}
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'obs.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            with self.assertRaisesRegex(evidence.ReceiptError,'observation correlation'):
+                evidence.inspect(raw,packet,DRIVER,root)
+
+    def test_observation_explicit_correlation_requires_receipt_identity(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            observed=json.loads((root/'obs.json').read_bytes())
+            observed['correlation']={
+                'request_id':'req-7','transaction_id':'tx-3','target_id':'object-9'}
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'obs.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            with self.assertRaisesRegex(evidence.ReceiptError,'observation correlation'):
+                evidence.inspect(raw,packet,DRIVER,root)
+
+    def test_malformed_observation_correlation_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            observed=json.loads((root/'obs.json').read_bytes())
+            observed['correlation']={'request_id':'req-7','transaction_id':''}
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'obs.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            with self.assertRaisesRegex(evidence.ReceiptError,'observation correlation'):
+                evidence.inspect(raw,packet,DRIVER,root)
+
     def test_wrong_source_or_model_sha_blocks(self):
         with tempfile.TemporaryDirectory() as t:
             raw,packet=inputs(Path(t));packet['source_sha256']['demo.tce']='c'*64
