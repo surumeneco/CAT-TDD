@@ -1,4 +1,4 @@
-"""Candidate compiler extension: meaningful domain, codec and integration probes."""
+"""Confirmed compiler domain/codec regressions; provenance IDs are not approval oracles."""
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -24,13 +24,12 @@ class JsonInstantTests(unittest.TestCase):
         from catlib import semantic_rules
         from catlib.markdown import parse_frontmatter
         path=ROOT/'Docs/Constraints/cat.compiler.json-instant.domain-spec.md'
-        decision=ROOT/'Docs/Decisions/CAT31-json-instant-approval-20261118.md'
-        self.assertTrue(decision.is_file())
         front=parse_frontmatter(path)
         self.assertEqual(front['status'],'confirmed')
-        self.assertEqual(front['decision_ref'],decision.relative_to(ROOT).as_posix())
-        self.assertIn('fe6d7ff63928f5b9a243a2e737b6e6b569f7b7d3ecdd83522f57c85baa7d44fe',
-                      decision.read_text(encoding='utf-8'))
+        # This is a declared provenance token, NOT independent attestation of
+        # the user's approval. Private approval documents are not test inputs.
+        self.assertEqual(front['decision_ref'],'CORE-CAT31-20261118-01')
+        self.assertIn('https://github.com/surumeneco/CAT-TDD/pull/86',front['source_refs'])
         source=semantic_rules.load(path,'cat.compiler',allow_draft=False)
         self.assertEqual(source['id'],'cat.compiler.json-instant')
         self.assertEqual(source['kind'],'domain-spec')
