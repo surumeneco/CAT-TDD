@@ -1653,7 +1653,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     result['unresolved_interfaces']=unresolved_interfaces if contract=='markdown-v2' else []
     result['pi_artifacts']=[fm['id'] for _,fm,_ in pi_docs]
     result['rule_obligations']=rule_obligations
-    result['normative_rule_inputs']=[{'id':d['id'],'kind':d['kind'],'sha256':d['sha256']} for d in rule_docs]
+    result['normative_rule_inputs']=[{'id':d['id'],'kind':d['kind'],'process':d['process'],
+                                      'sha256':d['sha256']} for d in rule_docs]
     result['named_type_definitions']=resolved_type_definitions
     result['unverified_rule_ids']=unverified_rule_ids
     result['effect_checks']=effect_checks

@@ -183,6 +183,12 @@ def evaluate(model_file,registry_file):
         source=docs[source_id]
         condition=rule.get('condition')
         targets=[part.strip() for part in condition.split(';')] if isinstance(condition,str) else []
+        declaring_process=source.get('process')
+        evaluated_process=model.get('process')
+        def in_declaring_tree(process):
+            return (isinstance(declaring_process,str) and bool(declaring_process)
+                    and isinstance(process,str) and
+                    (process==declaring_process or process.startswith(declaring_process+'.')))
         if (not isinstance(scope,dict)
             or set(scope)!={'schema','targets','evaluated_process','source_sha256'}
             or scope.get('schema')!='cat-rule-explicit-process-scope/v1'
@@ -192,6 +198,11 @@ def evaluate(model_file,registry_file):
             or rule.get('source_sha256')!=source.get('sha256')
             or not targets or any(not re.fullmatch(r'[^\W\d][\w-]*(?:\.[^\W\d][\w-]*)+',target,re.UNICODE)
                                   for target in targets)
+            # The original Source-bound scope grammar only permits descendants
+            # of its declaring Process. Internal Model/Registry hashes alone
+            # cannot justify a Rule exemption for a foreign Process.
+            or not in_declaring_tree(evaluated_process)
+            or not all(in_declaring_tree(target) for target in targets)
             or scope['targets']!=targets or model['process'] in targets):
             raise VerifierError('not-applicable scope binding invalid for '+rid)
         not_applicable[rid]={
