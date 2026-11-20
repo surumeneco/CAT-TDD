@@ -82,7 +82,15 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
             require(terminal.get('outcome_index') in (None,index),
                     'terminal allowed Outcome differs from Effect receipt')
         if reported=='not-observed':
-            _check_correlations([('trace run',runs[run]),('unobserved receipt',receipt)])
+            # With no Effect event, the receipt remains unproved. However an
+            # *explicit* terminal binding still names the same execution and
+            # must not contradict the run/receipt correlation. Do not require
+            # a terminal correlation when one was not supplied for this
+            # unobserved case: missing evidence stays inconclusive.
+            identities=[('trace run',runs[run]),('unobserved receipt',receipt)]
+            if terminal is not None and 'correlation' in terminal:
+                identities.append(('declared terminal',terminal))
+            _check_correlations(identities)
             require(event_id in (None,''),'unobserved Effect cannot claim trace event')
             rows.append({'execution_id':run,'rule_id':rid,'effect_target':target,
                          'status':'inconclusive','reason':'effect-not-observed'})
