@@ -19,6 +19,7 @@ from catlib import semantic_rules
 from catlib import decimal_integer
 from catlib import semantic_types
 from catlib import independent_coverage
+from catlib.markdown import parse_frontmatter
 from catlib import semantic_named_types as named_types
 
 
@@ -272,6 +273,11 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                           and all(doc['status']=='confirmed' for doc in rule_docs))
     return {
         'process':p['process'],
+        'source_authority':{'markdown-v2':'cat-markdown/v2',
+                            'markdown-v1':'cat-markdown/v1',
+                            'machine-only':'cat-machine/v2'}[pf.get('semantic_contract','markdown-v1')],
+        'source_language':(tf.get('language','en') if pf.get('semantic_contract')=='markdown-v2'
+                           else 'en'),
         'process_closed_world':p['closed_world'],
         'source_guard_audit':source_guard_audit,
         'constraint_scopes':sorted(constraint_scopes),
@@ -364,7 +370,11 @@ DIRECTION_ALIASES = {'受信': 'receive', '送信': 'send', '双方向': 'bidire
 
 
 def markdown_model(path):
+    # Front matter carries a separate normative authority/coverage claim. It
+    # must be validated along with body tables, not ignored as presentation.
+    front = parse_frontmatter(Path(path))
     text = markdown_body(path)
+    requirement = section(text, 'Coverage requirement', '網羅要求')
     sources = {}
     for row in table(text, 'Source artifacts', '出典Artifact'):
         ident = cell(row, 'Artifact ID')
@@ -438,7 +448,13 @@ def markdown_model(path):
                     tuple(sorted(split_list(cell(row, 'Unchanged state', '不変状態')))),
                     tuple(sorted(split_list(cell(row, 'Absent outputs/actions', '不在の出力・作用'))))))
 
-    return {'sources': sources, 'interfaces': interfaces, 'boundary': boundary,
+    return {'model_schema': front.get('schema'), 'model_process': front.get('process'),
+            'model_status': front.get('status'),
+            'model_authority': front.get('semantic_authority'),
+            'model_language': front.get('language'),
+            'coverage_requirement': (requirement.strip('`').strip()
+                                     if isinstance(requirement, str) else None),
+            'sources': sources, 'interfaces': interfaces, 'boundary': boundary,
             'operations': operations, 'triggers': triggers, 'fields': fields,
             'constraints': constraints, 'constraint_bindings':sorted(constraint_bindings),
             'definitions': definitions, 'rules': rules,
@@ -663,6 +679,40 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                 or actual.get('unresolved_domains')!=[]
                 or actual.get('unresolved_interfaces')!=[]):
             mismatches.append('normative_status_unjustified')
+    if Path(model).suffix.lower()!='.json':
+        # A genuine Markdown Model has no JSON proof receipts, but it still
+        # makes explicit claims in YAML and the Coverage requirement section.
+        # Recompute only what Source proves, never derive authority from those
+        # self-asserted labels. More complex obligations remain inconclusive.
+        for key, source_value in (
+            ('model_schema','cat-test-model/v2'),
+            ('model_process',expected['process']),
+            ('model_authority',expected['source_authority']),
+            ('model_language',expected['source_language']),
+        ):
+            if actual.get(key)!=source_value:
+                mismatches.append(key)
+        declared_coverage=actual.get('coverage_requirement')
+        declared_status=actual.get('model_status')
+        guard_audit=expected['source_guard_audit']
+        guard_proved=(bool(guard_audit['triggers'])
+                      and all(c['result']=='proved' and not c['unreachable_rules']
+                              for c in guard_audit['triggers'].values())
+                      and guard_audit['output_presence_proved']
+                      and not expected['unbound_pi_constraints'])
+        if declared_coverage not in ('closed','partial'):
+            mismatches.append('coverage_requirement_invalid')
+        elif declared_coverage=='closed' and (
+                not expected['process_closed_world'] or not guard_proved):
+            mismatches.append('markdown_closed_world_claim_unjustified')
+        if declared_status not in ('draft','confirmed'):
+            mismatches.append('model_status_invalid')
+        elif declared_status=='confirmed' and (
+                declared_coverage!='closed'
+                or not expected['source_all_confirmed']
+                or not expected['process_closed_world'] or not guard_proved
+                or expected['unverified_rule_ids'] or expected['unverified_effect_ids']):
+            mismatches.append('markdown_normative_status_unjustified')
     if Path(model).suffix.lower()!='.json' and expected.get('unverified_effect_ids'):
         mismatches.append('effect_totality: Markdown renderer lacks source-bound Effect proof receipts')
     if Path(model).suffix.lower()!='.json' and expected.get('intrinsic_rule_proofs'):
