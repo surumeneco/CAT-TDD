@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / '.cat-system' / 'scripts'), str(ROOT / 'tests')]
-from cat_compile_v2 import Blocked, expand_cases, load, selection_vectors
+from cat_compile_v2 import Blocked, expand_cases, load, render_model_markdown, selection_vectors
 from cat_model_conformance import validate
 from test_intrinsic_rule_proofs import approve_fixture
 from test_cat_compile_readable import write_v2
@@ -296,6 +296,68 @@ class OperationScopedPIConstraintsTests(unittest.TestCase):
             self.assertEqual(result['status'],'blocked',result)
             self.assertIn('source_guard_coverage',result['mismatches'])
             self.assertIn('normative_status_unjustified',result['mismatches'])
+
+    def test_markdown_model_retains_exact_pi_operation_constraint_bindings(self):
+        # Human-readable models may not silently lose the explicit Trigger
+        # scope that JSON models preserve for a Process with two PI owners.
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pis,tce=fixture(root)
+            model=load(p,pis,tce)
+            target=root/'TestModel.md'
+            rendered=render_model_markdown(model)
+            self.assertIn('## PI constraint bindings',rendered)
+            self.assertIn('| demo.scope.a.pi | A |',rendered)
+            target.write_text(rendered,encoding='utf-8')
+            self.assertEqual(validate(p,pis,tce,target)['status'],'passed')
+            tampered=rendered.replace('| demo.scope.a.pi | A |',
+                                     '| demo.scope.a.pi | B |',1)
+            self.assertNotEqual(tampered,rendered)
+            target.write_text(tampered,encoding='utf-8')
+            outcome=validate(p,pis,tce,target)
+            self.assertEqual(outcome['status'],'blocked',outcome)
+            self.assertIn('constraint_bindings',outcome['mismatches'])
+            target.write_text(rendered.replace('## PI constraint bindings',
+                                               '## hidden bindings',1),encoding='utf-8')
+            self.assertIn('constraint_bindings',
+                          validate(p,pis,tce,target)['mismatches'])
+
+    def test_markdown_model_retains_result_time_constraint_as_unproved(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=write_v2(root,False)
+            for source in (p,pi,tce):approve_fixture(source)
+            pi.write_text(pi.read_text(encoding='utf-8') +
+                          '\n| `output.accepted == true` |\n',encoding='utf-8')
+            model=load(p,pi,tce,allow_draft=True)
+            self.assertEqual(model['status'],'draft')
+            target=root/'TestModel.md'
+            rendered=render_model_markdown(model)
+            self.assertIn('## PI constraint bindings',rendered)
+            self.assertIn('non-input result relation',rendered)
+            target.write_text(rendered,encoding='utf-8')
+            self.assertEqual(validate(p,pi,tce,target,allow_draft=True)['status'],'passed')
+            target.write_text(rendered.replace('non-input result relation','—',1),
+                              encoding='utf-8')
+            outcome=validate(p,pi,tce,target,allow_draft=True)
+            self.assertEqual(outcome['status'],'blocked',outcome)
+            self.assertIn('constraint_bindings',outcome['mismatches'])
+
+    def test_japanese_markdown_retains_unbound_result_constraint(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=write_v2(root,True)
+            for source in (p,pi,tce):approve_fixture(source)
+            pi.write_text(pi.read_text(encoding='utf-8') +
+                          '\n| `output.accepted == 真` |\n',encoding='utf-8')
+            model=load(p,pi,tce,allow_draft=True)
+            target=root/'TestModel.md'
+            document=render_model_markdown(model)
+            self.assertIn('## PI制約の束縛',document)
+            self.assertIn('(output.accepted == 真)',document)
+            self.assertIn('non-input result relation',document)
+            target.write_text(document,encoding='utf-8')
+            self.assertEqual(validate(p,pi,tce,target,allow_draft=True)['status'],'passed')
 
     def test_unbound_constraint_receipt_is_source_bound_and_not_erasable(self):
         with tempfile.TemporaryDirectory() as td:
