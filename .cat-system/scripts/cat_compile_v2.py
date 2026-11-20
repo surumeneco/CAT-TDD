@@ -1726,16 +1726,20 @@ def expand_cases(model, vectors):
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
         env={}
+        # An explicit vector.operation resolves an otherwise ambiguous accept
+        # operation without altering Source-level coverage/closure proofs.
+        # The selected operation's Presence overrides must be used for this
+        # witness, rather than discarding them because two accepts share a Trigger.
+        bindings=_input_operation_bindings(model.get('pi_operations',[]),test['trigger'])
+        if operation is not None:
+            bindings[operation['source_pi']]=operation
         active_inputs=(set(inputs) if 'pi_constraint_scopes' not in model or operation is None
-                       else {name for name in inputs if fields[name].get('source_pi')
-                             in _input_operation_bindings(model.get('pi_operations',[]),test['trigger'])})
+                       else {name for name in inputs if fields[name].get('source_pi') in bindings})
         require(set(test['input'])<=active_inputs,
                 'vector contains input from an inactive PI Operation')
         for name in sorted(active_inputs):
             field=fields[name]
-            presence=_trigger_input_presence(
-                field,_input_operation_bindings(model.get('pi_operations',[]),test['trigger']),
-                model.get('operation_presence',[]))
+            presence=_trigger_input_presence(field,bindings,model.get('operation_presence',[]))
             val=_vector_input_value(field['domain'],presence,test['input'],name)
             if val is not typed.MISSING:env[name]=val
         for name,val in test['state'].items():
