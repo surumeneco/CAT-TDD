@@ -12,6 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'.cat-system'/'scripts'),str(ROOT/'tests')]
 from cat_compile_v2 import Blocked, load, expand_cases,selection_vectors
 from cat_model_conformance import validate
+import cat_flow
 from test_pi_constraint_operation_scope import fixture
 
 
@@ -53,6 +54,24 @@ class ProvidedResponseScopeTests(unittest.TestCase):
                 'cases':[{'id':'a_reply','trigger':'A','input':{'input.a':True,'input.b':True,'input.other':False},
                           'state':{'state.done':False}}]})
             self.assertEqual(expanded[0]['source_tce'],'A.false')
+
+    def test_formal_process_closure_fails_closed_without_response_binding(self):
+        # The fixture declares a logical response available to the A Trigger.
+        # This only proves source-consistent local closure, not external reply
+        # timing, request correlation, or service delivery correctness.
+        for linked, expected in ((True, 'passed'), (False, 'blocked')):
+            with self.subTest(linked=linked), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                p,pis,tce=source(root, linked=linked)
+                work={'id':'test.provided','scope':{'process_ids':['demo.scope']},
+                    'compilation':{'process':p.name,'pis':[pi.name for pi in pis],
+                        'tce':tce.name,'allow_partial':False,'allow_draft':False}}
+                workpath=root/'Work.json'
+                workpath.write_text(json.dumps(work),encoding='utf-8')
+                verdict=cat_flow.conformance_work(workpath,work,'process-closure')
+                self.assertEqual(verdict['status'],expected,verdict)
+                if not linked:
+                    self.assertIn('inactive accepted Operation',verdict['reason'])
 
     def test_model_cannot_rewrite_provider_trigger_as_unbound(self):
         with tempfile.TemporaryDirectory() as td:
