@@ -40,6 +40,21 @@ class ExecutionTraceTests(unittest.TestCase):
         self.assertEqual(result['trace_integrity'],'consistent')
         self.assertEqual(result['normative_status'],'inconclusive')
         self.assertEqual(result['external_effect_proof'],'not-run')
+    def test_declared_outcome_index_is_exact_positive_integer(self):
+        # Standalone trace checks must reject malformed identifiers before
+        # any Effect receipt correlation is attempted.
+        for index in (1,5):
+            for invalid in (True,False,1.0,0.0):
+                with self.subTest(event=index,value=invalid):
+                    model,trace=payload()
+                    trace['events'][index]['outcome_index']=invalid
+                    with self.assertRaisesRegex(diagnostic.TraceError,'outcome index'):
+                        diagnose(model,trace)
+        model,trace=payload()
+        trace['events'][1]['outcome_index']=1
+        trace['events'][5]['outcome_index']=1
+        self.assertEqual(diagnose(model,trace)['trace_integrity'],'consistent')
+
     def test_cross_run_response_is_not_one_execution(self):
         m,t=payload()
         t['runs'].append({'execution_id':'run-2','entry_operation':'manual','peer':'command'})
