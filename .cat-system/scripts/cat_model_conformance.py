@@ -235,6 +235,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                                  if check['result']!='proved')
     source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
     constraint_scopes=[]
+    unbound_constraints=[]
     for _,fm,pi in pi_docs:
         accepted=sorted({op['trigger'] for op in pi.get('operations',[])
                          if op['direction']=='accept'})
@@ -247,9 +248,14 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
             # a field-name-only matching expression.
             owner_only=all(ref in own_fields for ref in refs)
             input_only=owner_only and all(own_fields[ref]['role']=='input' for ref in refs)
-            constraint_scopes.append((fm['id'],
-                       tuple(accepted if input_only else []),
+            active=accepted if input_only else []
+            constraint_scopes.append((fm['id'],tuple(active),
                        format_expr(expr,language=fm.get('language','en'))))
+            if not active and pf.get('semantic_contract')=='markdown-v2':
+                unbound_constraints.append({
+                    'source_pi':fm['id'], 'expr':expr,
+                    'reason':('non-input result relation' if not input_only
+                              else 'no accepted Operation to bind PI constraint')})
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
     intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
@@ -263,6 +269,10 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'process_closed_world':p['closed_world'],
         'source_guard_audit':source_guard_audit,
         'constraint_scopes':sorted(constraint_scopes),
+        # A result-time or ownerless PI constraint is not proved by local
+        # acceptance-Guard partitioning. Independently retain its exact Source.
+        'unbound_pi_constraints':(unbound_constraints
+                                  if pf.get('semantic_contract')=='markdown-v2' else None),
         'sources': {
             fm['id']: (fm['kind'], hashlib.sha256(Path(path).read_bytes()).hexdigest())
             for path, fm in files
@@ -528,6 +538,7 @@ def json_model(path):
         'constraint_scopes':sorted((e['source_pi'],tuple(e['triggers']),
              format_expr(e['expr'],language=model.get('language','en')))
              for e in model.get('pi_constraint_scopes',[])),
+        'unbound_pi_constraints':model.get('unbound_pi_constraints'),
         'definitions': definitions,
         'rules': rules,
         'effects': effects,
@@ -542,13 +553,13 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes')
+        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
     for key in checks:
         # Python structural == conflates bool with int (True == 1). Domains
         # and named type definitions contain typed literal values and must
         # retain scalar identity throughout their nested inventory.
         same=(semantic_types.same(actual.get(key),expected.get(key))
-              if key in ('domains','named_type_definitions')
+              if key in ('domains','named_type_definitions','unbound_pi_constraints')
               else actual.get(key)==expected.get(key))
         if not same:
             mismatches.append(key)
@@ -599,7 +610,8 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
         guard_proved=(bool(source_guard['triggers'])
                       and all(c['result']=='proved' and not c['unreachable_rules']
                               for c in source_guard['triggers'].values())
-                      and source_guard['output_presence_proved'])
+                      and source_guard['output_presence_proved']
+                      and not expected['unbound_pi_constraints'])
         if actual.get('coverage_requirement')=='closed' and not guard_proved:
             if 'source_guard_coverage' not in mismatches:
                 mismatches.append('source_guard_coverage')
