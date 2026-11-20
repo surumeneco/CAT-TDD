@@ -662,24 +662,28 @@ def conformance_work(wpath, w, kind):
             model = read_json(runtime/'process-closure.model.json')
             rule_status='passed'
             verifier_evidence=None
-            if model.get('unverified_rule_ids'):
-                if not conf.get('verifier_registry'):
-                    rule_status='inconclusive'
-                else:
-                    try:
-                        registry_path=compilation_path(wpath,w,conf,'verifier_registry',True)
-                        verified=verifier_runtime.evaluate(runtime/'process-closure.model.json',registry_path)
-                        verifier_path=runtime/'process-closure-verifiers.json'
-                        verifier_path.write_bytes(json_bytes(verified))
-                        verifier_evidence=str(verifier_path)
-                        # A failing registered assertion invalidates this Gate's
-                        # verification evidence; it does not refute the free-text
-                        # normative Rule. Passing fixture checks still cannot
-                        # elevate an unproved Rule to normative `passed`.
-                        rule_status=('failed' if verified.get('status')=='failed'
-                                     else verified.get('normative_status','inconclusive'))
-                    except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
-                        return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
+            # An explicitly submitted registry is evidence to validate even
+            # when every Rule already has an intrinsic model proof. Otherwise
+            # malformed or failed submitted evidence is silently bypassed.
+            # Its non-normative fixture status cannot *replace* a valid source-
+            # bound intrinsic proof or upgrade an unverified free-text Rule.
+            if model.get('unverified_rule_ids') and not conf.get('verifier_registry'):
+                rule_status='inconclusive'
+            if conf.get('verifier_registry'):
+                try:
+                    registry_path=compilation_path(wpath,w,conf,'verifier_registry',True)
+                    verified=verifier_runtime.evaluate(runtime/'process-closure.model.json',registry_path)
+                    verifier_path=runtime/'process-closure-verifiers.json'
+                    verifier_path.write_bytes(json_bytes(verified))
+                    verifier_evidence=str(verifier_path)
+                    if verified.get('status')=='failed':
+                        # Failed submitted assertions invalidate the evidence,
+                        # not the underlying normative Rule itself.
+                        rule_status='failed'
+                    elif model.get('unverified_rule_ids'):
+                        rule_status=verified.get('normative_status','inconclusive')
+                except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
+                    return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
             if rule_status=='failed':
                 return {'gate':kind,'status':'blocked','verifier_evidence':verifier_evidence,
                         'reason':'one or more registered verifier fixture assertions failed; normative meaning remains unproved'}
