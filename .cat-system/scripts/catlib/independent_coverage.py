@@ -126,6 +126,35 @@ def _independent_string_cells(domain, field, clauses):
     return [*sorted(constants),other]
 
 
+def _independent_integer_pair_values(names, domains, inputs, current_presence, clauses, definitions):
+    """Independently derive a two-reference equality truth partition."""
+    pair=sorted(name for name in names if name in domains
+                and isinstance(domains[name],dict)
+                and domains[name].get('type')=='integer'
+                and set(domains[name]) <= {'type','min'}
+                and (name not in inputs or current_presence(name)=='required'))
+    if len(pair)!=2:return {}
+    a,b=pair
+    domain=domains[a]
+    if domain!=domains[b]:return {}
+    start=domain.get('min',0)
+    if type(start) is not int:return {}
+    pair_set=set(pair)
+    def safe(expr):
+        if not isinstance(expr,dict):return False
+        if not (used_refs(expr,definitions)&pair_set):return True
+        kind=expr.get('op')
+        args=expr.get('args',[])
+        if kind in ('and','or','not') and isinstance(args,list):
+            return all(safe(x) for x in args)
+        if kind in ('eq','ne') and isinstance(args,list) and len(args)==2:
+            return (all(isinstance(x,dict) and set(x)=={'ref'} for x in args)
+                    and {x['ref'] for x in args}==pair_set)
+        return False
+    if not all(safe(expr) for expr in clauses):return {}
+    return {a:[start,start+1],b:[start,start+1]}
+
+
 def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
     rules=[r for _,_,tce in tces for r in tce['rules']]
     # Acceptance Guard-space may use only constraints whose every reference
@@ -183,6 +212,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         for clause in [*constraints,*(r['when'] for r in applicable)]:
             names.update(used_refs(clause,definitions))
         dimensions=[];possible=True;partition_fields=[];partition_kinds=set()
+        clauses=[*constraints,*(r['when'] for r in applicable)]
+        integer_pair=_independent_integer_pair_values(names,domains,inputs,current_presence,clauses,definitions)
         for field in sorted(names):
             if field not in domains or roles.get(field) in ('output','action'):
                 possible=False;break
@@ -210,6 +241,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                 if values is not None:
                     partition_fields.append(field)
                     partition_kinds.add('string')
+            if values is None and field in integer_pair:
+                values=integer_pair[field]
+                partition_fields.append(field)
+                partition_kinds.add('integer_ref_pair')
             if values is None:
                 possible=False;break
             dimensions.append(values)
@@ -248,7 +283,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
-                    else 'integer-string-literal-partition/v1')
+                    else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
+                    else 'mixed-exact-predicate-partition/v1')
             receipt.update(proof_method=method,
                            partition_fields=partition_fields,
                            abstract_state_count=math.prod(map(len,dimensions)),
