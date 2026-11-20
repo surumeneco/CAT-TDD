@@ -11,6 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'.cat-system'/'scripts'))
 from cat_compile_v2 import Blocked,load
 import cat_model_conformance as independent
+import cat_flow
 from test_pi_constraint_operation_scope import fixture
 
 
@@ -53,6 +54,23 @@ class ObservationAvailabilityTests(unittest.TestCase):
             p,pis,t=sample(Path(temp),'undefined_trigger')
             with self.assertRaises(Blocked):
                 load(p,pis,t)
+
+    def test_formal_process_closure_rejects_unavailable_observation(self):
+        # A source-owned Trigger availability is a syntactic guard for the
+        # local formal Gate; it is not evidence of an external provider's timing.
+        for availability, expected in (('B', 'passed'), ('A', 'blocked')):
+            with self.subTest(availability=availability), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                p,pis,tce=sample(root, availability)
+                work={'id':'test.observation-scope','scope':{'process_ids':['demo.scope']},
+                    'compilation':{'process':p.name,'pis':[pi.name for pi in pis],
+                        'tce':tce.name,'allow_partial':False,'allow_draft':False}}
+                workpath=root/'Work.json'
+                workpath.write_text(json.dumps(work),encoding='utf-8')
+                verdict=cat_flow.conformance_work(workpath,work,'process-closure')
+                self.assertEqual(verdict['status'],expected,verdict)
+                if availability == 'A':
+                    self.assertIn('Observation unavailable at Trigger',verdict['reason'])
 
     def test_model_cannot_forge_observation_availability(self):
         with tempfile.TemporaryDirectory() as temp:
