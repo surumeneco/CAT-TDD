@@ -978,24 +978,30 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
 
 
 def _integer_reference_equality_values(fields, names, predicates, input_presence, definitions):
-    """Exact truth classes for equality of two like, half-infinite integers.
+    """Exact Guard equality classes for two references of one integer Domain.
 
-    This is a *local Guard* proof, not a state reachability or Effect proof.
-    The two references must have the identical unbounded upper interval and
-    every predicate use must be the pair's ==/!= under Boolean composition.
-    Thus {equal, distinct} is exhaustive, irrespective of concrete magnitude.
+    The common Domain must contain at least two integers, and every predicate
+    involving either reference must compare the pair only by ==/!= under
+    Boolean composition. Representatives certify equal vs distinct, not
+    reachable states, Effect totality, or implementation behavior.
     """
     names=set(names)
     candidates=sorted(name for name in names if name in fields
                       and fields[name]['domain'].get('type')=='integer'
-                      and set(fields[name]['domain']) <= {'type','min'}
+                      and set(fields[name]['domain']) <= {'type','min','max'}
                       and (name not in input_presence or input_presence[name]=='required'))
     if len(candidates)!=2:return {}
     a,b=candidates
     domain=fields[a]['domain']
     if domain!=fields[b]['domain']:return {}
-    lower=domain.get('min',0)
-    if type(lower) is not int:return {}
+    low,high=domain.get('min'),domain.get('max')
+    if low is not None and type(low) is not int:return {}
+    if high is not None and type(high) is not int:return {}
+    # An unbounded lower interval can use an adjacent pair below its maximum.
+    # A bounded singleton has no distinct-value class and is already handled
+    # by exact finite enumeration, not by this two-class proof.
+    lower=low if low is not None else (min(0,high-1) if high is not None else 0)
+    if high is not None and lower+1>high:return {}
     pair=set(candidates)
     def supported(node):
         if not isinstance(node,dict):return False

@@ -131,14 +131,18 @@ def _independent_integer_pair_values(names, domains, inputs, current_presence, c
     pair=sorted(name for name in names if name in domains
                 and isinstance(domains[name],dict)
                 and domains[name].get('type')=='integer'
-                and set(domains[name]) <= {'type','min'}
+                and set(domains[name]) <= {'type','min','max'}
                 and (name not in inputs or current_presence(name)=='required'))
     if len(pair)!=2:return {}
     a,b=pair
     domain=domains[a]
     if domain!=domains[b]:return {}
-    start=domain.get('min',0)
-    if type(start) is not int:return {}
+    start,end=domain.get('min'),domain.get('max')
+    if start is not None and type(start) is not int:return {}
+    if end is not None and type(end) is not int:return {}
+    if start is None:
+        start=(end-1 if end is not None and end<1 else 0)
+    if end is not None and start>=end:return {}
     pair_set=set(pair)
     def safe(expr):
         if not isinstance(expr,dict):return False
