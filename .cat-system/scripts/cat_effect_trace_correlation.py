@@ -77,6 +77,12 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         # Rule/Outcome. If the submitted terminal explicitly names another,
         # the packet is contradictory, not merely lacking Effect evidence.
         if terminal is not None:
+            # Missing terminal index is an unproved binding, but a present
+            # JSON bool/float is not a valid 1-origin integer outcome index.
+            if 'outcome_index' in terminal:
+                require(type(terminal['outcome_index']) is int
+                        and terminal['outcome_index'] >= 1,
+                        'terminal outcome index must be a positive integer')
             require(terminal.get('rule_id') in (None,rid),
                     'terminal Rule differs from Effect receipt')
             require(terminal.get('outcome_index') in (None,index),
@@ -103,6 +109,9 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         require(event is not None and event['kind'] in ('request','replace','followup'),
                 'Effect event missing or not a supported side-effect kind')
         require(event['execution_id']==run,'Effect event belongs to another execution')
+        require(type(event.get('outcome_index')) is int
+                and event['outcome_index'] >= 1,
+                'Effect event outcome index must be a positive integer')
         require(event.get('rule_id')==rid and event.get('outcome_index')==index
                 and event.get('effect_target')==target,
                 'Effect event Rule/Outcome/target does not match Source-bound receipt')
