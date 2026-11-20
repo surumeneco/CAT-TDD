@@ -128,7 +128,8 @@ def _independent_string_cells(domain, field, clauses):
 
 def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
     rules=[r for _,_,tce in tces for r in tce['rules']]
-    constraints=[c for _,_,pi in pi_docs for c in pi.get('constraints',[])]
+    constraint_sources=[(fm['id'],c) for _,fm,pi in pi_docs
+                        for c in pi.get('constraints',[])]
     definitions={x['id']:x for x in domain_rule['definitions']} if domain_rule else {}
     inputs={}
     outputs={}
@@ -157,6 +158,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
         chosen=accept[0] if accept else None
+        constraints=[expr for owner,expr in constraint_sources
+                     if chosen is not None and chosen['source_pi']==owner]
         def current_presence(field):
             info=inputs[field]
             selected=[ov for ov in overrides if chosen and ov['operation']==chosen['id']
