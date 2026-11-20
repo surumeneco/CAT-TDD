@@ -381,6 +381,35 @@ def markdown_model(path):
         digest = clean_expr(cell(row, 'SHA-256'))
         sources[ident] = (cell(row, 'Kind', '種別'), digest)
 
+    rule_sources = {}
+    for row in table(text, 'Normative rule sources', '規範Rule出典'):
+        ident=cell(row,'Source ID','出典ID')
+        require(ident not in rule_sources,'duplicate Markdown normative Rule source')
+        rule_sources[ident]=(cell(row,'Kind','種別'),cell(row,'Declaring Process','宣言元Process'),
+                             clean_expr(cell(row,'SHA-256')))
+
+    rule_obligations = {}
+    for row in table(text,'Normative rule obligations','規範Rule義務'):
+        ident=cell(row,'ID')
+        require(ident not in rule_obligations,'duplicate Markdown normative Rule obligation')
+        scope=cell(row,'Scope binding','適用範囲束縛')
+        if scope=='—':
+            scope=None
+        else:
+            try:scope=json.loads(scope)
+            except (ValueError,TypeError) as exc:
+                raise Blocked('invalid Markdown normative Rule scope binding') from exc
+        rule_obligations[ident]=(
+            cell(row,'Source artifact','出典Artifact'),
+            cell(row,'Condition','適用条件'),
+            cell(row,'Requirement','要求'),
+            cell(row,'Verification contract','検証契約'),
+            cell(row,'Verification status','検証状態'),
+            (None if cell(row,'Source SHA-256','出典SHA-256')=='—'
+             else cell(row,'Source SHA-256','出典SHA-256')),
+            scope,
+        )
+
     interfaces = tuple(sorted(cell(row, 'PI') for row in table(text, 'Process interfaces', 'Process境界')))
 
     boundary_rows = table(text, 'PI boundary', 'PI境界')
@@ -454,7 +483,8 @@ def markdown_model(path):
             'model_language': front.get('language'),
             'coverage_requirement': (requirement.strip('`').strip()
                                      if isinstance(requirement, str) else None),
-            'sources': sources, 'interfaces': interfaces, 'boundary': boundary,
+            'sources': sources, 'normative_rule_inputs':rule_sources,
+            'rule_obligations':rule_obligations, 'interfaces': interfaces, 'boundary': boundary,
             'operations': operations, 'triggers': triggers, 'fields': fields,
             'constraints': constraints, 'constraint_bindings':sorted(constraint_bindings),
             'definitions': definitions, 'rules': rules,
@@ -586,7 +616,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     if Path(model).suffix.lower()!='.json':
         # Markdown need not carry JSON proof receipts, but it must preserve
         # the normative PI/Operation Trigger and unresolved result-time scope.
-        checks += ('constraint_bindings',)
+        checks += ('constraint_bindings','normative_rule_inputs','rule_obligations')
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
     for key in checks:

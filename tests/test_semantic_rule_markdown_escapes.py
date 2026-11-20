@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'.cat-system'/'scripts'))
 from catlib import semantic_rules
-from cat_compile_v2 import load
+from cat_compile_v2 import load, render_model_markdown
 import cat_model_conformance as independent
 from test_intrinsic_rule_proofs import build
 
@@ -76,6 +76,32 @@ class RuleMarkdownEscapeTests(unittest.TestCase):
             self.assertEqual(parsed['verification_contract'],r'Test \w+ with a | b')
             model=load(p,pi,t,common_rules=[r],allow_draft=True)
             self.assertEqual(model['rule_obligations'][0]['requirement'],parsed['requirement'])
+
+            markdown=root/'Model.md'
+            markdown.write_text(render_model_markdown(model),encoding='utf-8')
+            self.assertIn(r'Keep left \| right and literal \ path',markdown.read_text(encoding='utf-8'))
+            self.assertEqual(independent.validate(p,pi,[t],markdown,
+                                                 common_rules=[r],allow_draft=True)['status'],'passed')
+
+    def test_japanese_markdown_retains_rule_condition_and_unverified_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            from test_cat_compile_readable import write_v2
+            from test_intrinsic_rule_proofs import approve_fixture
+            p,pi,t,r=build(root,requirement=r'検証\dの結果を保持',
+                           verification=r'外部観測\wの結果',
+                           condition='demo.process.other')
+            p,pi,t=write_v2(root,True)
+            for item in (p,pi,t):approve_fixture(item)
+            model=load(p,pi,t,common_rules=[r])
+            self.assertEqual(model['language'],'ja')
+            path=root/'TestModel.md'
+            rendered=render_model_markdown(model)
+            self.assertIn('## 規範Rule出典',rendered)
+            self.assertIn('## 規範Rule義務',rendered)
+            path.write_text(rendered,encoding='utf-8')
+            self.assertEqual(independent.validate(p,pi,[t],path,common_rules=[r])['status'],'passed')
+
 
 
 if __name__=='__main__':unittest.main()
