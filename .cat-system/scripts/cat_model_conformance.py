@@ -149,6 +149,31 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         fields[item['id']] = 'action'
         domains[item['id']]=resolve_domain(item['domain'])
 
+    # Derive the PI-input availability constraint directly from Source. A
+    # submitted Model with a forged `confirmed` flag must not bypass the
+    # Compiler's accepted-Operation check.
+    if any('operations' in artifact for _,_,artifact in pi_docs):
+        from cat_compile_v2 import used_refs
+        reference_definitions={item['id']:item for item in domain['definitions']} if domain else {}
+        accepts={}
+        for _,fm,artifact in pi_docs:
+            for op in artifact.get('operations',[]):
+                if op['direction']=='accept':
+                    accepts.setdefault(op['trigger'],[]).append(fm['id'])
+        for _,_,artifact in tces:
+            for rule in artifact['rules']:
+                owners=accepts.get(rule['trigger'],[])
+                if len(owners)>1:
+                    continue  # Ambiguous accepted Operations remain unproved.
+                owner=owners[0] if owners else None
+                refs=used_refs(rule['when'],reference_definitions)
+                for result in rule['allowed']:
+                    for effect in result['write']:
+                        refs.update(used_refs(effect['expr'],reference_definitions))
+                invalid=sorted(ref for ref in refs if fields.get(ref)=='input'
+                               and field_owners.get(ref)!=owner)
+                require(not invalid,'Source TCE reads an inactive PI input at '+rule['trigger']+': '+str(invalid))
+
     state_ids = {key for key, role in fields.items() if role == 'state'}
     emitted_ids = {key for key, role in fields.items() if role in ('output', 'action')}
 

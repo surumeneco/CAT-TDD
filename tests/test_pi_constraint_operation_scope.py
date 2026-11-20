@@ -148,6 +148,29 @@ class OperationScopedPIConstraintsTests(unittest.TestCase):
                                                    'state':{'state.done':False}}]})
             self.assertEqual(cases[0]['source_tce'],'B.done')
 
+    def test_other_pi_input_cannot_drive_a_trigger_guard(self):
+        with tempfile.TemporaryDirectory() as td:
+            p, pis, tce = fixture(Path(td))
+            original=tce.read_text(encoding='utf-8')
+            tce.write_text(original.replace(
+                '| B.done | B | `true` | 1 | `state.done = true` |',
+                '| B.true | B | `input.a` | 1 | `state.done = true` |\n'
+                '| B.false | B | `not input.a` | 1 | `state.done = false` |'),
+                encoding='utf-8')
+            with self.assertRaises(Blocked):
+                load(p, pis, tce)
+
+    def test_other_pi_input_cannot_drive_a_trigger_effect(self):
+        with tempfile.TemporaryDirectory() as td:
+            p, pis, tce = fixture(Path(td))
+            original=tce.read_text(encoding='utf-8')
+            tce.write_text(original.replace(
+                '| B.done | B | `true` | 1 | `state.done = true` |',
+                '| B.done | B | `true` | 1 | `state.done = input.a` |'),
+                encoding='utf-8')
+            with self.assertRaises(Blocked):
+                load(p, pis, tce)
+
     def test_scope_forgery_is_detected_by_independent_model_conformance(self):
         with tempfile.TemporaryDirectory() as td:
             p, pis, tce = fixture(Path(td))
