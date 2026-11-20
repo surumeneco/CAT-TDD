@@ -169,9 +169,38 @@ def evaluate(model_file,registry_file):
         for source_id,doc in docs.items():
             if source_id not in recorded or recorded[source_id].get('sha256')!=doc.get('sha256'):
                 raise VerifierError('source record hash mismatch for '+source_id)
+    not_applicable={}
     for rid,rule in rules.items():
-        if rule.get('source_artifact') not in docs:
+        source_id=rule.get('source_artifact')
+        if source_id not in docs:
             raise VerifierError('unbound normative rule source '+rid)
+        if rule.get('verification_status')!='not-applicable':
+            continue
+        # Only a traceable, syntactically unambiguous Process exclusion may
+        # suppress a verifier obligation. This verifies the Model's internal
+        # source binding; independent Source-to-Model verification is separate.
+        scope=rule.get('scope_binding')
+        source=docs[source_id]
+        condition=rule.get('condition')
+        targets=[part.strip() for part in condition.split(';')] if isinstance(condition,str) else []
+        if (not isinstance(scope,dict)
+            or set(scope)!={'schema','targets','evaluated_process','source_sha256'}
+            or scope.get('schema')!='cat-rule-explicit-process-scope/v1'
+            or not isinstance(model.get('process'),str)
+            or scope['evaluated_process']!=model['process']
+            or scope['source_sha256']!=source.get('sha256')
+            or rule.get('source_sha256')!=source.get('sha256')
+            or not targets or any(not re.fullmatch(r'[^\W\d][\w-]*(?:\.[^\W\d][\w-]*)+',target,re.UNICODE)
+                                  for target in targets)
+            or scope['targets']!=targets or model['process'] in targets):
+            raise VerifierError('not-applicable scope binding invalid for '+rid)
+        not_applicable[rid]={
+            'rule_id':rid,'source_artifact':source_id,
+            'source_sha256':source['sha256'],
+            'status':'not-applicable','normative_status':'not-applicable',
+            'reason':'source-bound Process target list excludes evaluated Process',
+            'scope_binding':scope,'verification_scope':'explicit-process-scope-only',
+        }
     seen=set();out=[]
     for e in entries:
         if not isinstance(e,dict) or not {'rule_id','source_artifact','source_sha256','subject','verifier_id','fixture','assertions'}<=set(e):
@@ -181,6 +210,8 @@ def evaluate(model_file,registry_file):
             raise VerifierError('duplicate/unknown rule '+str(rid))
         seen.add(rid)
         rule=rules[rid]
+        if rid in not_applicable:
+            raise VerifierError('cannot register verifier for not-applicable rule '+rid)
         source=docs.get(e['source_artifact'])
         if rule['source_artifact']!=e['source_artifact'] or source is None or source['sha256']!=e['source_sha256']:
             raise VerifierError('rule/source hash mismatch '+rid)
@@ -220,9 +251,12 @@ def evaluate(model_file,registry_file):
                     'runner_sha256':e.get('runner',{}).get('sha256'),
                     'checks':checks})
     for rid in sorted(set(rules)-seen):
-        out.append({'rule_id':rid,'source_artifact':rules[rid]['source_artifact'],
-                    'status':'not-run','reason':'no registered verifier for normative rule'})
-    statuses=[e['status'] for e in out]
+        if rid in not_applicable:
+            out.append(not_applicable[rid])
+        else:
+            out.append({'rule_id':rid,'source_artifact':rules[rid]['source_artifact'],
+                        'status':'not-run','reason':'no registered verifier for normative rule'})
+    statuses=[e['status'] for e in out if e['status']!='not-applicable']
     if 'failed' in statuses:status='failed'
     elif 'not-run' in statuses:status='inconclusive'
     elif statuses and all(s=='passed' for s in statuses):status='passed'

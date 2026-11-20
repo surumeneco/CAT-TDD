@@ -103,6 +103,12 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
     # These rules have meaning independent of TCE tests; preserve each as a
     # first-class implementation obligation with source attribution.
     for rule in model.get('rule_obligations',[]):
+        # An explicit source-bound exclusion is a verified lack of obligation
+        # for this Process, not an outstanding runtime Rule check. Keep the
+        # original Rule and its evidence in TestModel; do not silently discard
+        # it from the normative inventory.
+        if rule.get('verification_status')=='not-applicable':
+            continue
         obligations.append(item(
             'normative-rule.' + rule['id'], 'domain',
             rule['source_artifact']+'#'+rule['id'],
