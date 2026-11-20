@@ -1007,6 +1007,33 @@ def _presence_accepted_operation(operations,trigger):
     return (matches[0] if matches else None),None
 
 
+def _input_operation_bindings(operations, trigger):
+    """Local trigger readability only; does not prove peer/caller correlation.
+
+    A provided PI's receive field is a reply, not a new external Trigger.
+    It may be read by the caller's TCE only when a provided Operation has
+    explicitly named that caller Trigger. An unspecified provide Trigger does
+    not grant blanket permission, and ambiguous providers grant none.
+    """
+    matches=[op for op in operations if op['direction']=='accept'
+             and op.get('trigger')==trigger]
+    if len(matches)>1:
+        return {}  # Existing ambiguous-accept proof remains unproven.
+    bindings={op['source_pi']:op for op in matches}
+    provided={}
+    for op in operations:
+        if op['direction']=='provide' and op.get('trigger')==trigger:
+            provided.setdefault(op['source_pi'],[]).append(op)
+    for owner,items in provided.items():
+        if owner not in bindings and len(items)==1:
+            bindings[owner]=items[0]
+    return bindings
+
+
+def _trigger_input_presence(field, bindings, overrides):
+    return _presence_for_field(field,bindings.get(field.get('source_pi')),overrides)
+
+
 def _presence_for_field(field,operation,overrides):
     result=field.get('presence','required')
     if operation is not None and operation['source_pi']==field.get('source_pi'):
@@ -1383,14 +1410,14 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                       and op.get('trigger')==rule['trigger']]
             if len(accepted)>1:
                 continue  # The existing ambiguous-Operation audit fails closed.
-            owned=accepted[0]['source_pi'] if accepted else None
+            input_owners=_input_operation_bindings(pi_operations,rule['trigger'])
             refs=used_refs(rule['when'],definitions)
             for outcome in rule['allowed']:
                 for write in outcome['write']:
                     refs.update(used_refs(write['expr'],definitions))
             invalid=sorted(ref for ref in refs if ref in pi_fields
                            and pi_fields[ref]['role']=='input'
-                           and pi_fields[ref]['source_pi']!=owned)
+                           and pi_fields[ref]['source_pi'] not in input_owners)
             require(not invalid,
                     f'TCE {rule["id"]} reads PI input from inactive accepted Operation at {rule["trigger"]}: {invalid}')
             unavailable=sorted(ref for ref in refs if ref in fields
@@ -1414,8 +1441,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             presence_unproven.update(
                 f['id'] for f in pi_fields.values() if f['role']=='input')
             continue
+        bindings=_input_operation_bindings(pi_operations,trigger)
         input_presence={
-            field_id:_presence_for_field(field,operation,operation_presence)
+            field_id:_trigger_input_presence(field,bindings,operation_presence)
             for field_id,field in pi_fields.items() if field['role']=='input'
         }
         special={field_id for field_id,presence in input_presence.items() if presence!='required'}
@@ -1698,14 +1726,20 @@ def expand_cases(model, vectors):
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
         env={}
+        # An explicit vector.operation resolves an otherwise ambiguous accept
+        # operation without altering Source-level coverage/closure proofs.
+        # The selected operation's Presence overrides must be used for this
+        # witness, rather than discarding them because two accepts share a Trigger.
+        bindings=_input_operation_bindings(model.get('pi_operations',[]),test['trigger'])
+        if operation is not None:
+            bindings[operation['source_pi']]=operation
         active_inputs=(set(inputs) if 'pi_constraint_scopes' not in model or operation is None
-                       else {name for name in inputs
-                             if fields[name].get('source_pi')==operation['source_pi']})
+                       else {name for name in inputs if fields[name].get('source_pi') in bindings})
         require(set(test['input'])<=active_inputs,
                 'vector contains input from an inactive PI Operation')
         for name in sorted(active_inputs):
             field=fields[name]
-            presence=_vector_field_presence(model,operation,field)
+            presence=_trigger_input_presence(field,bindings,model.get('operation_presence',[]))
             val=_vector_input_value(field['domain'],presence,test['input'],name)
             if val is not typed.MISSING:env[name]=val
         for name,val in test['state'].items():
@@ -1777,8 +1811,9 @@ def selection_vectors(model, strategy='rule-witness/v1'):
     for trigger in sorted(t['id'] for t in model['triggers']):
         operation,ambiguous=_presence_accepted_operation(model.get('pi_operations',[]),trigger)
         require(ambiguous is None,ambiguous or 'ambiguous operation')
+        bindings=_input_operation_bindings(model.get('pi_operations',[]),trigger)
         presence={
-            fid:_presence_for_field(field,operation,model.get('operation_presence',[]))
+            fid:_trigger_input_presence(field,bindings,model.get('operation_presence',[]))
             for fid,field in fields.items() if field['role']=='input'
         }
         output_overrides=[x for x in model.get('operation_presence',[])
@@ -1793,7 +1828,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         variable_ids=([name for name in all_variable_ids
                        if fields[name]['role']=='state' or operation is None
                        or 'pi_constraint_scopes' not in model
-                       or fields[name].get('source_pi')==operation['source_pi']])
+                       or fields[name].get('source_pi') in bindings])
         domains=[]
         rules_here=[r for r in model['rules'] if r['trigger']==trigger]
         predicates=[*_active_pi_constraints(model,trigger),*(r['when'] for r in rules_here)]

@@ -168,13 +168,22 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                 owners=accepts.get(rule['trigger'],[])
                 if len(owners)>1:
                     continue  # Ambiguous accepted Operations remain unproved.
-                owner=owners[0] if owners else None
+                active_owners=set(owners)
+                # Independently derive the exact provided-operation response
+                # bindings from Source. None/wildcard Trigger cannot license
+                # a later reply; two providers at one Trigger are ambiguous.
+                responses={}
+                for _,fm,pi in pi_docs:
+                    for op in pi.get('operations',[]):
+                        if op['direction']=='provide' and op.get('trigger')==rule['trigger']:
+                            responses.setdefault(fm['id'],[]).append(op['id'])
+                active_owners.update(owner for owner,ops in responses.items() if len(ops)==1)
                 refs=used_refs(rule['when'],reference_definitions)
                 for result in rule['allowed']:
                     for effect in result['write']:
                         refs.update(used_refs(effect['expr'],reference_definitions))
                 invalid=sorted(ref for ref in refs if fields.get(ref)=='input'
-                               and field_owners.get(ref)!=owner)
+                               and field_owners.get(ref) not in active_owners)
                 require(not invalid,'Source TCE reads an inactive PI input at '+rule['trigger']+': '+str(invalid))
                 unavailable=sorted(ref for ref in refs if ref in observation_availability
                                    and observation_availability[ref][1] is not None
