@@ -2170,6 +2170,24 @@ def render_model_markdown(model):
     if model['pi_constraints']:
         lines += ['',('## PI制約' if ja else '## PI constraints'),'',('| 式 |' if ja else '| Expression |'),'| --- |']
         for c in model['pi_constraints']:lines.append(f'| `{_md(format_expr(c,language=lang))}` |')
+    if model.get('pi_constraint_scopes'):
+        # The human-readable TestModel must preserve the owning PI and the
+        # exact Trigger/evaluation-time binding, not merely the formula text.
+        # Missing binding is an unresolved Source relation, not a no-op.
+        lines += ['',('## PI制約の束縛' if ja else '## PI constraint bindings'),'',
+                  ('| 出典PI | 起点 | 式 | 未証明理由 |' if ja else
+                   '| Source PI | Triggers | Expression | Unproved reason |'),
+                  '| --- | --- | --- | --- |']
+        unbound=model.get('unbound_pi_constraints',[])
+        for binding in model['pi_constraint_scopes']:
+            matches=[item['reason'] for item in unbound
+                     if item['source_pi']==binding['source_pi']
+                     and item['expr']==binding['expr']]
+            reason=(matches[0] if not binding['triggers'] and matches else '—')
+            lines.append('| '+_md(binding['source_pi'])+' | '
+                         +_md(', '.join(binding['triggers']) or '—')+' | `'
+                         +_md(format_expr(binding['expr'],language=lang))+'` | '
+                         +_md(reason)+' |')
     if model['definitions']:
         lines += ['',('## DomainRule定義' if ja else '## DomainRule definitions'),'',('| ID | 引数 | 式 |' if ja else '| ID | Parameters | Expression |'),'| --- | --- | --- |']
         for d in model['definitions']:lines.append(f"| {_md(d['id'])} | {_md(', '.join(d['params']) or '—')} | `{_md(format_expr(d['body'],d['params'],lang))}` |")
