@@ -410,6 +410,26 @@ def markdown_model(path):
             scope,
         )
 
+    # A source-bound intrinsic proof has eight independently checkable fields.
+    # A status label in the Rule table is not itself a proof certificate.
+    intrinsic_proofs=[]
+    proof_ids=set()
+    for row in table(text,'Intrinsic rule proofs','内在Rule証明'):
+        proof={
+            'rule_id':cell(row,'Rule ID'),
+            'source_artifact':cell(row,'Source artifact','出典Artifact'),
+            'source_sha256':cell(row,'Source SHA-256','出典SHA-256'),
+            'requirement':cell(row,'Requirement','要求'),
+            'verification_contract':cell(row,'Verification contract','検証契約'),
+            'proof_method':cell(row,'Proof method','証明方法'),
+            'scope':cell(row,'Scope','適用範囲'),
+            'status':cell(row,'Proof status','証明状態'),
+        }
+        require(proof['rule_id'] not in proof_ids,'duplicate Markdown intrinsic Rule proof')
+        proof_ids.add(proof['rule_id'])
+        intrinsic_proofs.append(proof)
+    intrinsic_proofs.sort(key=lambda proof:proof['rule_id'])
+
     interfaces = tuple(sorted(cell(row, 'PI') for row in table(text, 'Process interfaces', 'Process境界')))
 
     boundary_rows = table(text, 'PI boundary', 'PI境界')
@@ -484,7 +504,8 @@ def markdown_model(path):
             'coverage_requirement': (requirement.strip('`').strip()
                                      if isinstance(requirement, str) else None),
             'sources': sources, 'normative_rule_inputs':rule_sources,
-            'rule_obligations':rule_obligations, 'interfaces': interfaces, 'boundary': boundary,
+            'rule_obligations':rule_obligations, 'intrinsic_rule_proofs':intrinsic_proofs,
+            'interfaces': interfaces, 'boundary': boundary,
             'operations': operations, 'triggers': triggers, 'fields': fields,
             'constraints': constraints, 'constraint_bindings':sorted(constraint_bindings),
             'definitions': definitions, 'rules': rules,
@@ -616,7 +637,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     if Path(model).suffix.lower()!='.json':
         # Markdown need not carry JSON proof receipts, but it must preserve
         # the normative PI/Operation Trigger and unresolved result-time scope.
-        checks += ('constraint_bindings','normative_rule_inputs','rule_obligations')
+        checks += ('constraint_bindings','normative_rule_inputs','rule_obligations','intrinsic_rule_proofs')
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
     for key in checks:
@@ -745,8 +766,6 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
             mismatches.append('markdown_normative_status_unjustified')
     if Path(model).suffix.lower()!='.json' and expected.get('unverified_effect_ids'):
         mismatches.append('effect_totality: Markdown renderer lacks source-bound Effect proof receipts')
-    if Path(model).suffix.lower()!='.json' and expected.get('intrinsic_rule_proofs'):
-        mismatches.append('intrinsic_rule_proofs: Markdown renderer omits source-bound proof evidence')
     if Path(model).suffix.lower()!='.json' and expected.get('named_type_definitions'):
         mismatches.append('named_type_definitions: Markdown renderer omits structural type provenance')
     if Path(model).suffix.lower()!='.json' and expected.get('operation_presence'):
