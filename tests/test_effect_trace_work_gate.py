@@ -16,7 +16,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'.cat-system'/'scripts'))
 import cat_flow as flow
 from catlib import work as worklib
-from test_effect_trace_correlation import data,DRIVER
+from test_effect_trace_correlation import data,DRIVER,BINDING
 
 
 def setup(root):
@@ -69,6 +69,45 @@ class EffectGateIntegration(unittest.TestCase):
             self.assertEqual(result['status'],'blocked')
             self.assertIn('Effect/trace evidence invalid',result['reason'])
 
+    def test_mixed_transaction_in_single_execution_blocks_formal_implementation_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);w,wp=setup(root)
+            trace=json.loads((root/'Trace.json').read_text(encoding='utf-8'))
+            packet=json.loads((root/'Packet.json').read_text(encoding='utf-8'))
+            trace['runs'][0]['correlation']=dict(BINDING)
+            trace['events'][4]['correlation']=dict(BINDING)
+            trace['events'][5]['correlation']=dict(BINDING)
+            packet['observations'][0]['correlation']=dict(BINDING)
+            packet['observations'][0]['correlation']['transaction_id']='unrelated-tx'
+            (root/'Trace.json').write_text(json.dumps(trace),encoding='utf-8')
+            (root/'Packet.json').write_text(json.dumps(packet),encoding='utf-8')
+            verdict=flow.conformance_work(wp,w,'implementation-conformance')
+            self.assertEqual(verdict['status'],'blocked',verdict)
+            self.assertIn('correlation',verdict['reason'])
+
+    def test_consistent_transaction_identity_remains_non_normative_in_formal_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);w,wp=setup(root)
+            trace=json.loads((root/'Trace.json').read_text(encoding='utf-8'))
+            packet=json.loads((root/'Packet.json').read_text(encoding='utf-8'))
+            trace['runs'][0]['correlation']=dict(BINDING)
+            trace['events'][4]['correlation']=dict(BINDING)
+            trace['events'][5]['correlation']=dict(BINDING)
+            packet['observations'][0]['correlation']=dict(BINDING)
+            (root/'Trace.json').write_text(json.dumps(trace),encoding='utf-8')
+            (root/'Packet.json').write_text(json.dumps(packet),encoding='utf-8')
+            passed_items=[{'category':c,'status':'passed','source_ref':'src',
+                           'method':'observed','limitation':'bounded','evidence':'fixture'}
+                          for c in ('interface','capability','behavior','invariant',
+                                    'cross-process','domain','implementation-constraint')]
+            with patch.object(flow,'technology_conformance',return_value={'status':'passed','results':[]}),\
+                 patch.object(flow,'obligations_work',return_value={'status':'passed'}),\
+                 patch.object(flow.obligation_runtime,'aggregate',return_value={'items':passed_items}),\
+                 patch.object(flow,'conformance_evidence_status',return_value={'status':'passed'}):
+                verdict=flow.conformance_work(wp,w,'implementation-conformance')
+            self.assertEqual(verdict['status'],'inconclusive',verdict)
+            self.assertIn('Effect/trace receipt identities',verdict['reason'])
+
     def test_receipt_observation_mutation_invalidates_exact_gate_input_inventory(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);w,wp=setup(root)
@@ -82,6 +121,38 @@ class EffectGateIntegration(unittest.TestCase):
             self.assertEqual(flow.conformance_evidence_status(wp,w,'implementation-conformance')['status'],'inconclusive')
             (root/'observation.json').write_text('changed observation')
             self.assertEqual(flow.conformance_evidence_status(wp,w,'implementation-conformance')['status'],'stale')
+
+    def test_unobserved_effect_with_other_terminal_outcome_blocks_formal_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);w,wp=setup(root)
+            trace=json.loads((root/'Trace.json').read_text(encoding='utf-8'))
+            packet=json.loads((root/'Packet.json').read_text(encoding='utf-8'))
+            record=packet['observations'][0]
+            record.update(reported_status='not-observed',observation_file=None,
+                          observation_sha256=None,effect_event_id=None)
+            trace['events'][5]['outcome_index']=2
+            (root/'Trace.json').write_text(json.dumps(trace),encoding='utf-8')
+            (root/'Packet.json').write_text(json.dumps(packet),encoding='utf-8')
+            verdict=flow.conformance_work(wp,w,'implementation-conformance')
+            self.assertEqual(verdict['status'],'blocked',verdict)
+            self.assertIn('terminal allowed Outcome',verdict['reason'])
+
+    def test_unobserved_effect_with_conflicting_terminal_transaction_blocks_official_gate(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);work,wp=setup(root)
+            trace=json.loads((root/'Trace.json').read_text(encoding='utf-8'))
+            packet=json.loads((root/'Packet.json').read_text(encoding='utf-8'))
+            trace['runs'][0]['correlation']=dict(BINDING)
+            trace['events'][5]['correlation']={**BINDING,'transaction_id':'other-tx'}
+            record=packet['observations'][0]
+            record['correlation']=dict(BINDING)
+            record.update(reported_status='not-observed',observation_file=None,
+                          observation_sha256=None,effect_event_id=None)
+            (root/'Trace.json').write_text(json.dumps(trace),encoding='utf-8')
+            (root/'Packet.json').write_text(json.dumps(packet),encoding='utf-8')
+            verdict=flow.conformance_work(wp,work,'implementation-conformance')
+            self.assertEqual(verdict['status'],'blocked',verdict)
+            self.assertIn('correlation',verdict['reason'])
 
     def test_incomplete_evidence_contract_is_rejected(self):
         with tempfile.TemporaryDirectory() as t:

@@ -475,6 +475,23 @@ def conformance_input_hashes(wpath, w, kind):
     return result
 
 
+def _implementation_repository_fingerprint(wpath, w):
+    """Pin an implementation Gate to both working-tree bytes and Git HEAD.
+
+    Different commits can have the same tracked/untracked file contents. A
+    Work receipt against one commit must not be reused after a ref moves to
+    another commit, even when that checkout's file tree is unchanged. Write
+    guards continue to compare file paths only (via _repo_state).
+    """
+    state = _repo_state(wpath, w)
+    heads = {}
+    for repository in w.get('repositories', []):
+        root = resolve_dir(wpath, w, '@repo:' + repository['name'])
+        heads[repository['name']] = (git_cmd(root, 'rev-parse', 'HEAD')
+                                     if (root / '.git').exists() else 'not-available')
+    return sha(json_bytes({'files': state, 'heads': heads}))
+
+
 def record_conformance_evidence(wpath, w, kind, result):
     runtime = wpath.parent / '.cat-flow' / 'conformance'
     runtime.mkdir(parents=True, exist_ok=True)
@@ -493,7 +510,7 @@ def record_conformance_evidence(wpath, w, kind, result):
         'effect_correlation_evidence':result.get('effect_correlation_evidence'),
     }
     if kind == 'implementation-conformance':
-        payload['repo_state_sha256'] = sha(json_bytes(_repo_state(wpath, w)))
+        payload['repo_state_sha256'] = _implementation_repository_fingerprint(wpath, w)
     path = runtime / (kind + '.json')
     path.write_bytes(json_bytes(payload))
     output = dict(result)
@@ -529,7 +546,7 @@ def conformance_evidence_status(wpath, w, kind):
             return {'status': 'stale', 'evidence': str(path),
                     'reason': 'conformance input inventory changed'}
         if kind == 'implementation-conformance':
-            if e.get('repo_state_sha256') != sha(json_bytes(_repo_state(wpath, w))):
+            if e.get('repo_state_sha256') != _implementation_repository_fingerprint(wpath, w):
                 return {'status': 'stale', 'evidence': str(path), 'reason': 'implementation repository state changed'}
         return {'status': e.get('verdict', 'inconclusive'), 'evidence': str(path), 'reason': e.get('reason', '')}
     except (OSError, KeyError, Blocked):
@@ -627,14 +644,17 @@ def conformance_work(wpath, w, kind):
                         verifier_path=runtime/'process-closure-verifiers.json'
                         verifier_path.write_bytes(json_bytes(verified))
                         verifier_evidence=str(verifier_path)
-                        # A pinned runner proves only its fixture assertions,
-                        # never equivalence with free-text CommonRule/DomainSpec.
-                        rule_status=verified.get('normative_status','inconclusive')
+                        # A failing registered assertion invalidates this Gate's
+                        # verification evidence; it does not refute the free-text
+                        # normative Rule. Passing fixture checks still cannot
+                        # elevate an unproved Rule to normative `passed`.
+                        rule_status=('failed' if verified.get('status')=='failed'
+                                     else verified.get('normative_status','inconclusive'))
                     except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
                         return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
             if rule_status=='failed':
                 return {'gate':kind,'status':'blocked','verifier_evidence':verifier_evidence,
-                        'reason':'one or more deterministic normative rule checks failed'}
+                        'reason':'one or more registered verifier fixture assertions failed; normative meaning remains unproved'}
             if model.get('status')!='confirmed' or rule_status!='passed' or model.get('unresolved_domains') or model.get('presence_unproven') or model.get('unresolved_interfaces'):
                 return {'gate':kind,'status':'inconclusive','evidence':str(runtime/'process-closure.model.json'),
                         'verifier_evidence':verifier_evidence,

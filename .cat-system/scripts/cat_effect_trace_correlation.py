@@ -23,6 +23,31 @@ def require(ok,message):
     if not ok:raise CorrelationError(message)
 
 
+_CORRELATION_KEYS=frozenset(('request_id','transaction_id','target_id'))
+
+
+def _correlation(record,label):
+    if 'correlation' not in record:
+        return None
+    binding=record['correlation']
+    require(isinstance(binding,dict) and set(binding)==_CORRELATION_KEYS,
+            label+' correlation must explicitly bind request, transaction and target IDs')
+    require(all(isinstance(v,str) and bool(v.strip()) for v in binding.values()),
+            label+' correlation IDs must be nonempty strings')
+    return binding
+
+
+def _check_correlations(pairs):
+    identities=[(label,_correlation(record,label)) for label,record in pairs]
+    if not any(binding is not None for _,binding in identities):
+        return
+    require(all(binding is not None for _,binding in identities),
+            'declared execution correlation must be present on each evidence record')
+    anchor=identities[0][1]
+    require(all(binding==anchor for _,binding in identities[1:]),
+            'request/transaction/target correlation differs within execution')
+
+
 def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
               repository_root=None,driver_repo_path=None):
     model=json.loads(model_bytes)
@@ -47,7 +72,25 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         target=receipt['effect_target']
         reported=receipt['reported_status']
         event_id=receipt.get('effect_event_id')
+        terminal=terminals.get(run)
+        # An unobserved side effect still belongs to a specific allowed
+        # Rule/Outcome. If the submitted terminal explicitly names another,
+        # the packet is contradictory, not merely lacking Effect evidence.
+        if terminal is not None:
+            require(terminal.get('rule_id') in (None,rid),
+                    'terminal Rule differs from Effect receipt')
+            require(terminal.get('outcome_index') in (None,index),
+                    'terminal allowed Outcome differs from Effect receipt')
         if reported=='not-observed':
+            # With no Effect event, the receipt remains unproved. However an
+            # *explicit* terminal binding still names the same execution and
+            # must not contradict the run/receipt correlation. Do not require
+            # a terminal correlation when one was not supplied for this
+            # unobserved case: missing evidence stays inconclusive.
+            identities=[('trace run',runs[run]),('unobserved receipt',receipt)]
+            if terminal is not None and 'correlation' in terminal:
+                identities.append(('declared terminal',terminal))
+            _check_correlations(identities)
             require(event_id in (None,''),'unobserved Effect cannot claim trace event')
             rows.append({'execution_id':run,'rule_id':rid,'effect_target':target,
                          'status':'inconclusive','reason':'effect-not-observed'})
@@ -63,14 +106,14 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         require(event.get('rule_id')==rid and event.get('outcome_index')==index
                 and event.get('effect_target')==target,
                 'Effect event Rule/Outcome/target does not match Source-bound receipt')
-        terminal=terminals.get(run)
+        identity_records=[('trace run',runs[run]),('Effect receipt',receipt),
+                          ('Effect trace event',event)]
+        if terminal is not None:
+            identity_records.append(('terminal trace event',terminal))
+        _check_correlations(identity_records)
         if terminal is None:
             unresolved.append({'execution_id':run,'reason':'terminal-result-not-observed'})
             status='inconclusive'
-        elif terminal.get('rule_id') not in (None,rid):
-            raise CorrelationError('terminal Rule differs from Effect receipt')
-        elif terminal.get('outcome_index') not in (None,index):
-            raise CorrelationError('terminal allowed Outcome differs from Effect receipt')
         elif terminal['outcome']=='unknown' or reported=='unknown':
             unresolved.append({'execution_id':run,'reason':'unknown-terminal-or-effect'})
             status='inconclusive'
@@ -93,6 +136,7 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
             'driver_sha256':hashlib.sha256(driver_bytes).hexdigest(),
             'observations':rows,'unresolved':unresolved,
             'limitations':['trace-record-truth-not-authenticated',
+                           'correlation-labels-self-reported-not-provider-authenticated',
                            'submitted-event-order-not-independent-clock-proof',
                            'source-to-rule-predicate-equivalence-unproved',
                            'external-runtime-side-effects-not-verified']}

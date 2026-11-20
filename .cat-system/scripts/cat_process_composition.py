@@ -67,6 +67,23 @@ def _operation(model,id_,source_pi,role,peer):
         return False
     return peer_binding.match_operation(peers,matches[0].get('peer'),peer)
 
+def _effective_presence(model, operation, field):
+    """Read the Presence of a field for the *linked* PI Operation.
+
+    A PI-wide Presence is only the default. The compiler keeps explicit
+    Operation Presence separately in `operation_presence`, so treating the
+    base Field row as the transferred value can accept a missing required
+    value (or falsely reject an optional receiver).
+    """
+    matches=[row for row in model.get('operation_presence', [])
+             if row.get('source_pi')==field.get('source_pi')
+             and row.get('operation')==operation
+             and row.get('field')==field.get('id')]
+    if len(matches)>1:
+        raise CompositionError('ambiguous operation Presence for '+field['id'])
+    return matches[0]['presence'] if matches else field.get('presence','required')
+
+
 # Re-export for compatibility with existing composition callers/tests.
 from catlib.semantic_subtyping import subset as _type_subset
 
@@ -104,8 +121,8 @@ def _link(binding,models):
         seen.add(pair);seen_targets.add(pair[1])
         f=_field(source,pair[0],'output',a)
         t=_field(target,pair[1],'input',b)
-        f_presence=f.get('presence','required')
-        t_presence=t.get('presence','required')
+        f_presence=_effective_presence(source,source_op,f)
+        t_presence=_effective_presence(target,target_op,t)
         # Presence is independent of type/nullability: a producer's possible
         # states must be accepted by the consumer, including missing/undefined.
         states={'required':{'value'},'optional':{'missing','value'},
@@ -131,7 +148,7 @@ def _link(binding,models):
     # capable receiver field left unmapped remains inconclusive.
     unmapped_target_fields=sorted(f['id'] for f in target.get('fields',[])
         if f.get('role')=='input' and f.get('source_pi')==b
-        and f.get('presence','required')!='absent'
+        and _effective_presence(target,target_op,f)!='absent'
         and f.get('id') not in seen_targets)
     return {'source_process':source['process'],'target_process':target['process'],
             'source_pi':a,'target_pi':b,'source_operation':source_op,

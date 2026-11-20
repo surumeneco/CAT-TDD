@@ -390,9 +390,17 @@ def _readable_spec_v2(path, kind, fm):
                           'domain':parse_domain_text(_cell(row,'Domain','domain'))})
         observations=[]
         for row in _table_any(body,('Observations','観測能力'),required=False):
+            # Optional exact Trigger binding. Missing column preserves legacy
+            # unqualified observations; no temporal ordering is inferred from
+            # source prose, names, or a technology-specific clock.
+            availability=_cell(row,'Available on','利用可能Trigger',required=False)
+            triggers_available=([semantic_ident(item,'Observation availability Trigger')
+                                 for item in _split_items(availability)]
+                                if availability not in ('','-','—','none','なし') else None)
             observations.append({'id':semantic_ident(_cell(row,'ID','Id','id'),'Observation ID'),'role':'observation',
                                  'source':_cell(row,'Source','Origin','source','由来','情報源'),
-                                 'domain':parse_domain_text(_cell(row,'Domain','domain'))})
+                                 'domain':parse_domain_text(_cell(row,'Domain','domain')),
+                                 **({'available_on':triggers_available} if triggers_available is not None else {})})
         actions=[]
         for row in _table_any(body,('Actions','作用能力'),required=False):
             actions.append({'id':semantic_ident(_cell(row,'ID','Id','id'),'Action ID'),'role':'action',
@@ -979,11 +987,51 @@ def _presence_cases(domain,presence):
     return ([typed.MISSING,*values] if presence=='optional' else values)
 
 
+def _active_pi_constraints(model, trigger):
+    """Constraints on a PI are obligations only at that PI's accepted operation.
+
+    Legacy models without source scopes retain the original single-boundary
+    behavior. The scope inventory is preserved separately from its expressions
+    so no generated guard may borrow another PI's input state.
+    """
+    scopes = model.get('pi_constraint_scopes')
+    if scopes is None:
+        return model.get('pi_constraints', [])
+    return [item['expr'] for item in scopes if trigger in item['triggers']]
+
+
 def _presence_accepted_operation(operations,trigger):
     matches=[op for op in operations if op['direction']=='accept' and op.get('trigger')==trigger]
     if len(matches)>1:
         return None,'ambiguous accepted PI operations for Presence closure'
     return (matches[0] if matches else None),None
+
+
+def _input_operation_bindings(operations, trigger):
+    """Local trigger readability only; does not prove peer/caller correlation.
+
+    A provided PI's receive field is a reply, not a new external Trigger.
+    It may be read by the caller's TCE only when a provided Operation has
+    explicitly named that caller Trigger. An unspecified provide Trigger does
+    not grant blanket permission, and ambiguous providers grant none.
+    """
+    matches=[op for op in operations if op['direction']=='accept'
+             and op.get('trigger')==trigger]
+    if len(matches)>1:
+        return {}  # Existing ambiguous-accept proof remains unproven.
+    bindings={op['source_pi']:op for op in matches}
+    provided={}
+    for op in operations:
+        if op['direction']=='provide' and op.get('trigger')==trigger:
+            provided.setdefault(op['source_pi'],[]).append(op)
+    for owner,items in provided.items():
+        if owner not in bindings and len(items)==1:
+            bindings[owner]=items[0]
+    return bindings
+
+
+def _trigger_input_presence(field, bindings, overrides):
+    return _presence_for_field(field,bindings.get(field.get('source_pi')),overrides)
 
 
 def _presence_for_field(field,operation,overrides):
@@ -1134,6 +1182,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     fields={}
     pi_fields={}
     constraints=[]
+    pi_constraint_sources=[]
     pi_operations=[]
     operation_presence=[]
     for _,pif,pi in pi_docs:
@@ -1204,6 +1253,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         cs=pi.get('constraints',[])
         require(isinstance(cs,list),'PI constraints must be array')
         constraints.extend(cs)
+        pi_constraint_sources.extend((pif['id'], expr) for expr in cs)
     if contract=='markdown-v2':
         require(len(p.get('interfaces',[]))==len(set(p.get('interfaces',[]))),'duplicate Process Interface reference')
         require({fm['id'] for _,fm,_ in pi_docs} <= set(p.get('interfaces',[])),
@@ -1220,8 +1270,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             ('Action',p.get('actions',[]),'action',('target',))):
             require(isinstance(items,list),f'Process {name} must be array')
             for field in items:
-                check_keys(field,['id','role','domain',*extra],where=f'Process {name}')
+                check_keys(field,['id','role','domain',*extra],
+                           ['available_on'] if role=='observation' else (),
+                           where=f'Process {name}')
                 require(field['role']==role,f'Process {name} role invalid')
+                if role=='observation' and 'available_on' in field:
+                    declared=[t['id'] for t in p['triggers']]
+                    available=field['available_on']
+                    require(isinstance(available,list) and bool(available)
+                            and len(available)==len(set(available))
+                            and all(t in declared for t in available),
+                            'Observation available_on must contain unique declared Process triggers')
                 semantic_ident(field['id'],f'Process {name} ID')
                 require(field['id'] not in fields,f'duplicate specification field {field["id"]}')
                 field['domain']=resolve_domain_types(field['domain'])
@@ -1243,6 +1302,29 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         for d in definitions.values():inspect_expr(d['body'],fields,definitions,d['params'])
     for predicate in constraints:
         require(inspect_expr(predicate,pi_fields,definitions)=='boolean','PI constraint must be boolean')
+
+    # A flattened inventory is retained for old source/model readers, but
+    # normative Guard-space evaluation is bound to the owning PI's accept
+    # operations. A provide-only constraint describes a later result, not an
+    # unobserved input at request start; it stays unproved until a result-time
+    # relation verifier is supplied. No name-based or product-specific rules.
+    pi_constraint_scopes=[]
+    unbound_pi_constraints=[]
+    for pi_id, predicate in pi_constraint_sources:
+        refs=used_refs(predicate,definitions)
+        require(all(ref in pi_fields and pi_fields[ref]['source_pi']==pi_id
+                    for ref in refs),
+                'PI constraint references a field outside its owning PI: '+pi_id)
+        input_only=all(pi_fields[ref]['role']=='input' for ref in refs)
+        accepted=sorted({op['trigger'] for op in pi_operations
+                         if op['source_pi']==pi_id and op['direction']=='accept'})
+        active=accepted if input_only else []
+        pi_constraint_scopes.append({'source_pi':pi_id,'expr':predicate,
+                                     'triggers':active})
+        if not active and contract=='markdown-v2':
+            unbound_pi_constraints.append({'source_pi':pi_id,'expr':predicate,
+                'reason':'non-input result relation' if not input_only
+                         else 'no accepted Operation to bind PI constraint'})
 
     rules=[]
     local_coverage_requirements={}
@@ -1317,6 +1399,34 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                           'source_artifact':tce_fm['id']})
     unique([r['id'] for r in rules],'TCE behaviors')
 
+    if contract=='markdown-v2':
+        # A PI input is an event-bound input, never Process state. Another
+        # Operation's inputs cannot be borrowed by a TCE Condition/Effect,
+        # even if finite Guard enumeration would make its truth table look
+        # complete. Retaining the value needs an explicit Process State or
+        # independently declared Observation with lawful provenance.
+        for rule in rules:
+            accepted=[op for op in pi_operations if op['direction']=='accept'
+                      and op.get('trigger')==rule['trigger']]
+            if len(accepted)>1:
+                continue  # The existing ambiguous-Operation audit fails closed.
+            input_owners=_input_operation_bindings(pi_operations,rule['trigger'])
+            refs=used_refs(rule['when'],definitions)
+            for outcome in rule['allowed']:
+                for write in outcome['write']:
+                    refs.update(used_refs(write['expr'],definitions))
+            invalid=sorted(ref for ref in refs if ref in pi_fields
+                           and pi_fields[ref]['role']=='input'
+                           and pi_fields[ref]['source_pi'] not in input_owners)
+            require(not invalid,
+                    f'TCE {rule["id"]} reads PI input from inactive accepted Operation at {rule["trigger"]}: {invalid}')
+            unavailable=sorted(ref for ref in refs if ref in fields
+                               and fields[ref]['role']=='observation'
+                               and 'available_on' in fields[ref]
+                               and rule['trigger'] not in fields[ref]['available_on'])
+            require(not unavailable,
+                    f'TCE {rule["id"]} reads Observation unavailable at Trigger {rule["trigger"]}: {unavailable}')
+
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
     # operation owns its output and every TCE alternative respects the
@@ -1331,14 +1441,18 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             presence_unproven.update(
                 f['id'] for f in pi_fields.values() if f['role']=='input')
             continue
+        bindings=_input_operation_bindings(pi_operations,trigger)
         input_presence={
-            field_id:_presence_for_field(field,operation,operation_presence)
+            field_id:_trigger_input_presence(field,bindings,operation_presence)
             for field_id,field in pi_fields.items() if field['role']=='input'
         }
         special={field_id for field_id,presence in input_presence.items() if presence!='required'}
+        scoped_constraints = ([x['expr'] for x in pi_constraint_scopes
+                               if trigger in x['triggers']]
+                              if contract=='markdown-v2' else constraints)
         relevant=set().union(
             *(used_refs(r['when'],definitions) for r in rr),
-            *(used_refs(c,definitions) for c in constraints)) if rr or constraints else set()
+            *(used_refs(c,definitions) for c in scoped_constraints)) if rr or scoped_constraints else set()
         # Optional Presence is relevant to Guard closure only if the
         # normative Guard or PI constraint actually observes this field.
         # Otherwise all present/missing values share the same truth profile.
@@ -1360,7 +1474,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         domainvalues=[]
         partition_fields=[]
         partition_kinds=set()
-        predicates=[*constraints,*(r['when'] for r in rr)]
+        predicates=[*scoped_constraints,*(r['when'] for r in rr)]
         for field_id in ordered:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
@@ -1407,7 +1521,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         for values in itertools.product(*domainvalues):
             env=dict(zip(ordered,values))
             try:
-                if not all(eval_expr(c,env,definitions) for c in constraints):
+                if not all(eval_expr(c,env,definitions) for c in scoped_constraints):
                     continue
                 hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
             except Blocked as exc:
@@ -1427,7 +1541,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                'overlaps':overlaps[:16],'uncovered':gaps[:64],
                'uncovered_count':len(gaps) if not partition_fields else None,
                'unreachable_rules':sorted(unreachable),
-               'excluded_by_pi_constraints':True if constraints else False}
+               'excluded_by_pi_constraints':bool(scoped_constraints)}
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
@@ -1440,7 +1554,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         require(allow_draft or not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
     presence_unproven=sorted(presence_unproven)
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
-                       and not presence_unproven and not (unresolved_interfaces if contract=='markdown-v2' else [])
+                       and not presence_unproven and not unbound_pi_constraints
+                       and not (unresolved_interfaces if contract=='markdown-v2' else [])
                        )
     if not coverage_proved:
         require(allow_draft or allow_partial,
@@ -1464,7 +1579,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     for rule in rule_obligations:
         if rule['id'] in proven_rule_ids:
             rule['verification_status']='intrinsic-proved'
-    unverified_rule_ids=sorted({r['id'] for r in rule_obligations}-proven_rule_ids)
+    unverified_rule_ids=sorted({r['id'] for r in rule_obligations
+                                if r['verification_status']!='not-applicable'}-proven_rule_ids)
     # Guard coverage does not prove all Effect expressions total and in Domain.
     effect_checks=_effect_totality_checks(rules,fields,definitions)
     unverified_effect_ids=sorted(key for key,proof in effect_checks.items()
@@ -1477,6 +1593,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             'source_artifacts':[fm['id'] for _,fm in files],
             'source_records':source_records,
             'source_sha256':hashes,'triggers':p['triggers'],'fields':list(fields.values()),'pi_constraints':constraints,
+            **({'pi_constraint_scopes':pi_constraint_scopes,
+                'unbound_pi_constraints':unbound_pi_constraints} if contract=='markdown-v2' else {}),
             'definitions':list(definitions.values()),'coverage_requirement':'closed' if coverage_proved else 'partial',
             'local_coverage_requirements':local_coverage_requirements,
             'coverage_checks':per_trigger,'rules':rules,
@@ -1608,9 +1726,20 @@ def expand_cases(model, vectors):
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
         env={}
-        for name in sorted(inputs):
+        # An explicit vector.operation resolves an otherwise ambiguous accept
+        # operation without altering Source-level coverage/closure proofs.
+        # The selected operation's Presence overrides must be used for this
+        # witness, rather than discarding them because two accepts share a Trigger.
+        bindings=_input_operation_bindings(model.get('pi_operations',[]),test['trigger'])
+        if operation is not None:
+            bindings[operation['source_pi']]=operation
+        active_inputs=(set(inputs) if 'pi_constraint_scopes' not in model or operation is None
+                       else {name for name in inputs if fields[name].get('source_pi') in bindings})
+        require(set(test['input'])<=active_inputs,
+                'vector contains input from an inactive PI Operation')
+        for name in sorted(active_inputs):
             field=fields[name]
-            presence=_vector_field_presence(model,operation,field)
+            presence=_trigger_input_presence(field,bindings,model.get('operation_presence',[]))
             val=_vector_input_value(field['domain'],presence,test['input'],name)
             if val is not typed.MISSING:env[name]=val
         for name,val in test['state'].items():
@@ -1619,7 +1748,8 @@ def expand_cases(model, vectors):
         defs={d['id']:d for d in model['definitions']}
         # Presence-aware expressions may inspect missing/undefined inputs. An
         # ordinary read still fails inside eval_expr and cannot become an oracle.
-        require(all(eval_expr(c,env,defs) for c in model['pi_constraints']),f'{test["id"]}: violates PI combination constraint')
+        require(all(eval_expr(c,env,defs) for c in _active_pi_constraints(model,test['trigger'])),
+                f'{test["id"]}: violates PI combination constraint')
         rule=match_rules(model,test['trigger'],env)
         defs={d['id']:d for d in model['definitions']}
         allowed=[]
@@ -1675,14 +1805,15 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 and model.get('presence_unproven')==[]
                 and bool(checks) and all(x.get('result')=='proved' for x in checks.values()),
                 'nonrequired output Presence needs proved operation and Effect frame')
-    variable_ids=sorted(f for f in fields if fields[f]['role'] in ('input','state'))
+    all_variable_ids=sorted(f for f in fields if fields[f]['role'] in ('input','state'))
     defs={d['id']:d for d in model['definitions']}
     witnesses={}
     for trigger in sorted(t['id'] for t in model['triggers']):
         operation,ambiguous=_presence_accepted_operation(model.get('pi_operations',[]),trigger)
         require(ambiguous is None,ambiguous or 'ambiguous operation')
+        bindings=_input_operation_bindings(model.get('pi_operations',[]),trigger)
         presence={
-            fid:_presence_for_field(field,operation,model.get('operation_presence',[]))
+            fid:_trigger_input_presence(field,bindings,model.get('operation_presence',[]))
             for fid,field in fields.items() if field['role']=='input'
         }
         output_overrides=[x for x in model.get('operation_presence',[])
@@ -1694,9 +1825,13 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 model.get('operation_presence',[]),trigger)
             require(provide_operation is not None,
                     'ambiguous provided output operation for deterministic vectors')
+        variable_ids=([name for name in all_variable_ids
+                       if fields[name]['role']=='state' or operation is None
+                       or 'pi_constraint_scopes' not in model
+                       or fields[name].get('source_pi') in bindings])
         domains=[]
         rules_here=[r for r in model['rules'] if r['trigger']==trigger]
-        predicates=[*model['pi_constraints'],*(r['when'] for r in rules_here)]
+        predicates=[*_active_pi_constraints(model,trigger),*(r['when'] for r in rules_here)]
         observed=set().union(*(used_refs(expr,defs) for expr in predicates)) if predicates else set()
         for rule in rules_here:
             for outcome in rule['allowed']:
@@ -1726,7 +1861,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 'test-selection exceeds configured 65536 combinations')
         for values in itertools.product(*domains):
             env=dict(zip(variable_ids,values))
-            if not all(eval_expr(c,env,defs) for c in model['pi_constraints']):
+            if not all(eval_expr(c,env,defs) for c in _active_pi_constraints(model,trigger)):
                 continue
             hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
             require(len(hit)==1,f'confirmed TestModel selection found {len(hit)} rules at {trigger}')

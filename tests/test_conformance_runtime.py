@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -114,7 +115,7 @@ class ConformanceRuntimeTest(unittest.TestCase):
                     'work_id': work['id'], 'gate': gid,
                     'context_sha256': flow.conformance_context_sha(work),
                     'input_sha256': {},
-                    **({'repo_state_sha256': flow.sha(flow.json_bytes(flow._repo_state(path, work)))}
+                    **({'repo_state_sha256': flow._implementation_repository_fingerprint(path, work)}
                        if gid == 'implementation-conformance' else {}),
                     'verdict': 'inconclusive', 'reason': 'unproved meaning',
                 }))
@@ -273,6 +274,43 @@ class ConformanceRuntimeTest(unittest.TestCase):
                 with self.assertRaisesRegex(flow.Blocked, 'source_ref'):
                     flow.conformance_work(path, work, 'implementation-conformance')
 
+
+    def test_implementation_gate_receipt_stales_when_git_head_changes_without_file_changes(self):
+        """U06: identical checkout files at a different HEAD cannot reuse a Gate."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = root / 'repo'
+            repo.mkdir()
+            def git(*args):
+                return subprocess.run(['git', '-C', str(repo), *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            git('init', '-q')
+            (repo / 'service.py').write_text('SERVICE = 1\n', encoding='utf-8')
+            git('add', 'service.py')
+            args = ('-c', 'user.email=cat@example.test', '-c', 'user.name=CAT Test')
+            git(*args, 'commit', '-qm', 'first')
+            first = git('rev-parse', 'HEAD')
+            work = base_work()
+            work['repositories'] = [{'name': 'source', 'path': 'repo',
+                                     'allowed_paths': ['**']}]
+            for name in ('Process.md', 'PI.md', 'TCE.md'):
+                (root / name).write_text(name, encoding='utf-8')
+            work['compilation'] = {'schema': 'cat-compile/v2',
+                                   'process': 'Process.md', 'pi': 'PI.md',
+                                   'tce': 'TCE.md', 'allow_draft': False}
+            workpath = self.write_work(root, work)
+            report = flow.record_conformance_evidence(workpath, work, 'implementation-conformance',
+                        {'status': 'inconclusive', 'reason': 'bounded fixture'})
+            self.assertEqual(flow.conformance_evidence_status(workpath, work,
+                               'implementation-conformance')['status'], 'inconclusive')
+            git(*args, 'commit', '--allow-empty', '-qm', 'same file bytes, new commit')
+            self.assertNotEqual(first, git('rev-parse', 'HEAD'))
+            self.assertEqual(git('show', 'HEAD:service.py'), 'SERVICE = 1')
+            self.assertEqual(flow.conformance_evidence_status(workpath, work,
+                               'implementation-conformance')['status'], 'stale')
+            self.assertEqual(flow.conformance_evidence_status(workpath, work,
+                               'implementation-conformance')['reason'],
+                             'implementation repository state changed')
 
     def test_conformance_receipt_rejects_missing_extra_and_rebound_input_inventory(self):
         with tempfile.TemporaryDirectory() as td:
