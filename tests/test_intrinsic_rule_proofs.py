@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'.cat-system'/'scripts'))
-from cat_compile_v2 import load
+from cat_compile_v2 import load, render_model_markdown
 import cat_model_conformance as independent
 import cat_flow
 from test_cat_compile_readable import write_v2,fm
@@ -59,6 +59,92 @@ class IntrinsicRuleProofTests(unittest.TestCase):
             workpath=root/'Work.json';workpath.write_text(json.dumps(w),encoding='utf-8')
             closure=cat_flow.conformance_work(workpath,w,'process-closure')
             self.assertEqual(closure['status'],'passed',closure)
+
+    def test_markdown_intrinsic_source_proofs_are_independently_verified_in_both_languages(self):
+        # The Markdown model is a first-class, Source-bound representation,
+        # not just a human-readable summary of confirmed JSON.
+        for ja in (False, True):
+            with self.subTest(japanese=ja), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp)
+                if ja:
+                    p,pi,t=write_v2(root,True)
+                    r=root/'CommonRule.md'
+                    r.write_text(fm('common-rule','demo.rule.document',
+                                    ['demo.process.contract'],language='ja')+
+                        '\n## 規則\n| ID | 条件 | 要求 | 検証 |\n'
+                        '| --- | --- | --- | --- |\n'
+                        f'| demo.rule.check | assembled-process | {PROOF} | {CONTRACT} |\n',encoding='utf-8')
+                    for path in (p,pi,t,r):approve_fixture(path)
+                else:
+                    p,pi,t,r=build(root)
+                model=load(p,pi,t,common_rules=[r])
+                self.assertEqual(model['status'],'confirmed')
+                target=root/'Model.md'
+                target.write_text(render_model_markdown(model),encoding='utf-8')
+                rendered=target.read_text(encoding='utf-8')
+                self.assertIn(('## 内在Rule証明' if ja else '## Intrinsic rule proofs'),rendered)
+                result=independent.validate(p,pi,[t],target,common_rules=[r])
+                self.assertEqual(result['status'],'passed',result)
+
+    def test_markdown_intrinsic_proof_tamper_missing_duplicate_and_stale_are_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p,pi,t,r=build(root)
+            model=load(p,pi,t,common_rules=[r])
+            original=render_model_markdown(model)
+            target=root/'Model.md'
+            target.write_text(original,encoding='utf-8')
+            self.assertEqual(independent.validate(p,pi,[t],target,common_rules=[r])['status'],'passed')
+            section='## Intrinsic rule proofs'
+            idx=original.index(section)
+            next_heading=original.find('\n## ',idx+len(section))
+            proof_text=original[idx:next_heading if next_heading>0 else len(original)]
+            proof_line=next(x for x in proof_text.splitlines() if x.startswith('| demo.rule.check |'))
+            changes={
+                'removed_section':original.replace(proof_text,''),
+                'missing_proof':original.replace(proof_line+'\n',''),
+                'wrong_requirement':original.replace(proof_line,proof_line.replace(PROOF,'@cat:invented/v1')),
+                'unjustified_status':original.replace(proof_line,proof_line.replace(' | passed |',' | failed |')),
+                'forged_source_sha':original.replace(proof_line,proof_line.replace(model['intrinsic_rule_proofs'][0]['source_sha256'],'0'*64)),
+                'duplicate':original.replace(proof_line,proof_line+'\n'+proof_line),
+            }
+            for name,modified in changes.items():
+                with self.subTest(case=name):
+                    target.write_text(modified,encoding='utf-8')
+                    if name=='duplicate':
+                        with self.assertRaisesRegex(independent.Blocked,'duplicate Markdown intrinsic Rule proof'):
+                            independent.validate(p,pi,[t],target,common_rules=[r])
+                        continue
+                    result=independent.validate(p,pi,[t],target,common_rules=[r])
+                    self.assertEqual(result['status'],'blocked',result)
+                    self.assertIn('intrinsic_rule_proofs',result['mismatches'])
+            target.write_text(original,encoding='utf-8')
+            r.write_text(r.read_text(encoding='utf-8')+'\n',encoding='utf-8')
+            result=independent.validate(p,pi,[t],target,common_rules=[r])
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('intrinsic_rule_proofs',result['mismatches'])
+
+    def test_markdown_free_text_rule_remains_unverified_and_forged_intrinsic_proof_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p,pi,t,r=build(root,requirement='Deliver a Discord message',verification='discord')
+            model=load(p,pi,t,common_rules=[r],allow_draft=True)
+            self.assertEqual(model['intrinsic_rule_proofs'],[])
+            self.assertEqual(model['unverified_rule_ids'],['demo.rule.check'])
+            target=root/'Model.md'
+            original=render_model_markdown(model)
+            target.write_text(original,encoding='utf-8')
+            self.assertEqual(independent.validate(p,pi,[t],target,common_rules=[r],allow_draft=True)['status'],'passed')
+            # A fabricated certificate with a matching Source SHA is still not
+            # a proof of arbitrary text, even when the table parses correctly.
+            proof='| demo.rule.check | demo.rule.document | '+model['normative_rule_inputs'][0]['sha256']+' | '+PROOF+' | '+CONTRACT+' | '+CONTRACT+' | assembled-process | passed |'
+            section_start=original.index('## Intrinsic rule proofs')
+            separator='| --- | --- | --- | --- | --- | --- | --- | --- |'
+            insert_at=original.index(separator,section_start)+len(separator)
+            target.write_text(original[:insert_at]+'\n'+proof+original[insert_at:],encoding='utf-8')
+            check=independent.validate(p,pi,[t],target,common_rules=[r],allow_draft=True)
+            self.assertEqual(check['status'],'blocked')
+            self.assertIn('intrinsic_rule_proofs',check['mismatches'])
 
     def test_unstructured_requirements_cannot_be_elevated_by_any_named_verifier(self):
         for requirement,verification,condition in (
