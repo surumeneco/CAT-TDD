@@ -52,7 +52,7 @@ class RuleVerifierClosureFailureTests(unittest.TestCase):
                           "'rule_id':'demo.rule.check','subject':'discord',"
                           "'fixture_sha256':hashlib.sha256(raw).hexdigest(),"
                           "'observed':json.loads(raw)}))\n")
-                (root / 'runner.py').write_text(script, encoding='utf-8')
+                (root / 'runner.py').write_bytes(script.encode('utf-8'))
                 entry['runner'] = {'type': 'python-json-v1', 'path': 'runner.py',
                                    'sha256': sha(script.encode())}
             registry = {'schema': 'cat-verifier-registry/v1',
