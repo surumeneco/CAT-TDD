@@ -979,6 +979,19 @@ def _presence_cases(domain,presence):
     return ([typed.MISSING,*values] if presence=='optional' else values)
 
 
+def _active_pi_constraints(model, trigger):
+    """Constraints on a PI are obligations only at that PI's accepted operation.
+
+    Legacy models without source scopes retain the original single-boundary
+    behavior. The scope inventory is preserved separately from its expressions
+    so no generated guard may borrow another PI's input state.
+    """
+    scopes = model.get('pi_constraint_scopes')
+    if scopes is None:
+        return model.get('pi_constraints', [])
+    return [item['expr'] for item in scopes if trigger in item['triggers']]
+
+
 def _presence_accepted_operation(operations,trigger):
     matches=[op for op in operations if op['direction']=='accept' and op.get('trigger')==trigger]
     if len(matches)>1:
@@ -1134,6 +1147,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     fields={}
     pi_fields={}
     constraints=[]
+    pi_constraint_sources=[]
     pi_operations=[]
     operation_presence=[]
     for _,pif,pi in pi_docs:
@@ -1204,6 +1218,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         cs=pi.get('constraints',[])
         require(isinstance(cs,list),'PI constraints must be array')
         constraints.extend(cs)
+        pi_constraint_sources.extend((pif['id'], expr) for expr in cs)
     if contract=='markdown-v2':
         require(len(p.get('interfaces',[]))==len(set(p.get('interfaces',[]))),'duplicate Process Interface reference')
         require({fm['id'] for _,fm,_ in pi_docs} <= set(p.get('interfaces',[])),
@@ -1243,6 +1258,29 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         for d in definitions.values():inspect_expr(d['body'],fields,definitions,d['params'])
     for predicate in constraints:
         require(inspect_expr(predicate,pi_fields,definitions)=='boolean','PI constraint must be boolean')
+
+    # A flattened inventory is retained for old source/model readers, but
+    # normative Guard-space evaluation is bound to the owning PI's accept
+    # operations. A provide-only constraint describes a later result, not an
+    # unobserved input at request start; it stays unproved until a result-time
+    # relation verifier is supplied. No name-based or product-specific rules.
+    pi_constraint_scopes=[]
+    unbound_pi_constraints=[]
+    for pi_id, predicate in pi_constraint_sources:
+        refs=used_refs(predicate,definitions)
+        require(all(ref in pi_fields and pi_fields[ref]['source_pi']==pi_id
+                    for ref in refs),
+                'PI constraint references a field outside its owning PI: '+pi_id)
+        input_only=all(pi_fields[ref]['role']=='input' for ref in refs)
+        accepted=sorted({op['trigger'] for op in pi_operations
+                         if op['source_pi']==pi_id and op['direction']=='accept'})
+        active=accepted if input_only else []
+        pi_constraint_scopes.append({'source_pi':pi_id,'expr':predicate,
+                                     'triggers':active})
+        if not active and contract=='markdown-v2':
+            unbound_pi_constraints.append({'source_pi':pi_id,'expr':predicate,
+                'reason':'non-input result relation' if not input_only
+                         else 'no accepted Operation to bind PI constraint'})
 
     rules=[]
     local_coverage_requirements={}
@@ -1336,9 +1374,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             for field_id,field in pi_fields.items() if field['role']=='input'
         }
         special={field_id for field_id,presence in input_presence.items() if presence!='required'}
+        scoped_constraints = ([x['expr'] for x in pi_constraint_scopes
+                               if trigger in x['triggers']]
+                              if contract=='markdown-v2' else constraints)
         relevant=set().union(
             *(used_refs(r['when'],definitions) for r in rr),
-            *(used_refs(c,definitions) for c in constraints)) if rr or constraints else set()
+            *(used_refs(c,definitions) for c in scoped_constraints)) if rr or scoped_constraints else set()
         # Optional Presence is relevant to Guard closure only if the
         # normative Guard or PI constraint actually observes this field.
         # Otherwise all present/missing values share the same truth profile.
@@ -1360,7 +1401,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         domainvalues=[]
         partition_fields=[]
         partition_kinds=set()
-        predicates=[*constraints,*(r['when'] for r in rr)]
+        predicates=[*scoped_constraints,*(r['when'] for r in rr)]
         for field_id in ordered:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
@@ -1407,7 +1448,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         for values in itertools.product(*domainvalues):
             env=dict(zip(ordered,values))
             try:
-                if not all(eval_expr(c,env,definitions) for c in constraints):
+                if not all(eval_expr(c,env,definitions) for c in scoped_constraints):
                     continue
                 hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
             except Blocked as exc:
@@ -1427,7 +1468,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                'overlaps':overlaps[:16],'uncovered':gaps[:64],
                'uncovered_count':len(gaps) if not partition_fields else None,
                'unreachable_rules':sorted(unreachable),
-               'excluded_by_pi_constraints':True if constraints else False}
+               'excluded_by_pi_constraints':bool(scoped_constraints)}
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
@@ -1440,7 +1481,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         require(allow_draft or not unreachable,'unreachable TCE behavior(s): '+str(sorted(unreachable)))
     presence_unproven=sorted(presence_unproven)
     coverage_proved = (p['closed_world'] and all(x['result']=='proved' for x in per_trigger.values())
-                       and not presence_unproven and not (unresolved_interfaces if contract=='markdown-v2' else [])
+                       and not presence_unproven and not unbound_pi_constraints
+                       and not (unresolved_interfaces if contract=='markdown-v2' else [])
                        )
     if not coverage_proved:
         require(allow_draft or allow_partial,
@@ -1477,6 +1519,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             'source_artifacts':[fm['id'] for _,fm in files],
             'source_records':source_records,
             'source_sha256':hashes,'triggers':p['triggers'],'fields':list(fields.values()),'pi_constraints':constraints,
+            **({'pi_constraint_scopes':pi_constraint_scopes,
+                'unbound_pi_constraints':unbound_pi_constraints} if contract=='markdown-v2' else {}),
             'definitions':list(definitions.values()),'coverage_requirement':'closed' if coverage_proved else 'partial',
             'local_coverage_requirements':local_coverage_requirements,
             'coverage_checks':per_trigger,'rules':rules,
@@ -1608,7 +1652,12 @@ def expand_cases(model, vectors):
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
         env={}
-        for name in sorted(inputs):
+        active_inputs=(set(inputs) if 'pi_constraint_scopes' not in model or operation is None
+                       else {name for name in inputs
+                             if fields[name].get('source_pi')==operation['source_pi']})
+        require(set(test['input'])<=active_inputs,
+                'vector contains input from an inactive PI Operation')
+        for name in sorted(active_inputs):
             field=fields[name]
             presence=_vector_field_presence(model,operation,field)
             val=_vector_input_value(field['domain'],presence,test['input'],name)
@@ -1619,7 +1668,8 @@ def expand_cases(model, vectors):
         defs={d['id']:d for d in model['definitions']}
         # Presence-aware expressions may inspect missing/undefined inputs. An
         # ordinary read still fails inside eval_expr and cannot become an oracle.
-        require(all(eval_expr(c,env,defs) for c in model['pi_constraints']),f'{test["id"]}: violates PI combination constraint')
+        require(all(eval_expr(c,env,defs) for c in _active_pi_constraints(model,test['trigger'])),
+                f'{test["id"]}: violates PI combination constraint')
         rule=match_rules(model,test['trigger'],env)
         defs={d['id']:d for d in model['definitions']}
         allowed=[]
@@ -1675,7 +1725,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 and model.get('presence_unproven')==[]
                 and bool(checks) and all(x.get('result')=='proved' for x in checks.values()),
                 'nonrequired output Presence needs proved operation and Effect frame')
-    variable_ids=sorted(f for f in fields if fields[f]['role'] in ('input','state'))
+    all_variable_ids=sorted(f for f in fields if fields[f]['role'] in ('input','state'))
     defs={d['id']:d for d in model['definitions']}
     witnesses={}
     for trigger in sorted(t['id'] for t in model['triggers']):
@@ -1694,9 +1744,13 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 model.get('operation_presence',[]),trigger)
             require(provide_operation is not None,
                     'ambiguous provided output operation for deterministic vectors')
+        variable_ids=([name for name in all_variable_ids
+                       if fields[name]['role']=='state' or operation is None
+                       or 'pi_constraint_scopes' not in model
+                       or fields[name].get('source_pi')==operation['source_pi']])
         domains=[]
         rules_here=[r for r in model['rules'] if r['trigger']==trigger]
-        predicates=[*model['pi_constraints'],*(r['when'] for r in rules_here)]
+        predicates=[*_active_pi_constraints(model,trigger),*(r['when'] for r in rules_here)]
         observed=set().union(*(used_refs(expr,defs) for expr in predicates)) if predicates else set()
         for rule in rules_here:
             for outcome in rule['allowed']:
@@ -1726,7 +1780,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 'test-selection exceeds configured 65536 combinations')
         for values in itertools.product(*domains):
             env=dict(zip(variable_ids,values))
-            if not all(eval_expr(c,env,defs) for c in model['pi_constraints']):
+            if not all(eval_expr(c,env,defs) for c in _active_pi_constraints(model,trigger)):
                 continue
             hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
             require(len(hit)==1,f'confirmed TestModel selection found {len(hit)} rules at {trigger}')
