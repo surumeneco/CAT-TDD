@@ -193,6 +193,22 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     unverified_effect_ids=sorted(ident for ident,check in effect_checks.items()
                                  if check['result']!='proved')
     source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
+    constraint_scopes=[]
+    for _,fm,pi in pi_docs:
+        accepted=sorted({op['trigger'] for op in pi.get('operations',[])
+                         if op['direction']=='accept'})
+        own_fields={f['id']:f for f in pi['fields']}
+        for expr in pi.get('constraints',[]):
+            from cat_compile_v2 import used_refs
+            refs=used_refs(expr,{x['id']:x for x in domain['definitions']} if domain else {})
+            # The Compiler rejects cross-owner references. Independently keep
+            # this claim in the Source→Model inventory rather than accepting
+            # a field-name-only matching expression.
+            owner_only=all(ref in own_fields for ref in refs)
+            input_only=owner_only and all(own_fields[ref]['role']=='input' for ref in refs)
+            constraint_scopes.append((fm['id'],
+                       tuple(accepted if input_only else []),
+                       format_expr(expr,language=fm.get('language','en'))))
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
     intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
@@ -204,6 +220,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'process':p['process'],
         'process_closed_world':p['closed_world'],
         'source_guard_audit':source_guard_audit,
+        'constraint_scopes':sorted(constraint_scopes),
         'sources': {
             fm['id']: (fm['kind'], hashlib.sha256(Path(path).read_bytes()).hexdigest())
             for path, fm in files
@@ -459,6 +476,9 @@ def json_model(path):
         'unresolved_interfaces':model.get('unresolved_interfaces'),
         'constraints': tuple(format_expr(expr, language=model.get('language', 'en'))
                              for expr in model.get('pi_constraints', [])),
+        'constraint_scopes':sorted((e['source_pi'],tuple(e['triggers']),
+             format_expr(e['expr'],language=model.get('language','en')))
+             for e in model.get('pi_constraint_scopes',[])),
         'definitions': definitions,
         'rules': rules,
         'effects': effects,
@@ -473,7 +493,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()=='.json':
-        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids')
+        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes')
     for key in checks:
         # Python structural == conflates bool with int (True == 1). Domains
         # and named type definitions contain typed literal values and must
