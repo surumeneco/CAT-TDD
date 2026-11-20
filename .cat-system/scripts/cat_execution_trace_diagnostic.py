@@ -127,6 +127,12 @@ def evaluate(model, model_bytes, trace):
         _require(rid in run_by_id, 'event references unknown execution')
         kind = event.get('kind')
         _require(kind in kinds, 'unsupported event kind')
+        # Optional Allowed Outcome binding must retain JSON integer identity.
+        # The independent Source/Effect verifier checks membership separately.
+        if 'outcome_index' in event:
+            _require(type(event['outcome_index']) is int
+                     and event['outcome_index'] >= 1,
+                     'event outcome index must be a positive integer')
         run = run_by_id[rid]
         if kind == 'trigger':
             _require(event.get('parent_event_id') is None, 'trigger cannot have a parent')
