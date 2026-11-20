@@ -37,6 +37,19 @@ class ExplicitRuleScopeTests(unittest.TestCase):
             target.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
             self.assertEqual(independent.validate(p,pi,[t],target,common_rules=[r])['status'],'passed')
 
+    def test_declaring_process_is_source_bound_and_tamper_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            p,pi,t,r=self._fixture(root,'demo.process.other')
+            model=load(p,pi,t,common_rules=[r])
+            self.assertEqual(model['normative_rule_inputs'][0]['process'],'demo.process')
+            model['normative_rule_inputs'][0]['process']='foreign.process'
+            target=root/'Model.json'
+            target.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            verdict=independent.validate(p,pi,[t],target,common_rules=[r])
+            self.assertEqual(verdict['status'],'blocked')
+            self.assertIn('normative_rule_inputs',verdict['mismatches'])
+
     def test_process_closure_gate_respects_verified_nonapplicability(self):
         for condition,expected in (
             ('demo.process.other','passed'),
