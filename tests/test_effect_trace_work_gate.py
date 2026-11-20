@@ -122,6 +122,21 @@ class EffectGateIntegration(unittest.TestCase):
             (root/'observation.json').write_text('changed observation')
             self.assertEqual(flow.conformance_evidence_status(wp,w,'implementation-conformance')['status'],'stale')
 
+    def test_unobserved_effect_with_other_terminal_outcome_blocks_formal_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);w,wp=setup(root)
+            trace=json.loads((root/'Trace.json').read_text(encoding='utf-8'))
+            packet=json.loads((root/'Packet.json').read_text(encoding='utf-8'))
+            record=packet['observations'][0]
+            record.update(reported_status='not-observed',observation_file=None,
+                          observation_sha256=None,effect_event_id=None)
+            trace['events'][5]['outcome_index']=2
+            (root/'Trace.json').write_text(json.dumps(trace),encoding='utf-8')
+            (root/'Packet.json').write_text(json.dumps(packet),encoding='utf-8')
+            verdict=flow.conformance_work(wp,w,'implementation-conformance')
+            self.assertEqual(verdict['status'],'blocked',verdict)
+            self.assertIn('terminal allowed Outcome',verdict['reason'])
+
     def test_incomplete_evidence_contract_is_rejected(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);w,wp=setup(root)
