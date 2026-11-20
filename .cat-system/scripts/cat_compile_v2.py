@@ -2195,6 +2195,29 @@ def render_model_markdown(model):
     if records is None:
         records=[{'id':aid,'kind':kind,'sha256':digest} for aid,(kind,digest) in zip(model['source_artifacts'],model['source_sha256'].items())]
     for rec in records:lines.append(f"| {_md(rec['id'])} | {_md(rec['kind'])} | `{rec['sha256']}` |")
+    # Source-bound CommonRule/DomainSpec inventory is normative data, not a
+    # comment on TCE behavior. The Markdown Model must retain the same
+    # ownership, meaning and unresolved proof status as the JSON Model.
+    lines += ['',('## 規範Rule出典' if ja else '## Normative rule sources'),'',
+              ('| 出典ID | 種別 | 宣言元Process | SHA-256 |' if ja else
+               '| Source ID | Kind | Declaring Process | SHA-256 |'),
+              '| --- | --- | --- | --- |']
+    for source in model.get('normative_rule_inputs',[]):
+        lines.append(f"| {_md(source['id'])} | {_md(source['kind'])} | "
+                     f"{_md(source['process'])} | `{source['sha256']}` |")
+    lines += ['',('## 規範Rule義務' if ja else '## Normative rule obligations'),'',
+              ('| ID | 出典Artifact | 適用条件 | 要求 | 検証契約 | 検証状態 | 出典SHA-256 | 適用範囲束縛 |' if ja else
+               '| ID | Source artifact | Condition | Requirement | Verification contract | Verification status | Source SHA-256 | Scope binding |'),
+              '| --- | --- | --- | --- | --- | --- | --- | --- |']
+    for rule in model.get('rule_obligations',[]):
+        scope=rule.get('scope_binding')
+        scope_text=('—' if scope is None else
+                    json.dumps(scope,sort_keys=True,ensure_ascii=False,separators=(',',':')))
+        lines.append(f"| {_md(rule['id'])} | {_md(rule['source_artifact'])} | "
+                     f"{_md(rule['condition'])} | {_md(rule['requirement'])} | "
+                     f"{_md(rule['verification_contract'])} | "
+                     f"{_md(rule.get('verification_status','unverified'))} | "
+                     f"{_md(rule.get('source_sha256') or '—')} | {_md(scope_text)} |")
     if model.get('process_interfaces') is not None:
         lines += ['',('## Process境界' if ja else '## Process interfaces'),'', '| PI |','| --- |']
         for ref in model.get('process_interfaces',[]): lines.append(f"| {_md(ref)} |")
