@@ -977,6 +977,41 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
     return checks
 
 
+def _integer_reference_equality_values(fields, names, predicates, input_presence, definitions):
+    """Exact truth classes for equality of two like, half-infinite integers.
+
+    This is a *local Guard* proof, not a state reachability or Effect proof.
+    The two references must have the identical unbounded upper interval and
+    every predicate use must be the pair's ==/!= under Boolean composition.
+    Thus {equal, distinct} is exhaustive, irrespective of concrete magnitude.
+    """
+    names=set(names)
+    candidates=sorted(name for name in names if name in fields
+                      and fields[name]['domain'].get('type')=='integer'
+                      and set(fields[name]['domain']) <= {'type','min'}
+                      and (name not in input_presence or input_presence[name]=='required'))
+    if len(candidates)!=2:return {}
+    a,b=candidates
+    domain=fields[a]['domain']
+    if domain!=fields[b]['domain']:return {}
+    lower=domain.get('min',0)
+    if type(lower) is not int:return {}
+    pair=set(candidates)
+    def supported(node):
+        if not isinstance(node,dict):return False
+        if not pair.intersection(used_refs(node,definitions)):
+            return True
+        op=node.get('op');args=node.get('args',[])
+        if op in ('and','or','not') and isinstance(args,list):
+            return all(supported(arg) for arg in args)
+        if op in ('eq','ne') and len(args)==2:
+            return {arg.get('ref') for arg in args if isinstance(arg,dict) and set(arg)=={'ref'}}==pair and all(
+                isinstance(arg,dict) and set(arg)=={'ref'} for arg in args)
+        return False
+    if not all(supported(predicate) for predicate in predicates):return {}
+    return {a:[lower,lower+1],b:[lower,lower+1]}
+
+
 def _presence_cases(domain,presence):
     """Exact PI input-state enumeration, not a fabricated ordinary value."""
     require(presence in ('required','optional','absent','undefined'),'invalid input Presence')
@@ -1475,6 +1510,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         partition_fields=[]
         partition_kinds=set()
         predicates=[*scoped_constraints,*(r['when'] for r in rr)]
+        integer_pair=_integer_reference_equality_values(
+            fields,ordered,predicates,input_presence,definitions)
         for field_id in ordered:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
@@ -1499,6 +1536,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 if values is not None:
                     partition_fields.append(field_id)
                     partition_kinds.add('string')
+            if values is None and field_id in integer_pair:
+                values=integer_pair[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('integer_ref_pair')
             domainvalues.append(values)
         if any(values is None for values in domainvalues):
             per_trigger[trigger]={'result':'unproven',
@@ -1545,7 +1586,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
-                    else 'integer-string-literal-partition/v1')
+                    else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
+                    else 'mixed-exact-predicate-partition/v1')
             check.update(proof_method=method,
                          partition_fields=partition_fields,
                          abstract_state_count=combinations,
@@ -1837,6 +1879,9 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             for outcome in rule['allowed']:
                 for write in outcome['write']:
                     observed.update(used_refs(write['expr'],defs))
+        guard_names=set().union(*(used_refs(predicate,defs) for predicate in predicates)) if predicates else set()
+        integer_pair=_integer_reference_equality_values(
+            fields,guard_names,predicates,presence,defs)
         for field_id in variable_ids:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],presence[field_id])
@@ -1853,6 +1898,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                                    or presence[field_id]=='required'):
                 values=semantic_string_partition.string_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and field_id in integer_pair:
+                values=integer_pair[field_id]
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)
