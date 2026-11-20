@@ -1,4 +1,4 @@
-"""Exact local Guard partition for two same-domain, half-infinite integer references."""
+"""Exact local Guard partition for two same-domain integer references."""
 from __future__ import annotations
 import json
 import subprocess
@@ -38,6 +38,7 @@ class IntegerReferenceEqualityPartitionTests(unittest.TestCase):
         # proof of a product's Rule/Provider/reachability semantics.
         scenarios = [
             ('complete', {}, 'passed', 0, 'confirmed', 'proved'),
+            ('bounded-complete', {'domain':'integer[1..1000000]'}, 'passed', 0, 'confirmed', 'proved'),
             ('overlap', {'negative':'input.version == state.version'}, 'blocked', 2, None, None),
             ('uncovered', {'negative':'false'}, 'blocked', 2, None, None),
             ('unsupported', {'negative':'input.version > state.version'}, 'inconclusive', 0, 'draft', 'unproven'),
@@ -113,17 +114,84 @@ class IntegerReferenceEqualityPartitionTests(unittest.TestCase):
                        allow_draft=True,allow_partial=True)
             self.assertEqual(model['coverage_checks']['submit']['result'],'uncovered')
 
-    def test_arithmetic_optional_input_or_nonmatching_domain_is_not_proved(self):
+    def test_arithmetic_or_optional_input_is_not_proved(self):
         variants=[{'positive':'input.version + 1 == state.version',
                    'negative':'input.version + 1 != state.version'},
-                  {'presence':'optional'},
-                  {'domain':'integer[1..1000000]'}]
-        # A large finite interval equality is deliberately not accepted by the
-        # special half-infinite proof, even though a stronger solver might exist.
+                  {'presence':'optional'}]
         for spec in variants:
             with self.subTest(spec=spec),tempfile.TemporaryDirectory() as td:
                 model=load(*fixture(Path(td),**spec),allow_draft=True,allow_partial=True)
                 self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
+
+    def test_large_bounded_integer_equality_is_exact_without_enumeration(self):
+        with tempfile.TemporaryDirectory() as td:
+            source=fixture(Path(td),domain='integer[1..1000000]')
+            for artifact in source: approve_fixture(artifact)
+            model=load(*source)
+            self.assertEqual(model['status'],'confirmed')
+            receipt=model['coverage_checks']['submit']
+            self.assertEqual(receipt['result'],'proved')
+            self.assertEqual(receipt['proof_method'],'integer-reference-equality-partition/v1')
+            self.assertEqual(receipt['abstract_state_count'],4)
+            path=Path(td)/'Model.json'
+            path.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            self.assertEqual(validate(*source,path)['status'],'passed')
+            selected=selection_vectors(model)
+            self.assertEqual(len(selected['cases']),2)
+            cases=expand_cases(model,selected)
+            self.assertEqual({case['input']['input.version']==case['initial_state']['state.version']
+                              for case in cases},{True,False})
+
+    def test_upper_only_negative_bound_stays_inside_domain(self):
+        with tempfile.TemporaryDirectory() as td:
+            source=fixture(Path(td),domain='integer[..-100]')
+            for artifact in source: approve_fixture(artifact)
+            model=load(*source)
+            self.assertEqual(model['status'],'confirmed')
+            self.assertEqual(model['coverage_checks']['submit']['result'],'proved')
+            self.assertEqual(model['coverage_checks']['submit']['proof_method'],
+                             'integer-reference-equality-partition/v1')
+            cases=expand_cases(model,selection_vectors(model))
+            self.assertEqual(len(cases),2)
+            self.assertTrue(all(x<=-100 for case in cases
+                                for x in (case['input']['input.version'],case['initial_state']['state.version'])))
+
+    def test_singleton_bounded_domain_does_not_invent_distinct_pair(self):
+        with tempfile.TemporaryDirectory() as td:
+            source=fixture(Path(td),domain='integer[4..4]')
+            model=load(*source,allow_draft=True,allow_partial=True)
+            receipt=model['coverage_checks']['submit']
+            self.assertIn('demo.reject',receipt['unreachable_rules'])
+            self.assertNotEqual(receipt.get('proof_method'),
+                                'integer-reference-equality-partition/v1')
+            for artifact in source: approve_fixture(artifact)
+            work=base_work()
+            work['id']='synthetic-bounded-singleton'
+            work['compilation']={
+                'schema':'cat-compile/v2','process':'Process.md',
+                'pi':'PI.md','tce':'TCE.md','model':'Model.json','allow_draft':False,'allow_partial':True,
+            }
+            work_file=Path(td)/'Work.json'
+            work_file.write_text(json.dumps(work),encoding='utf-8')
+            result=subprocess.run([sys.executable,str(Path(__file__).resolve().parents[1]/'.cat-system'/'scripts'/'cat_flow.py'),
+                                   'conformance','--work',str(work_file),'--kind','process-closure'],
+                                  capture_output=True,text=True,check=False,timeout=35)
+            self.assertEqual(result.returncode,2,result.stderr+result.stdout)
+            self.assertEqual(json.loads(result.stdout)['status'],'blocked')
+
+    def test_differing_bounded_domains_and_ordering_fail_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            p,pi,tce=fixture(Path(td),domain='integer[1..1000000]')
+            pi.write_text(pi.read_text(encoding='utf-8').replace(
+                '| input.version | receive | integer[1..1000000] | required |',
+                '| input.version | receive | integer[2..1000000] | required |'),encoding='utf-8')
+            model=load(p,pi,tce,allow_draft=True,allow_partial=True)
+            self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
+        with tempfile.TemporaryDirectory() as td:
+            model=load(*fixture(Path(td),domain='integer[1..1000000]',
+                                negative='input.version > state.version'),
+                       allow_draft=True,allow_partial=True)
+            self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
 
     def test_different_half_infinite_bounds_and_literal_mixture_fail_closed(self):
         with tempfile.TemporaryDirectory() as td:
