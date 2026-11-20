@@ -32,6 +32,19 @@ def _sha(value):
     return isinstance(value,str) and bool(re.fullmatch('[0-9a-f]{64}',value))
 
 
+_CORRELATION_KEYS=frozenset(('request_id','transaction_id','target_id'))
+
+
+def _declared_correlation(record,label):
+    if 'correlation' not in record:
+        return None
+    value=record['correlation']
+    require(isinstance(value,dict) and set(value)==_CORRELATION_KEYS
+            and all(isinstance(v,str) and bool(v.strip()) for v in value.values()),
+            label+' correlation requires nonempty request/transaction/target IDs')
+    return value
+
+
 def _local(root,name):
     require(isinstance(name,str) and bool(name), 'observation file path required')
     root=Path(root).resolve(strict=True)
@@ -167,6 +180,7 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
         key=(run,rid,index,target)
         require(key not in seen,'duplicate observation receipt')
         seen.add(key)
+        receipt_correlation=_declared_correlation(entry,'Effect receipt')
         status=entry.get('reported_status')
         require(status in ('succeeded','failed','unknown','not-observed'),
                 'unsupported reported Effect status')
@@ -179,6 +193,15 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
             require(isinstance(observation,dict)
                     and observation.get('schema')=='cat-effect-observation/v1',
                     'invalid observation payload')
+            # The observation file is hashed and independently supplied. If
+            # it declares correlation IDs, they cannot contradict (or be
+            # hidden by omitting) the envelope's claim for this Effect.
+            # Legacy observation files without IDs remain valid; matching
+            # self-reported labels are NOT independent provider attestation.
+            observation_correlation=_declared_correlation(observation,'observation')
+            if observation_correlation is not None:
+                require(receipt_correlation==observation_correlation,
+                        'observation correlation differs from Effect receipt')
             for field,expected in [('rule_id',rid),('outcome_index',index),
                                    ('effect_target',target),('execution_id',run),
                                    ('reported_status',status)]:
