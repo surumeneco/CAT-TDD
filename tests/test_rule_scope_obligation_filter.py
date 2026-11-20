@@ -122,6 +122,30 @@ class NonapplicableRuleObligationTests(unittest.TestCase):
                 with self.assertRaisesRegex(VerifierError,'scope binding'):
                     evaluate(mp,rp)
 
+    def test_not_applicable_cannot_escape_declaring_source_process_tree(self):
+        # Model hash binding alone is not a source-bound scope proof: a
+        # relabelled, rehashed Rule must not exempt an unrelated Process.
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            _,model=self._model(root)
+            rule=model['rule_obligations'][0]
+            rule['condition']='unrelated.process'
+            rule['scope_binding']['targets']=['unrelated.process']
+            mp,rp=self._registry(root,model,[])
+            with self.assertRaisesRegex(VerifierError,'scope binding'):
+                evaluate(mp,rp)
+
+    def test_not_applicable_requires_model_process_within_declaring_source(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            _,model=self._model(root)
+            # A forged Process cannot borrow an unrelated document's scope.
+            model['process']='foreign.process'
+            model['rule_obligations'][0]['scope_binding']['evaluated_process']='foreign.process'
+            mp,rp=self._registry(root,model,[])
+            with self.assertRaisesRegex(VerifierError,'scope binding'):
+                evaluate(mp,rp)
+
     def test_tampered_process_scope_cannot_skip_rule(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)
