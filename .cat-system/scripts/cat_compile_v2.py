@@ -1355,6 +1355,28 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                           'source_artifact':tce_fm['id']})
     unique([r['id'] for r in rules],'TCE behaviors')
 
+    if contract=='markdown-v2':
+        # A PI input is an event-bound input, never Process state. Another
+        # Operation's inputs cannot be borrowed by a TCE Condition/Effect,
+        # even if finite Guard enumeration would make its truth table look
+        # complete. Retaining the value needs an explicit Process State or
+        # independently declared Observation with lawful provenance.
+        for rule in rules:
+            accepted=[op for op in pi_operations if op['direction']=='accept'
+                      and op.get('trigger')==rule['trigger']]
+            if len(accepted)>1:
+                continue  # The existing ambiguous-Operation audit fails closed.
+            owned=accepted[0]['source_pi'] if accepted else None
+            refs=used_refs(rule['when'],definitions)
+            for outcome in rule['allowed']:
+                for write in outcome['write']:
+                    refs.update(used_refs(write['expr'],definitions))
+            invalid=sorted(ref for ref in refs if ref in pi_fields
+                           and pi_fields[ref]['role']=='input'
+                           and pi_fields[ref]['source_pi']!=owned)
+            require(not invalid,
+                    f'TCE {rule["id"]} reads PI input from inactive accepted Operation at {rule["trigger"]}: {invalid}')
+
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
     # operation owns its output and every TCE alternative respects the
