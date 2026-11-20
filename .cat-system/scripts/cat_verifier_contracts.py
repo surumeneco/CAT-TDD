@@ -181,11 +181,13 @@ def evaluate(model_file,registry_file):
         # A Registry with a rehashed Model is only internal consistency
         # evidence. Check the Rule's own provenance, including applicable
         # Source-bound Process scopes, before evaluating even a test fixture.
-        if (rule.get('source_sha256') is not None and
-            rule['source_sha256']!=source.get('sha256')):
+        # Do not exempt free-text / unscoped Rules from provenance checks.
+        # Registry SHA and model SHA are not an independent Source proof, but
+        # every Rule obligation must at least bind its owning Source record
+        # before fixture execution and Rule fingerprinting.
+        if rule.get('source_sha256')!=source.get('sha256'):
             raise VerifierError('normative rule source SHA mismatch for '+rid)
-        if (rule.get('source_kind') is not None and
-            rule['source_kind']!=source.get('kind')):
+        if rule.get('source_kind')!=source.get('kind'):
             raise VerifierError('normative rule source kind mismatch for '+rid)
         declaring_process=source.get('process')
         if isinstance(declaring_process,str) and declaring_process:
