@@ -202,6 +202,11 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
             if observation_correlation is not None:
                 require(receipt_correlation==observation_correlation,
                         'observation correlation differs from Effect receipt')
+            # JSON booleans and floating-point values must not impersonate the
+            # one-origin integer identifier of a declared Allowed Outcome.
+            require(type(observation.get('outcome_index')) is int
+                    and observation['outcome_index'] >= 1,
+                    'observation outcome_index must be a positive integer')
             for field,expected in [('rule_id',rid),('outcome_index',index),
                                    ('effect_target',target),('execution_id',run),
                                    ('reported_status',status)]:
