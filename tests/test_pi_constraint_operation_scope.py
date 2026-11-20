@@ -149,6 +149,45 @@ class OperationScopedPIConstraintsTests(unittest.TestCase):
                                                    'state':{'state.done':False}}]})
             self.assertEqual(cases[0]['source_tce'],'B.done')
 
+    def test_empty_admissible_guard_space_cannot_vacuously_prove_trigger(self):
+        # Contradictory accept-time constraints make A impossible, but an
+        # empty truth table must not be promoted to Process Closure. The
+        # independent checker must derive that limit from the original PIs.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            p, pis, tce = fixture(root)
+            pi = pis[0]
+            source = pi.read_text(encoding='utf-8')
+            self.assertIn('| `input.a == input.b` |', source)
+            pi.write_text(source.replace(
+                '| `input.a == input.b` |',
+                '| `input.a == true` |\\n| `input.a == false` |'.replace('\\n', '\n')),
+                encoding='utf-8')
+            approve_fixture(pi)
+            original = tce.read_text(encoding='utf-8')
+            self.assertIn('| A.done | A | `true` | 1 | `state.done = true` |', original)
+            tce.write_text(original.replace(
+                '| A.done | A | `true` | 1 | `state.done = true` |\\n'.replace('\\n','\n'),
+                ''), encoding='utf-8')
+            approve_fixture(tce)
+            model = load(p, pis, tce, allow_draft=True, allow_partial=True)
+            self.assertEqual(model['coverage_checks']['A']['result'], 'unproven')
+            self.assertIn('no admissible', model['coverage_checks']['A']['reason'])
+            self.assertEqual(model['coverage_claim'], 'partial')
+            self.assertEqual(model['status'], 'draft')
+            output = root / 'Model.json'
+            output.write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(validate(p, pis, tce, output, allow_draft=True)['status'], 'passed')
+            forged = json.loads(output.read_text(encoding='utf-8'))
+            forged['coverage_checks']['A']['result'] = 'proved'
+            forged.update(status='confirmed', coverage_requirement='closed',
+                          coverage_claim='closed')
+            output.write_text(json.dumps(forged, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(validate(p, pis, tce, output, allow_draft=True)['status'],
+                             'blocked')
+            with self.assertRaisesRegex(Blocked, 'closed-world coverage'):
+                load(p, pis, tce)
+
     def test_other_pi_input_cannot_drive_a_trigger_guard(self):
         with tempfile.TemporaryDirectory() as td:
             p, pis, tce = fixture(Path(td))

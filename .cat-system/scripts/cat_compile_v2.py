@@ -1565,11 +1565,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             presence_unproven.update(special & relevant)
             continue
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr);unknown=None
+        admissible=0
         for values in itertools.product(*domainvalues):
             env=dict(zip(ordered,values))
             try:
                 if not all(eval_expr(c,env,definitions) for c in scoped_constraints):
                     continue
+                admissible+=1
                 hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
             except Blocked as exc:
                 unknown=str(exc)
@@ -1580,6 +1582,16 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if unknown:
             per_trigger[trigger]={'result':'unproven','reason':unknown,
                                   'guard_refs':ordered}
+            presence_unproven.update(special & relevant)
+            continue
+        if not admissible:
+            # A closed truth table over zero accepted states is vacuous.
+            # It does not establish an executable Trigger's Source closure.
+            per_trigger[trigger]={'result':'unproven',
+                                  'reason':'no admissible Source-constrained Guard state',
+                                  'guard_refs':ordered,
+                                  'unreachable_rules':sorted(unreachable),
+                                  'excluded_by_pi_constraints':bool(scoped_constraints)}
             presence_unproven.update(special & relevant)
             continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
