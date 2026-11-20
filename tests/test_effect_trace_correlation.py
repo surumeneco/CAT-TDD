@@ -128,6 +128,37 @@ class CorrelationTests(unittest.TestCase):
             self.assertEqual(r['status'],'inconclusive')
             self.assertNotEqual(r['normative_status'],'passed')
 
+    def test_unobserved_effect_still_rejects_explicit_terminal_rule_mismatch(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);raw,t,p=data(root)
+            rec=p['observations'][0]
+            rec.update(reported_status='not-observed',observation_file=None,
+                       observation_sha256=None,effect_event_id=None)
+            t['events'][5]['rule_id']='unrelated-rule'
+            with self.assertRaisesRegex(correlation.CorrelationError,'terminal Rule'):
+                inspect(d,raw,t,p)
+
+    def test_unobserved_effect_still_rejects_explicit_terminal_outcome_mismatch(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);raw,t,p=data(root)
+            rec=p['observations'][0]
+            rec.update(reported_status='not-observed',observation_file=None,
+                       observation_sha256=None,effect_event_id=None)
+            t['events'][5]['outcome_index']=2
+            with self.assertRaisesRegex(correlation.CorrelationError,'terminal allowed Outcome'):
+                inspect(d,raw,t,p)
+
+    def test_unobserved_effect_without_terminal_binding_remains_inconclusive(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);raw,t,p=data(root)
+            rec=p['observations'][0]
+            rec.update(reported_status='not-observed',observation_file=None,
+                       observation_sha256=None,effect_event_id=None)
+            del t['events'][5]['outcome_index']
+            result=inspect(d,raw,t,p)
+            self.assertEqual(result['status'],'inconclusive')
+            self.assertEqual(result['normative_status'],'inconclusive')
+
     def test_receipt_for_run_not_in_trace_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);raw,t,p=data(root)
