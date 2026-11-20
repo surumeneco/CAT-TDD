@@ -390,9 +390,17 @@ def _readable_spec_v2(path, kind, fm):
                           'domain':parse_domain_text(_cell(row,'Domain','domain'))})
         observations=[]
         for row in _table_any(body,('Observations','観測能力'),required=False):
+            # Optional exact Trigger binding. Missing column preserves legacy
+            # unqualified observations; no temporal ordering is inferred from
+            # source prose, names, or a technology-specific clock.
+            availability=_cell(row,'Available on','利用可能Trigger',required=False)
+            triggers_available=([semantic_ident(item,'Observation availability Trigger')
+                                 for item in _split_items(availability)]
+                                if availability not in ('','-','—','none','なし') else None)
             observations.append({'id':semantic_ident(_cell(row,'ID','Id','id'),'Observation ID'),'role':'observation',
                                  'source':_cell(row,'Source','Origin','source','由来','情報源'),
-                                 'domain':parse_domain_text(_cell(row,'Domain','domain'))})
+                                 'domain':parse_domain_text(_cell(row,'Domain','domain')),
+                                 **({'available_on':triggers_available} if triggers_available is not None else {})})
         actions=[]
         for row in _table_any(body,('Actions','作用能力'),required=False):
             actions.append({'id':semantic_ident(_cell(row,'ID','Id','id'),'Action ID'),'role':'action',
@@ -1235,8 +1243,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             ('Action',p.get('actions',[]),'action',('target',))):
             require(isinstance(items,list),f'Process {name} must be array')
             for field in items:
-                check_keys(field,['id','role','domain',*extra],where=f'Process {name}')
+                check_keys(field,['id','role','domain',*extra],
+                           ['available_on'] if role=='observation' else (),
+                           where=f'Process {name}')
                 require(field['role']==role,f'Process {name} role invalid')
+                if role=='observation' and 'available_on' in field:
+                    declared=[t['id'] for t in p['triggers']]
+                    available=field['available_on']
+                    require(isinstance(available,list) and bool(available)
+                            and len(available)==len(set(available))
+                            and all(t in declared for t in available),
+                            'Observation available_on must contain unique declared Process triggers')
                 semantic_ident(field['id'],f'Process {name} ID')
                 require(field['id'] not in fields,f'duplicate specification field {field["id"]}')
                 field['domain']=resolve_domain_types(field['domain'])
@@ -1376,6 +1393,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                            and pi_fields[ref]['source_pi']!=owned)
             require(not invalid,
                     f'TCE {rule["id"]} reads PI input from inactive accepted Operation at {rule["trigger"]}: {invalid}')
+            unavailable=sorted(ref for ref in refs if ref in fields
+                               and fields[ref]['role']=='observation'
+                               and 'available_on' in fields[ref]
+                               and rule['trigger'] not in fields[ref]['available_on'])
+            require(not unavailable,
+                    f'TCE {rule["id"]} reads Observation unavailable at Trigger {rule["trigger"]}: {unavailable}')
 
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
