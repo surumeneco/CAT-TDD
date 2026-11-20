@@ -236,6 +236,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
     constraint_scopes=[]
     unbound_constraints=[]
+    markdown_bindings=[]
     for _,fm,pi in pi_docs:
         accepted=sorted({op['trigger'] for op in pi.get('operations',[])
                          if op['direction']=='accept'})
@@ -251,11 +252,16 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
             active=accepted if input_only else []
             constraint_scopes.append((fm['id'],tuple(active),
                        format_expr(expr,language=fm.get('language','en'))))
-            if not active and pf.get('semantic_contract')=='markdown-v2':
-                unbound_constraints.append({
-                    'source_pi':fm['id'], 'expr':expr,
-                    'reason':('non-input result relation' if not input_only
-                              else 'no accepted Operation to bind PI constraint')})
+            if pf.get('semantic_contract')=='markdown-v2':
+                reason=(('non-input result relation' if not input_only
+                         else 'no accepted Operation to bind PI constraint')
+                        if not active else None)
+                markdown_bindings.append((fm['id'],tuple(active),
+                                          format_expr(expr,language=tf.get('language','en')),
+                                          reason))
+                if reason is not None:
+                    unbound_constraints.append({'source_pi':fm['id'],
+                                                'expr':expr,'reason':reason})
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
     intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
@@ -269,6 +275,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'process_closed_world':p['closed_world'],
         'source_guard_audit':source_guard_audit,
         'constraint_scopes':sorted(constraint_scopes),
+        'constraint_bindings':sorted(markdown_bindings),
         # A result-time or ownerless PI constraint is not proved by local
         # acceptance-Guard partitioning. Independently retain its exact Source.
         'unbound_pi_constraints':(unbound_constraints
@@ -398,6 +405,13 @@ def markdown_model(path):
 
     constraints = tuple(clean_expr(cell(row, 'Expression', '式'))
                         for row in table(text, 'PI constraints', 'PI制約'))
+    constraint_bindings=[]
+    for row in table(text,'PI constraint bindings','PI制約の束縛'):
+        reason=cell(row,'Unproved reason','未証明理由')
+        constraint_bindings.append((cell(row,'Source PI','出典PI'),
+             tuple(split_list(cell(row,'Triggers','起点'))),
+             clean_expr(cell(row,'Expression','式')),
+             None if reason in ('—','-','') else reason))
 
     definitions = {}
     for row in table(text, 'DomainRule definitions', 'DomainRule定義'):
@@ -426,7 +440,8 @@ def markdown_model(path):
 
     return {'sources': sources, 'interfaces': interfaces, 'boundary': boundary,
             'operations': operations, 'triggers': triggers, 'fields': fields,
-            'constraints': constraints, 'definitions': definitions, 'rules': rules,
+            'constraints': constraints, 'constraint_bindings':sorted(constraint_bindings),
+            'definitions': definitions, 'rules': rules,
             'effects': effects, 'frames': frames}
 
 
@@ -552,6 +567,10 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     mismatches = []
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
+    if Path(model).suffix.lower()!='.json':
+        # Markdown need not carry JSON proof receipts, but it must preserve
+        # the normative PI/Operation Trigger and unresolved result-time scope.
+        checks += ('constraint_bindings',)
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
     for key in checks:
