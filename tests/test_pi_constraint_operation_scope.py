@@ -183,6 +183,69 @@ class OperationScopedPIConstraintsTests(unittest.TestCase):
             self.assertEqual(result['status'], 'blocked')
             self.assertIn('constraint_scopes',result['mismatches'])
 
+    def test_result_only_pi_constraint_is_not_an_acceptance_guard(self):
+        # A constraint on a provided result is not an observable input at
+        # request acceptance. The compiler leaves the normative relation
+        # unproved, but the independent Model audit must agree on its local
+        # Guard domain instead of importing the future response.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            p, pis, tce = fixture(root)
+            pi = pis[0]
+            text = pi.read_text(encoding='utf-8')
+            text = text.replace('demo.caller | receive |',
+                                'demo.caller | bidirectional |')
+            text = text.replace('| input.b | receive | boolean | required |',
+                '| input.b | receive | boolean | required |\n'
+                '| output.complete | send | boolean | required |')
+            text = text.replace('| `input.a == input.b` |',
+                                '| `output.complete == true` |')
+            pi.write_text(text, encoding='utf-8')
+            approve_fixture(pi)
+            source = tce.read_text(encoding='utf-8').replace(
+                '| A.done | A | `true` | 1 | `state.done = true` |',
+                '| A.done | A | `true` | 1 | `state.done = true; output.complete = true` |')
+            tce.write_text(source, encoding='utf-8')
+            approve_fixture(tce)
+            model = load(p, pis, tce, allow_draft=True)
+            self.assertEqual(model['status'], 'draft')
+            self.assertEqual(model['coverage_checks']['A']['result'], 'proved')
+            self.assertEqual(model['coverage_checks']['A']['guard_refs'], [])
+            self.assertFalse(model['coverage_checks']['A']['excluded_by_pi_constraints'])
+            self.assertEqual(model['pi_constraint_scopes'][0]['triggers'], [])
+            model_path = root / 'Model.json'
+            model_path.write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(validate(p, pis, tce, model_path, allow_draft=True)['status'], 'passed')
+
+    def test_input_and_result_constraints_have_distinct_evaluation_times(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            p, pis, tce = fixture(root)
+            pi = pis[0]
+            text = pi.read_text(encoding='utf-8').replace(
+                'demo.caller | receive |', 'demo.caller | bidirectional |')
+            text = text.replace('| input.b | receive | boolean | required |',
+                '| input.b | receive | boolean | required |\n'
+                '| output.complete | send | boolean | required |')
+            text = text.replace('| `input.a == input.b` |',
+                '| `input.a == input.b` |\n| `output.complete == true` |')
+            pi.write_text(text, encoding='utf-8')
+            approve_fixture(pi)
+            source = tce.read_text(encoding='utf-8').replace(
+                '| A.done | A | `true` | 1 | `state.done = true` |',
+                '| A.done | A | `true` | 1 | `state.done = true; output.complete = true` |')
+            tce.write_text(source, encoding='utf-8')
+            approve_fixture(tce)
+            model = load(p, pis, tce, allow_draft=True)
+            self.assertEqual(model['status'], 'draft')
+            self.assertEqual(model['coverage_checks']['A']['guard_refs'], ['input.a', 'input.b'])
+            self.assertTrue(model['coverage_checks']['A']['excluded_by_pi_constraints'])
+            self.assertEqual(len(model['pi_constraint_scopes']), 2)
+            self.assertEqual([x['triggers'] for x in model['pi_constraint_scopes']], [['A'], []])
+            model_path = root / 'Model.json'
+            model_path.write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(validate(p, pis, tce, model_path, allow_draft=True)['status'], 'passed')
+
     def test_constraint_cannot_silently_refer_to_another_pi_field(self):
         with tempfile.TemporaryDirectory() as td:
             p, pis, tce = fixture(Path(td), cross_pi=True)
