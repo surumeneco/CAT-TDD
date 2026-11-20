@@ -1506,7 +1506,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     for rule in rule_obligations:
         if rule['id'] in proven_rule_ids:
             rule['verification_status']='intrinsic-proved'
-    unverified_rule_ids=sorted({r['id'] for r in rule_obligations}-proven_rule_ids)
+    unverified_rule_ids=sorted({r['id'] for r in rule_obligations
+                                if r['verification_status']!='not-applicable'}-proven_rule_ids)
     # Guard coverage does not prove all Effect expressions total and in Domain.
     effect_checks=_effect_totality_checks(rules,fields,definitions)
     unverified_effect_ids=sorted(key for key,proof in effect_checks.items()
