@@ -190,6 +190,17 @@ def evaluate(model_file,registry_file):
         if rule.get('source_kind')!=source.get('kind'):
             raise VerifierError('normative rule source kind mismatch for '+rid)
         declaring_process=source.get('process')
+        evaluated_process=model.get('process')
+        # A verifier result cannot be borrowed across Source Process scopes,
+        # even when a free-text Rule has no explicit target list. Preserve the
+        # legacy synthetic fixture format when *both* Process fields are absent;
+        # a partially declared or conflicting scope is never sufficient.
+        if declaring_process is not None or evaluated_process is not None:
+            if (not isinstance(declaring_process,str) or not declaring_process
+                or not isinstance(evaluated_process,str) or not evaluated_process
+                or (evaluated_process != declaring_process
+                    and not evaluated_process.startswith(declaring_process+'.'))):
+                raise VerifierError('normative rule Process scope mismatch for '+rid)
         if isinstance(declaring_process,str) and declaring_process:
             targets=explicit_process_targets(rule.get('condition'),declaring_process)
             if targets is not None:
