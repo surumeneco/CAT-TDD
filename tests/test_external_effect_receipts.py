@@ -102,6 +102,21 @@ class ExternalEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(evidence.ReceiptError,'observation correlation'):
                 evidence.inspect(raw,packet,DRIVER,root)
 
+    def test_observation_outcome_index_preserves_json_integer_identity(self):
+        # A hashed observation containing true or 1.0 cannot attest to
+        # Allowed Outcome 1, even though Python compares them equal to 1.
+        for invalid in (True, 1.0, False, 0.0, "1", None):
+            with self.subTest(outcome_index=repr(invalid)), tempfile.TemporaryDirectory() as t:
+                root = Path(t)
+                raw, packet = inputs(root)
+                observed = json.loads((root/'obs.json').read_bytes())
+                observed['outcome_index'] = invalid
+                content = json.dumps(observed, sort_keys=True).encode()
+                (root/'obs.json').write_bytes(content)
+                packet['observations'][0]['observation_sha256'] = hashlib.sha256(content).hexdigest()
+                with self.assertRaisesRegex(evidence.ReceiptError, 'outcome_index'):
+                    evidence.inspect(raw, packet, DRIVER, root)
+
     def test_wrong_source_or_model_sha_blocks(self):
         with tempfile.TemporaryDirectory() as t:
             raw,packet=inputs(Path(t));packet['source_sha256']['demo.tce']='c'*64
