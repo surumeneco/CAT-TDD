@@ -200,7 +200,7 @@ def evaluate(model_file,registry_file):
                 or not isinstance(evaluated_process,str) or not evaluated_process
                 or (evaluated_process != declaring_process
                     and not evaluated_process.startswith(declaring_process+'.'))):
-                raise VerifierError('normative rule Process scope mismatch for '+rid)
+                raise VerifierError('normative rule Process scope mismatch (scope binding) for '+rid)
         if isinstance(declaring_process,str) and declaring_process:
             targets=explicit_process_targets(rule.get('condition'),declaring_process)
             if targets is not None:
