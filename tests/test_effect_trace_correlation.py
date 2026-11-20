@@ -215,6 +215,17 @@ class CorrelationTests(unittest.TestCase):
             with self.assertRaisesRegex(correlation.CorrelationError,'terminal Rule'):
                 inspect(d,raw,t,p)
 
+    def test_effect_and_terminal_outcome_indices_require_exact_integer_type(self):
+        # JSON booleans and integral floats compare equal to 1 in Python,
+        # but they are not a 1-origin normative Allowed Outcome index.
+        for event_position in (4,5):
+            for invalid in (True,1.0,False,0.0):
+                with self.subTest(position=event_position,invalid=invalid), tempfile.TemporaryDirectory() as d:
+                    raw,trace,packet=data(Path(d))
+                    trace['events'][event_position]['outcome_index']=invalid
+                    with self.assertRaisesRegex(correlation.CorrelationError,'outcome index'):
+                        inspect(d,raw,trace,packet)
+
     def test_result_without_explicit_outcome_binding_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as d:
             raw,t,p=data(Path(d));del t['events'][5]['outcome_index']
