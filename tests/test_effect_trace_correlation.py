@@ -128,6 +128,28 @@ class CorrelationTests(unittest.TestCase):
             self.assertEqual(r['status'],'inconclusive')
             self.assertNotEqual(r['normative_status'],'passed')
 
+    def test_unobserved_effect_rejects_explicit_conflicting_terminal_transaction(self):
+        # Unobserved external effects do not excuse inconsistent *declared*
+        # identifiers for the same run's terminal. There is no event to bind,
+        # but the terminal and receipt still claim the same execution.
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);raw,t,p=bound(*data(root))
+            p['observations'][0].update(reported_status='not-observed',
+                observation_file=None,observation_sha256=None,effect_event_id=None)
+            t['events'][5]['correlation']['transaction_id']='other-transaction'
+            with self.assertRaisesRegex(correlation.CorrelationError,'correlation'):
+                inspect(d,raw,t,p)
+
+    def test_unobserved_effect_with_terminal_without_correlation_stays_inconclusive(self):
+        # The unobserved case must not fabricate an assertion that a terminal
+        # was independently correlated when its correlation was not supplied.
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);raw,t,p=bound(*data(root))
+            p['observations'][0].update(reported_status='not-observed',
+                observation_file=None,observation_sha256=None,effect_event_id=None)
+            del t['events'][5]['correlation']
+            self.assertEqual(inspect(d,raw,t,p)['status'],'inconclusive')
+
     def test_unobserved_effect_still_rejects_explicit_terminal_rule_mismatch(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);raw,t,p=data(root)
