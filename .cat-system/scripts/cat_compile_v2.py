@@ -2218,6 +2218,17 @@ def render_model_markdown(model):
                      f"{_md(rule['verification_contract'])} | "
                      f"{_md(rule.get('verification_status','unverified'))} | "
                      f"{_md(rule.get('source_sha256') or '—')} | {_md(scope_text)} |")
+    # Only established Source-bound intrinsic structural predicates can have
+    # proof certificates. Preserve the entire certificate in readable Models;
+    # a Rule's `intrinsic-proved` label alone cannot prove its predicate.
+    lines += ['',('## 内在Rule証明' if ja else '## Intrinsic rule proofs'),'',
+              ('| Rule ID | 出典Artifact | 出典SHA-256 | 要求 | 検証契約 | 証明方法 | 適用範囲 | 証明状態 |' if ja else
+               '| Rule ID | Source artifact | Source SHA-256 | Requirement | Verification contract | Proof method | Scope | Proof status |'),
+              '| --- | --- | --- | --- | --- | --- | --- | --- |']
+    for proof in model.get('intrinsic_rule_proofs',[]):
+        lines.append('| '+' | '.join(_md(proof[field]) for field in
+            ('rule_id','source_artifact','source_sha256','requirement',
+             'verification_contract','proof_method','scope','status'))+' |')
     if model.get('process_interfaces') is not None:
         lines += ['',('## Process境界' if ja else '## Process interfaces'),'', '| PI |','| --- |']
         for ref in model.get('process_interfaces',[]): lines.append(f"| {_md(ref)} |")
