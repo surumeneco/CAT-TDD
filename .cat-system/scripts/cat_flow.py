@@ -492,6 +492,31 @@ def _implementation_repository_fingerprint(wpath, w):
     return sha(json_bytes({'files': state, 'heads': heads}))
 
 
+def conformance_runtime_fingerprint():
+    """Content identity of the installed CAT Gate code and routing policy.
+
+    A Source/Work/implementation HEAD may be unchanged while a new compiler,
+    verifier, inspector, or Gate implementation would reach another result.
+    Pin the complete shipped Python runtime (including Technology Skills) and
+    routing config; the conservative inventory may invalidate evidence after
+    unrelated runtime changes, but cannot silently retain an old Gate result.
+    This is *not* an authenticity attestation or proof of Provider execution.
+    """
+    scripts = ROOT / 'scripts'
+    routing = ROOT / 'config' / 'routing.json'
+    require((scripts / 'cat_flow.py').is_file() and routing.is_file(),
+            'CAT Gate runtime scripts/routing missing')
+    files = [*scripts.rglob('*.py'), *((ROOT / 'skills').rglob('*.py')), routing]
+    inventory = []
+    for path in sorted(files, key=lambda x: x.relative_to(ROOT).as_posix()):
+        require(path.is_file() and not path.is_symlink(),
+                'CAT Gate runtime file must be regular: ' + str(path))
+        inventory.append({'path': path.relative_to(ROOT).as_posix(),
+                          'sha256': sha(path.read_bytes())})
+    return sha(json_bytes({'schema': 'cat-gate-runtime-inventory/v1',
+                           'files': inventory}))
+
+
 def record_conformance_evidence(wpath, w, kind, result):
     runtime = wpath.parent / '.cat-flow' / 'conformance'
     runtime.mkdir(parents=True, exist_ok=True)
@@ -502,6 +527,7 @@ def record_conformance_evidence(wpath, w, kind, result):
         'gate': kind,
         'context_sha256': conformance_context_sha(w),
         'input_sha256': conformance_input_hashes(wpath, w, kind),
+        'runtime_sha256': conformance_runtime_fingerprint(),
         'verdict': result['status'],
         'reason': result.get('reason', ''),
         'supporting_evidence': supporting,
@@ -529,6 +555,8 @@ def conformance_evidence_status(wpath, w, kind):
             return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance evidence identity mismatch'}
         if e.get('context_sha256') != conformance_context_sha(w):
             return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance context changed'}
+        if e.get('runtime_sha256') != conformance_runtime_fingerprint():
+            return {'status': 'stale', 'evidence': str(path), 'reason': 'CAT Gate runtime code/routing changed'}
         # A recorded subset is not sufficient: deleting the TCE, verifier
         # runner or fixture entries must not preserve an old 'passed' verdict.
         # Reconstruct the entire dependency set from the current Work and
