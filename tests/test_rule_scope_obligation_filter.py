@@ -156,5 +156,98 @@ class NonapplicableRuleObligationTests(unittest.TestCase):
             with self.assertRaisesRegex(VerifierError,'scope binding'):
                 evaluate(mp,rp)
 
+
+class ApplicableRuleScopeVerifierTests(unittest.TestCase):
+    """Rehashed fixture evidence must not waive Source-bound active Rule scope."""
+
+    def _setup(self,root,condition='demo.process'):
+        p,pi,t,r=build(root,requirement='Check declared output',
+                       verification='static checker',condition=condition)
+        model=load(p,pi,t,common_rules=[r],allow_draft=True)
+        (root/'fixture.json').write_bytes(b'{"ok":true}')
+        runner=("import hashlib,json,sys\n"
+                "data=open(sys.argv[1],'rb').read()\n"
+                "print(json.dumps({'schema':'cat-verifier-observation/v1',"
+                "'rule_id':'demo.rule.check','subject':'static',"
+                "'fixture_sha256':hashlib.sha256(data).hexdigest(),"
+                "'observed':json.loads(data)}))\n")
+        (root/'runner.py').write_bytes(runner.encode('utf-8'))
+        registry={'schema':'cat-verifier-registry/v1','entries':[{
+            'rule_id':'demo.rule.check',
+            'source_artifact':'demo.rule.document',
+            'source_sha256':model['normative_rule_inputs'][0]['sha256'],
+            'subject':'static','verifier_id':'synthetic-static-fixture',
+            'fixture':{'path':'fixture.json','sha256':hashlib.sha256(b'{"ok":true}').hexdigest()},
+            'runner':{'type':'python-json-v1','path':'runner.py',
+                      'sha256':hashlib.sha256(runner.encode('utf-8')).hexdigest()},
+            'assertions':[{'id':'ok','path':'ok','op':'eq','expected':True}]
+        }]}
+        return model,registry
+
+    def _evaluate(self,root,model,registry):
+        mp=root/'model.json';mp.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+        registry['model_sha256']=hashlib.sha256(mp.read_bytes()).hexdigest()
+        rp=root/'registry.json';rp.write_text(json.dumps(registry),encoding='utf-8')
+        return evaluate(mp,rp)
+
+    def test_intact_active_source_scope_is_fixture_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);model,registry=self._setup(root)
+            report=self._evaluate(root,model,registry)
+            self.assertEqual(report['status'],'passed')
+            self.assertEqual(report['normative_status'],'inconclusive')
+            self.assertEqual(report['results'][0]['verification_scope'],'fixture-assertions-only')
+            self.assertEqual(report['results'][0]['source_sha256'],
+                             model['normative_rule_inputs'][0]['sha256'])
+            self.assertEqual(report['results'][0]['scope_binding'],
+                             model['rule_obligations'][0]['scope_binding'])
+            expected_hash=hashlib.sha256(json.dumps(
+                model['rule_obligations'][0],sort_keys=True,
+                ensure_ascii=False).encode('utf-8')).hexdigest()
+            self.assertEqual(report['results'][0]['normative_rule_sha256'],expected_hash)
+            registry['entries']=[]
+            missing=self._evaluate(root,model,registry)
+            self.assertEqual(missing['status'],'inconclusive')
+            self.assertEqual(missing['results'][0]['status'],'not-run')
+            self.assertEqual(missing['results'][0]['normative_rule_sha256'],expected_hash)
+
+    def test_active_scope_tampering_rejected_after_rehash(self):
+        for mutation in ('wrong-target','no-binding','wrong-model-process',
+                         'wrong-condition','wrong-source-sha','wrong-source-kind',
+                         'wrong-record-kind','wrong-status','missing-source-sha'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as d:
+                root=Path(d);model,registry=self._setup(root)
+                rule=model['rule_obligations'][0]
+                if mutation=='wrong-target':
+                    rule['scope_binding']['targets']=['demo.process.other']
+                elif mutation=='no-binding':
+                    rule.pop('scope_binding')
+                elif mutation=='wrong-model-process':
+                    rule['scope_binding']['evaluated_process']='demo.process.other'
+                elif mutation=='wrong-condition':
+                    rule['condition']='demo.process.other'
+                elif mutation=='wrong-source-sha':
+                    rule['source_sha256']='0'*64
+                elif mutation=='wrong-source-kind':
+                    rule['source_kind']='domain-spec'
+                elif mutation=='wrong-record-kind':
+                    model['source_records'][-1]['kind']='domain-spec'
+                elif mutation=='wrong-status':
+                    rule['verification_status']='intrinsic-proved'
+                else:
+                    rule.pop('source_sha256')
+                with self.assertRaisesRegex(VerifierError,'source|scope|kind|binding'):
+                    self._evaluate(root,model,registry)
+
+    def test_unverifiable_prose_cannot_carry_forged_explicit_scope(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);model,registry=self._setup(root,condition='any process')
+            model['rule_obligations'][0]['scope_binding']={
+                'schema':'cat-rule-explicit-process-scope/v1',
+                'targets':['demo.process'],'evaluated_process':'demo.process',
+                'source_sha256':model['normative_rule_inputs'][0]['sha256']}
+            with self.assertRaisesRegex(VerifierError,'scope binding'):
+                self._evaluate(root,model,registry)
+
 if __name__=='__main__':
     unittest.main()
