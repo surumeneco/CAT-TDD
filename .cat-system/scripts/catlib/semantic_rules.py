@@ -87,6 +87,31 @@ def load(path, process, allow_draft=False):
             'status':fm['status'],'source_refs':fm['source_refs'],
             'sha256':source_sha,'rules':rules,'types':types}
 
+_PROCESS_COMPONENT=r"[^\W\d][\w-]*"
+_PROCESS_IDENTIFIER=re.compile(
+    rf"{_PROCESS_COMPONENT}(?:\.{_PROCESS_COMPONENT})+",re.UNICODE)
+
+
+def explicit_process_targets(condition, declaring_process):
+    """Interpret only complete, literal Process IDs separated by semicolons.
+
+    Prose that merely *mentions* a Process is not a scope proof. Each target
+    must be inside the declaring rule document's own Process subtree; cross-
+    subtree references require a separate, verified binding contract.
+    This is a local applicability test, not an existence proof for the other
+    Process targets (the enclosing assembly must validate that inventory).
+    """
+    if not isinstance(condition,str):
+        return None
+    targets=tuple(part.strip() for part in condition.split(';'))
+    if not targets or any(not _PROCESS_IDENTIFIER.fullmatch(part) for part in targets):
+        return None
+    if any(part!=declaring_process and not part.startswith(declaring_process+'.')
+           for part in targets):
+        return None
+    return targets
+
+
 def load_many(paths, process, allow_draft=False):
     result=[];ids=set();seen={}
     for path in paths:
@@ -96,6 +121,19 @@ def load_many(paths, process, allow_draft=False):
         if doc['id'] in ids:raise RuleError('duplicate rule input '+doc['id'])
         ids.add(doc['id'])
         for rule in doc['rules']:
+            targets=explicit_process_targets(rule['condition'],doc['process'])
+            if targets is not None:
+                # A Source-bounded, auditable nonapplicability finding does
+                # not claim verification of the requirement for a target Process.
+                rule['scope_binding']={
+                    'schema':'cat-rule-explicit-process-scope/v1',
+                    'targets':list(targets),
+                    'evaluated_process':process,
+                    'source_sha256':doc['sha256'],
+                }
+                rule['source_sha256']=doc['sha256']
+                if process not in targets:
+                    rule['verification_status']='not-applicable'
             prior=seen.get(rule['id'])
             if prior:
                 keys=('condition','requirement','verification_contract')
