@@ -1,4 +1,4 @@
-"""Bounded CAT-AUD-R01/R02/R03 proof-scope diagnostics.
+"""Bounded Process Closure proof-scope diagnostics.
 
 These test current conservative proof boundaries. They do not certify whole-
 process least-fixed-point reachability or independent external effects.

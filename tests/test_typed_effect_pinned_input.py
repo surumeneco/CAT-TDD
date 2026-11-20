@@ -1,8 +1,8 @@
-"""Fixed CAT37 original input: canonical CLI and independent Model check.
+"""Pinned typed-Effect input: canonical CLI and independent Model check.
 
-The embedded bytes reproduce the exact 2026-11-19 CAT37 input ZIP files.
-These candidate documents prove only local typed Effect membership, not a
-WebApp normative Gate, actual execution or an approved product Source.
+The embedded source bytes preserve a regression input exactly. Candidate
+sources can prove local typed membership but not normative Process Closure,
+actual effects, or product Source approval.
 """
 import base64
 import hashlib
