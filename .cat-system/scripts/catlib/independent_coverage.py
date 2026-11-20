@@ -256,6 +256,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
         gaps=overlaps=0;visited=set();unknown=False
+        admissible=0
         uncovered_examples=[];overlap_examples=[]
         def snapshot(env):
             return {name:({'$cat_presence':'missing'} if value is types.MISSING else
@@ -266,6 +267,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             env=dict(zip(sorted(names),items))
             try:
                 if not all(eval_expr(c,env,definitions) for c in constraints):continue
+                admissible+=1
                 hit=[r['id'] for r in applicable if eval_expr(r['when'],env,definitions)]
             except (Blocked,TypeError,ValueError,KeyError):
                 unknown=True;break
@@ -278,6 +280,15 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     overlap_examples.append({'state':snapshot(env),'rules':hit})
             visited.update(hit)
         unvisited=sorted({r['id'] for r in applicable}-visited)
+        if not unknown and not admissible:
+            # Never certify the empty set as a closed, executable Trigger.
+            # This is recomputed from Source constraints, not Compiler receipts.
+            result[ident]={'result':'unproven',
+                           'reason':'no admissible Source-constrained Guard state',
+                           'guard_refs':sorted(names),
+                           'unreachable_rules':unvisited,
+                           'excluded_by_pi_constraints':bool(constraints)}
+            continue
         receipt={'result':'unproven' if unknown else 'conflict' if overlaps else 'uncovered' if gaps else 'proved',
                  'guard_refs':sorted(names),'unreachable_rules':unvisited,
                  'uncovered_count':gaps if not partition_fields else None,
