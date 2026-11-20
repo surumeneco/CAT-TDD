@@ -193,13 +193,32 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
                     and p.get('verification_contract')=='cat:intrinsic-model/v1'
                     and p.get('scope')=='assembled-process'
                     and p.get('status')=='passed']
-            if model_pass and source_hash and len(proofs)==1:
+            observed=next((r for r in (rule_verification or {}).get('results',[])
+                           if r.get('rule_id')==rid and r.get('source_artifact')==source_artifact),None)
+            # An actually evaluated, source-bound verifier receipt can refute
+            # its *own submitted evidence*. It cannot refute a free-text Rule.
+            # Do not downgrade failed runner/assertion evidence to the same
+            # inconclusive verdict as a successfully executed but non-normative
+            # fixture. The formal Work caller runs the pinned registry/runner;
+            # this aggregator must not infer failure from a bare status claim.
+            receipt=rule_verification or {}
+            bound_failure=(source_hash and observed and observed.get('status')=='failed'
+                           and receipt.get('schema')=='cat-verifier-result/v1'
+                           and all(isinstance(receipt.get(key),str)
+                                   and len(receipt[key])==64
+                                   and all(ch in '0123456789abcdef' for ch in receipt[key])
+                                   for key in ('model_sha256','registry_sha256'))
+                           and isinstance(observed.get('fixture_sha256'),str))
+            if bound_failure:
+                ob.update(status='failed',
+                          evidence='cat-verifier-result/v1:'+receipt['registry_sha256']+':'+rid,
+                          reason='registered verifier fixture/runner failed; normative meaning remains unproved')
+                limitation='failed fixture/runner evidence does not disprove the source Rule'
+            elif model_pass and source_hash and len(proofs)==1:
                 ob.update(status='passed',evidence='cat:intrinsic-model/v1:'+rid)
                 ob.pop('reason',None)
                 limitation='source-bound model predicate only; no external implementation effect is proved'
             else:
-                observed=next((r for r in (rule_verification or {}).get('results',[])
-                               if r.get('rule_id')==rid and r.get('source_artifact')==source_artifact),None)
                 detail=('runner observation passed but normative predicate equivalence is unproved'
                         if observed and observed.get('status')=='passed'
                         else 'missing or non-passing source-bound rule verification')
