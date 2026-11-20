@@ -174,6 +174,16 @@ class EffectGateIntegration(unittest.TestCase):
             self.assertEqual(verdict['status'],'blocked',verdict)
             self.assertIn('correlation',verdict['reason'])
 
+    def test_boolean_terminal_outcome_index_cannot_pass_official_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);work,workpath=setup(root)
+            trace=json.loads((root/'Trace.json').read_text(encoding='utf-8'))
+            trace['events'][5]['outcome_index']=True
+            (root/'Trace.json').write_text(json.dumps(trace),encoding='utf-8')
+            result=flow.conformance_work(workpath,work,'implementation-conformance')
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('outcome index',result['reason'])
+
     def test_incomplete_evidence_contract_is_rejected(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);w,wp=setup(root)
