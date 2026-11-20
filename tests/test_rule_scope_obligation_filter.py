@@ -91,7 +91,7 @@ class NonapplicableRuleObligationTests(unittest.TestCase):
                     "'rule_id':'demo.rule.active','subject':'static',"
                     "'fixture_sha256':hashlib.sha256(a).hexdigest(),"
                     "'observed':json.loads(a)}))\n")
-            (root/'runner.py').write_text(runner,encoding='utf-8')
+            (root/'runner.py').write_bytes(runner.encode('utf-8'))
             entry={'rule_id':'demo.rule.active','source_artifact':'demo.rule.document',
                    'source_sha256':model['normative_rule_inputs'][0]['sha256'],
                    'subject':'static','verifier_id':'test-fixture',
