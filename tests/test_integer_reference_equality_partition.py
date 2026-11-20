@@ -1,6 +1,7 @@
 """Exact local Guard partition for two same-domain, half-infinite integer references."""
 from __future__ import annotations
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from cat_compile_v2 import load, selection_vectors, expand_cases
 from cat_model_conformance import validate
 from test_cat_compile_readable import write_v2
 from test_intrinsic_rule_proofs import approve_fixture
+from test_conformance_runtime import base_work
 
 
 def fixture(root, *, domain='integer[1..]', positive='input.version == state.version',
@@ -31,6 +33,52 @@ def fixture(root, *, domain='integer[1..]', positive='input.version == state.ver
 
 
 class IntegerReferenceEqualityPartitionTests(unittest.TestCase):
+    def test_canonical_process_closure_gate_positive_and_fail_closed_counterexamples(self):
+        # This is a synthetic Confirmed test fixture, never an approval or
+        # proof of a product's Rule/Provider/reachability semantics.
+        scenarios = [
+            ('complete', {}, 'passed', 0, 'confirmed', 'proved'),
+            ('overlap', {'negative':'input.version == state.version'}, 'blocked', 2, None, None),
+            ('uncovered', {'negative':'false'}, 'blocked', 2, None, None),
+            ('unsupported', {'negative':'input.version > state.version'}, 'inconclusive', 0, 'draft', 'unproven'),
+        ]
+        for label, arguments, verdict, code, model_status, coverage in scenarios:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                source=fixture(root, **arguments)
+                for artifact in source: approve_fixture(artifact)
+                work=base_work()
+                work['id']='synthetic-int-ref-equality-'+label
+                work['compilation']={
+                    'schema':'cat-compile/v2', 'process':'Process.md',
+                    'pi':'PI.md', 'tce':'TCE.md', 'model':'Model.json',
+                    'allow_draft':False, 'allow_partial':True,
+                }
+                work_file=root/'Work.json'
+                work_file.write_text(json.dumps(work,ensure_ascii=False),encoding='utf-8')
+                command=[sys.executable,
+                         str(Path(__file__).resolve().parents[1]/'.cat-system'/'scripts'/'cat_flow.py'),
+                         'conformance','--work',str(work_file),'--kind','process-closure']
+                run=subprocess.run(command,capture_output=True,text=True,check=False,timeout=35)
+                self.assertEqual(run.returncode,code,run.stderr+run.stdout)
+                gate=json.loads(run.stdout)
+                self.assertEqual(gate['status'],verdict,gate)
+                receipt=json.loads((root/'.cat-flow'/'conformance'/'process-closure.json').read_text(encoding='utf-8'))
+                self.assertEqual(receipt['verdict'],verdict)
+                self.assertEqual(receipt['reason'],gate['reason'])
+                if model_status is None:
+                    self.assertIsNone(gate['supporting_evidence'])
+                    continue
+                model=json.loads((root/'.cat-flow'/'cache'/'process-closure.model.json').read_text(encoding='utf-8'))
+                self.assertEqual(model['status'],model_status)
+                self.assertEqual(model['coverage_checks']['submit']['result'],coverage)
+                self.assertIn('no-general-reachability-proof',model['limits'])
+                if verdict=='passed':
+                    self.assertEqual(model['coverage_checks']['submit']['proof_method'],
+                                     'integer-reference-equality-partition/v1')
+                else:
+                    self.assertNotEqual(verdict,'passed')
+
     def test_half_infinite_version_equality_is_a_complete_boolean_partition(self):
         with tempfile.TemporaryDirectory() as td:
             source=fixture(Path(td))
