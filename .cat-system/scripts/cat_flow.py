@@ -23,6 +23,7 @@ import cat_queue_evidence as queue_evidence
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
 import cat_verifier_contracts as verifier_runtime
+import cat_model_conformance as source_model_runtime
 import cat_process_composition as composition_runtime
 import cat_effect_trace_correlation as effect_correlation_runtime
 import cat_external_effect_receipts as effect_receipts_runtime
@@ -532,6 +533,7 @@ def record_conformance_evidence(wpath, w, kind, result):
         'reason': result.get('reason', ''),
         'supporting_evidence': supporting,
         'verifier_evidence':result.get('verifier_evidence'),
+        'source_model_evidence':result.get('source_model_evidence'),
         'composition_evidence':result.get('composition_evidence'),
         'effect_correlation_evidence':result.get('effect_correlation_evidence'),
     }
@@ -659,7 +661,29 @@ def conformance_work(wpath, w, kind):
         argv += ['-o',str(runtime/'process-closure.model.json')]
         p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
         if p.returncode == 0:
-            model = read_json(runtime/'process-closure.model.json')
+            model_path = runtime/'process-closure.model.json'
+            model = read_json(model_path)
+            # A Compiler's own success is not an independent proof that the
+            # TestModel preserves its normative Source. A formally passed
+            # Closure must also survive a separately derived Source→Model
+            # comparison. The independent validator cannot discharge any
+            # still-unverified free-text Rule or real Provider effect.
+            try:
+                source_check = source_model_runtime.validate(
+                    loc('process'), pis, tces, model_path,
+                    loc('domain_rule') if conf.get('domain_rule') else None,
+                    common_rules=compilation_paths(wpath,w,conf,'common_rules','common_rule',True),
+                    domain_specs=compilation_paths(wpath,w,conf,'domain_specs','domain_spec',True))
+            except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+                return {'gate':kind,'status':'blocked',
+                        'reason':'independent Source-to-Model comparison failed: '+str(exc)}
+            source_receipt = runtime/'process-closure-source-model.json'
+            source_receipt.write_bytes(json_bytes(source_check))
+            if source_check.get('status') != 'passed':
+                return {'gate':kind,'status':'blocked',
+                        'source_model_evidence':str(source_receipt),
+                        'reason':'independent Source-to-Model comparison rejected the generated Model: '
+                                 +', '.join(source_check.get('mismatches', []))[:900]}
             rule_status='passed'
             verifier_evidence=None
             # An explicitly submitted registry is evidence to validate even
@@ -699,7 +723,8 @@ def conformance_work(wpath, w, kind):
                         'reason':'closed-world declaration exists but closure proof is incomplete'}
             return {'gate':kind,'status':'passed','evidence':str(runtime/'process-closure.model.json'),
                     'verifier_evidence':verifier_evidence,
-                    'reason':'finite closed-world coverage and all declared normative rules discharged by source-bound intrinsic proofs or executed verifiers'}
+                    'source_model_evidence':str(source_receipt),
+                    'reason':'independent Source-to-Model conformance and finite closed-world coverage passed; all applicable normative Rules have source-bound intrinsic proofs'}
         msg=(p.stderr or p.stdout).strip()
         inconclusive_markers=('currently supports','unproven','non-finite','requires a technology','unsupported')
         status='inconclusive' if any(x in msg for x in inconclusive_markers) else 'blocked'

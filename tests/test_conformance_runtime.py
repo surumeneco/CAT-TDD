@@ -199,8 +199,11 @@ class ConformanceRuntimeTest(unittest.TestCase):
 
             with patch.object(flow.subprocess, 'run', side_effect=fake_run):
                 result = flow.conformance_work(path, work, 'process-closure')
-            self.assertEqual(result['status'], 'inconclusive')
-            self.assertIn('partial', result['reason'])
+            # A fabricated partial Model emitted from placeholder Sources
+            # is not a Source-conformant partial specification. It must be
+            # rejected, not merely treated as a real incomplete closed world.
+            self.assertEqual(result['status'], 'blocked')
+            self.assertIn('independent Source-to-Model', result['reason'])
 
     def test_unmapped_common_rule_or_domain_spec_blocks_normative_path(self):
         with tempfile.TemporaryDirectory() as td:
