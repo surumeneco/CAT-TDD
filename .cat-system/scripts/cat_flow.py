@@ -475,6 +475,23 @@ def conformance_input_hashes(wpath, w, kind):
     return result
 
 
+def _implementation_repository_fingerprint(wpath, w):
+    """Pin an implementation Gate to both working-tree bytes and Git HEAD.
+
+    Different commits can have the same tracked/untracked file contents. A
+    Work receipt against one commit must not be reused after a ref moves to
+    another commit, even when that checkout's file tree is unchanged. Write
+    guards continue to compare file paths only (via _repo_state).
+    """
+    state = _repo_state(wpath, w)
+    heads = {}
+    for repository in w.get('repositories', []):
+        root = resolve_dir(wpath, w, '@repo:' + repository['name'])
+        heads[repository['name']] = (git_cmd(root, 'rev-parse', 'HEAD')
+                                     if (root / '.git').exists() else 'not-available')
+    return sha(json_bytes({'files': state, 'heads': heads}))
+
+
 def record_conformance_evidence(wpath, w, kind, result):
     runtime = wpath.parent / '.cat-flow' / 'conformance'
     runtime.mkdir(parents=True, exist_ok=True)
@@ -493,7 +510,7 @@ def record_conformance_evidence(wpath, w, kind, result):
         'effect_correlation_evidence':result.get('effect_correlation_evidence'),
     }
     if kind == 'implementation-conformance':
-        payload['repo_state_sha256'] = sha(json_bytes(_repo_state(wpath, w)))
+        payload['repo_state_sha256'] = _implementation_repository_fingerprint(wpath, w)
     path = runtime / (kind + '.json')
     path.write_bytes(json_bytes(payload))
     output = dict(result)
@@ -529,7 +546,7 @@ def conformance_evidence_status(wpath, w, kind):
             return {'status': 'stale', 'evidence': str(path),
                     'reason': 'conformance input inventory changed'}
         if kind == 'implementation-conformance':
-            if e.get('repo_state_sha256') != sha(json_bytes(_repo_state(wpath, w))):
+            if e.get('repo_state_sha256') != _implementation_repository_fingerprint(wpath, w):
                 return {'status': 'stale', 'evidence': str(path), 'reason': 'implementation repository state changed'}
         return {'status': e.get('verdict', 'inconclusive'), 'evidence': str(path), 'reason': e.get('reason', '')}
     except (OSError, KeyError, Blocked):
