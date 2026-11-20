@@ -28,6 +28,7 @@ class ConditionalReviewerGuardTest(unittest.TestCase):
         (target/'model-conformance.json').write_bytes(flow.json_bytes({
             'schema':'cat-conformance-evidence/v1','work_id':w['id'],'gate':'model-conformance',
             'context_sha256':flow.conformance_context_sha(w),'input_sha256':{},
+            'runtime_sha256':flow.conformance_runtime_fingerprint(),
             'verdict':'inconclusive','reason':'fixture ambiguity','supporting_evidence':None,
         }))
 
