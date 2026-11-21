@@ -41,7 +41,7 @@ def _event_correlation(event):
     """
     if 'correlation' not in event:
         return None
-    kind = event['kind']
+    kind = event.get('kind', 'run')
     binding = event['correlation']
     _require(isinstance(binding, dict) and set(binding) == _CORRELATION_KEYS,
              kind + ' correlation must bind request, transaction and target IDs')
@@ -163,6 +163,7 @@ def evaluate(model, model_bytes, trace):
         peer = _label(run.get('peer'), 'run peer')
         op = _label(run.get('entry_operation'), 'run entry_operation')
         _check_operation(operations, op, 'accept', peer)
+        _event_correlation(run)  # Optional declared run identity.
         run_by_id[rid] = run
 
     kinds = {'trigger', 'input', 'request', 'response', 'projection', 'replace',
@@ -218,10 +219,9 @@ def evaluate(model, model_bytes, trace):
                          'conflicting Allowed Outcome for the same Rule execution')
                 selected_outcomes[choice] = event['outcome_index']
         run = run_by_id[rid]
-        if kind in ('request', 'response'):
-            # Transport identities are optional, but an explicitly declared
-            # label must be well-formed even when no Effect receipt follows.
-            _event_correlation(event)
+        # Every present correlation label is an explicit evidence claim.
+        # Other event kinds do not get a fabricated run/transport binding.
+        _event_correlation(event)
         if kind == 'trigger':
             _require(event.get('parent_event_id') is None, 'trigger cannot have a parent')
             _require(event.get('operation') == run['entry_operation'],
@@ -274,6 +274,14 @@ def evaluate(model, model_bytes, trace):
                 op = _label(event.get('operation'), 'result operation')
                 _require(event.get('peer') == run['peer'], 'result peer differs from run')
                 _check_operation(operations, op, 'provide', run['peer'])
+                # A run and its one terminal identify the same response.
+                # Distinct sibling side effects may use other transactions,
+                # so this is intentionally NOT imposed on every event.
+                declared_run = _event_correlation(run)
+                declared_result = _event_correlation(event)
+                if declared_run is not None and declared_result is not None:
+                    _require(declared_run == declared_result,
+                             'run/terminal correlation differs within execution')
                 outcome = event.get('outcome')
                 _require(outcome in ('success', 'failure', 'unknown'),
                          'result outcome must be success/failure/unknown')
