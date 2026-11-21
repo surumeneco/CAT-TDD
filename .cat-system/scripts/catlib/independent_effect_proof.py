@@ -15,6 +15,39 @@ from catlib.independent_coverage import _implies_value
 from cat_compile_v2 import Blocked, eval_expr, used_refs
 
 
+def _source_input_presence(rule, fields, operations, overrides):
+    """Independently bind each input to its Trigger's actual PI Operation."""
+    trigger=rule['trigger']
+    accepted=[op for op in operations
+              if op['direction']=='accept' and op.get('trigger')==trigger]
+    if len(accepted)>1:
+        return None
+    active={op['source_pi']:op for op in accepted}
+    provider={}
+    for op in operations:
+        if op['direction']=='provide' and op.get('trigger')==trigger:
+            provider.setdefault(op['source_pi'],[]).append(op)
+    for owner,claims in provider.items():
+        if owner not in active:
+            if len(claims)!=1:
+                return None
+            active[owner]=claims[0]
+    result={}
+    for field_id,field in fields.items():
+        if field['role']!='input':
+            continue
+        operation=active.get(field.get('source_pi'))
+        matched=([item for item in overrides
+                  if operation is not None
+                  and item['operation']==operation['id']
+                  and item['field']==field_id
+                  and item.get('source_pi')==field.get('source_pi')])
+        if len(matched)>1:
+            return None
+        result[field_id]=matched[0]['presence'] if matched else field.get('presence','required')
+    return result
+
+
 def _symbolic(expr, target, fields):
     """An independent sufficient condition for exact integer/Set closure."""
     op=expr.get('op')
@@ -54,7 +87,7 @@ def _symbolic(expr, target, fields):
     return False
 
 
-def _certifies(rule,write,fields,definitions,limit=4096):
+def _certifies(rule,write,fields,definitions,presence_map,limit=4096):
     target=fields.get(write.get('target'))
     expr=write.get('expr')
     if not isinstance(target,dict) or not isinstance(expr,dict):return False
@@ -66,7 +99,7 @@ def _certifies(rule,write,fields,definitions,limit=4096):
             field=fields.get(ref)
             if field is None or field.get('role') not in ('input','state','observation'):
                 return False
-            if (field['role']=='input' and field.get('presence','required')!='required'
+            if (field['role']=='input' and presence_map.get(ref,field.get('presence','required'))!='required'
                     and not _implies_value(rule['when'],ref)):
                 return False
         if 'literal' in expr:
@@ -89,14 +122,18 @@ def _certifies(rule,write,fields,definitions,limit=4096):
         return False
 
 
-def unjustified_positive(rules,fields,definitions,compiler_checks):
+def unjustified_positive(rules,fields,definitions,compiler_checks,
+                         pi_operations=(),operation_presence=()):
     """Return Source Effect IDs that lack a separate positive proof."""
     rejected=[]
     for rule in rules:
+        presence_map=_source_input_presence(
+            rule,fields,pi_operations,operation_presence)
         for n,outcome in enumerate(rule['allowed'],1):
             for k,write in enumerate(outcome['write'],1):
                 ident=f"{rule['source_artifact']}#{rule['id']}:{n}:{k}:{write['target']}"
                 if compiler_checks.get(ident,{}).get('result')=='proved':
-                    if not _certifies(rule,write,fields,definitions):
+                    if (presence_map is None or
+                            not _certifies(rule,write,fields,definitions,presence_map)):
                         rejected.append(ident)
     return sorted(rejected)
