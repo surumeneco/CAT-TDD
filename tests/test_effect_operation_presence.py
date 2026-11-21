@@ -98,12 +98,11 @@ class EffectOperationPresenceTests(unittest.TestCase):
                 p,pi,tce=self.fixture(root,base='required',override='required')
                 pi.write_text(pi.read_text().replace(
                     '| submit_op | accept | submit |',
-                    '| submit_op | accept | submit |\\n| submit_alt | accept | submit |'
-                        .replace('\\n','\n')).replace(
+                    '| submit_op | accept | submit |'+chr(10)+
+                    '| submit_alt | accept | submit |').replace(
                     '| submit_op | input.score | required |',
-                    '| submit_op | input.score | required |\\n'
-                    '| submit_alt | input.score | '+other_presence+' |'
-                        .replace('\\n','\n')))
+                    '| submit_op | input.score | required |'+chr(10)+
+                    '| submit_alt | input.score | '+other_presence+' |'))
                 model=load(p,pi,tce,allow_partial=True)
                 self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
                 reads=[v for k,v in model['effect_checks'].items()
