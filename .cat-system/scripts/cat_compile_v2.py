@@ -1000,12 +1000,13 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
 
 
 def _integer_reference_equality_values(fields, names, predicates, input_presence, definitions):
-    """Exact Guard equality classes for two references of one integer Domain.
+    """Exact Guard comparison classes for two references of one integer Domain.
 
     The common Domain must contain at least two integers, and every predicate
-    involving either reference must compare the pair only by ==/!= under
-    Boolean composition. Representatives certify equal vs distinct, not
-    reachable states, Effect totality, or implementation behavior.
+    involving either reference must compare the pair only by ==/!=/</<=/>/>=
+    under Boolean composition. Adjacent representatives cover all three
+    possible ordering classes (<, =, >), even for an unbounded integer Domain.
+    This is not a reachability, Effect, or implementation proof.
     """
     names=set(names)
     candidates=sorted(name for name in names if name in fields
@@ -1032,12 +1033,19 @@ def _integer_reference_equality_values(fields, names, predicates, input_presence
         op=node.get('op');args=node.get('args',[])
         if op in ('and','or','not') and isinstance(args,list):
             return all(supported(arg) for arg in args)
-        if op in ('eq','ne') and len(args)==2:
+        if op in ('eq','ne','lt','le','gt','ge') and len(args)==2:
             return {arg.get('ref') for arg in args if isinstance(arg,dict) and set(arg)=={'ref'}}==pair and all(
                 isinstance(arg,dict) and set(arg)=={'ref'} for arg in args)
         return False
     if not all(supported(predicate) for predicate in predicates):return {}
     return {a:[lower,lower+1],b:[lower,lower+1]}
+
+
+def _has_pair_order_comparison(node):
+    """Ordering labels cannot be confused with equality-only receipts."""
+    if not isinstance(node,dict):return False
+    return (node.get('op') in ('lt','le','gt','ge')
+            or any(_has_pair_order_comparison(x) for x in node.get('args',[])))
 
 
 def _presence_cases(domain,presence):
@@ -1567,7 +1575,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             if values is None and field_id in integer_pair:
                 values=integer_pair[field_id]
                 partition_fields.append(field_id)
-                partition_kinds.add('integer_ref_pair')
+                partition_kinds.add('integer_ref_order' if any(
+                    _has_pair_order_comparison(clause) for clause in predicates)
+                    else 'integer_ref_pair')
             domainvalues.append(values)
         if any(values is None for values in domainvalues):
             per_trigger[trigger]={'result':'unproven',
@@ -1627,6 +1637,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
+                    else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
                     else 'mixed-exact-predicate-partition/v1')
             check.update(proof_method=method,
                          partition_fields=partition_fields,
