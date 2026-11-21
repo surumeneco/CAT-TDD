@@ -909,12 +909,25 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
     checks={}
     declared_fields=fields
     for rule in rules:
-        # Evaluate Effect reads with the same operation-specific PI Presence
-        # as the Guard for this Trigger. Other Operations must not leak in.
+        # A Guard with ambiguous accepted Operations is already unproven.
+        # For Effect input reads, nevertheless inspect *every* such Operation:
+        # silently falling back to the base PI Presence can produce a false
+        # positive Effect proof that the independent Source audit rejects.
+        accepted=[op for op in pi_operations
+                  if op['direction']=='accept' and op.get('trigger')==rule['trigger']]
         bindings=_input_operation_bindings(pi_operations,rule['trigger'])
-        fields={key:({**field,'presence':_trigger_input_presence(
-                    field,bindings,operation_presence)} if field['role']=='input'
-                    else field)
+        def input_presence(field):
+            if len(accepted)>1:
+                # The referenced PI input must be available under every
+                # candidate accepted Operation. A different owning PI or any
+                # optional/absent/undefined override prevents positive proof.
+                return ('required' if all(
+                    op['source_pi']==field.get('source_pi') and
+                    _presence_for_field(field,op,operation_presence)=='required'
+                    for op in accepted) else 'optional')
+            return _trigger_input_presence(field,bindings,operation_presence)
+        fields={key:({**field,'presence':input_presence(field)}
+                     if field['role']=='input' else field)
                 for key,field in declared_fields.items()}
         for outcome_number,outcome in enumerate(rule['allowed'],1):
             for write_number,write in enumerate(outcome['write'],1):
