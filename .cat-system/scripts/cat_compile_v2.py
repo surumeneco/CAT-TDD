@@ -895,7 +895,8 @@ def _symbolic_effect_containment(expr, target_domain, fields):
     return None
 
 
-def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
+def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
+                             pi_operations=(), operation_presence=()):
     """Prove Effect target containment separately from Guard closure.
 
     A direct reference uses structural Domain inclusion. A narrow set of
@@ -906,7 +907,15 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
     Unsupported, nonfinite or exhausted cases remain unproven.
     """
     checks={}
+    declared_fields=fields
     for rule in rules:
+        # Evaluate Effect reads with the same operation-specific PI Presence
+        # as the Guard for this Trigger. Other Operations must not leak in.
+        bindings=_input_operation_bindings(pi_operations,rule['trigger'])
+        fields={key:({**field,'presence':_trigger_input_presence(
+                    field,bindings,operation_presence)} if field['role']=='input'
+                    else field)
+                for key,field in declared_fields.items()}
         for outcome_number,outcome in enumerate(rule['allowed'],1):
             for write_number,write in enumerate(outcome['write'],1):
                 target=write['target'];expr=write['expr']
@@ -1642,7 +1651,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     unverified_rule_ids=sorted({r['id'] for r in rule_obligations
                                 if r['verification_status']!='not-applicable'}-proven_rule_ids)
     # Guard coverage does not prove all Effect expressions total and in Domain.
-    effect_checks=_effect_totality_checks(rules,fields,definitions)
+    effect_checks=_effect_totality_checks(
+        rules,fields,definitions,pi_operations=pi_operations,
+        operation_presence=operation_presence)
     unverified_effect_ids=sorted(key for key,proof in effect_checks.items()
                                  if proof['result']!='proved')
     normative_model = (all(fm['status']=='confirmed' for _,fm in files)
