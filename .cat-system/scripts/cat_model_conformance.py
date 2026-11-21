@@ -227,16 +227,25 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     # Effect proof inventory is derived from independent normative TCE/PI/Process
     # reads rather than trusting the submitted JSON TestModel's claimed proofs.
     effect_fields={ident:{'id':ident,'role':role,'domain':domains[ident],
-                          'presence':presence.get(ident,'required')}
+                          'presence':presence.get(ident,'required'),
+                          'source_pi':field_owners.get(ident)}
                    for ident,role in fields.items()}
     effect_rules=[{**rule,'source_artifact':fm['id']}
                   for _,fm,tce in tces for rule in tce['rules']]
     effect_definitions={item['id']:item for item in domain['definitions']} if domain else {}
-    effect_checks=_effect_totality_checks(effect_rules,effect_fields,effect_definitions)
+    effect_operations=[{**operation,'source_pi':fm['id']}
+                       for _,fm,pi in pi_docs for operation in pi.get('operations',[])]
+    effect_presence=[{**override,'source_pi':fm['id']}
+                     for _,fm,pi in pi_docs
+                     for override in pi.get('operation_presence',[])]
+    effect_checks=_effect_totality_checks(
+        effect_rules,effect_fields,effect_definitions,
+        pi_operations=effect_operations,operation_presence=effect_presence)
     # Revalidate every positive Effect claim via a separate Source-based
     # proof path. A shared Compiler helper bug must not certify a Model.
     unjustified_effect_proofs=independent_effect_proof.unjustified_positive(
-        effect_rules,effect_fields,effect_definitions,effect_checks)
+        effect_rules,effect_fields,effect_definitions,effect_checks,
+        pi_operations=effect_operations,operation_presence=effect_presence)
     unverified_effect_ids=sorted(ident for ident,check in effect_checks.items()
                                  if check['result']!='proved')
     source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
