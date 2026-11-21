@@ -171,6 +171,82 @@ def _independent_integer_pair_values(names, domains, inputs, current_presence, c
     ranks_values=list(range(start,start+ranks))
     return {key:ranks_values for key in group}
 
+
+def _independent_integer_range_values(names, domains, inputs, current_presence, clauses, definitions):
+    """Independent Source-derived integer order cells across unequal Domains.
+
+    The only admissible atoms use two distinct integer references or one
+    reference and an exact integer literal. Domain endpoints/literals are
+    singleton cells; all open cells are represented by up to N rank values.
+    No Compiler proof receipt or sampled unknown state is consulted.
+    """
+    variables=sorted(key for key in names
+                     if key in domains and isinstance(domains[key],dict)
+                     and domains[key].get('type')=='integer'
+                     and set(domains[key]) <= {'type','min','max'}
+                     and (key not in inputs or current_presence(key)=='required'))
+    if len(variables)<2 or len(variables)>3:return {}
+    boundaries=set()
+    for key in variables:
+        dom=domains[key]
+        lower,upper=dom.get('min'),dom.get('max')
+        if (lower is not None and type(lower) is not int
+                or upper is not None and type(upper) is not int
+                or lower is not None and upper is not None and lower>upper):
+            return {}
+        boundaries.update(x for x in (lower,upper) if x is not None)
+    allowed=set(variables)
+    saw_pair=False
+    def safe(expr):
+        nonlocal saw_pair
+        if not isinstance(expr,dict):return False
+        if not (used_refs(expr,definitions)&allowed):return True
+        op=expr.get('op')
+        args=expr.get('args',[])
+        if op in ('and','or','not') and isinstance(args,list):
+            return all(safe(part) for part in args)
+        if op not in ('eq','ne','lt','le','gt','ge') or not isinstance(args,list) or len(args)!=2:
+            return False
+        if (all(isinstance(x,dict) and set(x)=={'ref'} and x['ref'] in allowed for x in args)
+                and args[0]['ref']!=args[1]['ref']):
+            saw_pair=True
+            return True
+        for index in (0,1):
+            lhs,rhs=args[index],args[1-index]
+            if (isinstance(lhs,dict) and set(lhs)=={'ref'} and lhs['ref'] in allowed
+                    and isinstance(rhs,dict) and set(rhs)=={'literal'}
+                    and type(rhs['literal']) is int):
+                boundaries.add(rhs['literal'])
+                return True
+        return False
+    if not all(safe(clause) for clause in clauses) or not saw_pair:return {}
+    cuts=sorted(boundaries)
+    rank_count=len(variables)
+    choices=[]
+    previous=None
+    for cut in cuts:
+        if previous is None:
+            choices.extend(range(cut-rank_count,cut))
+        else:
+            bottom=previous+1
+            if cut>bottom:
+                choices.extend(range(bottom,min(bottom+rank_count,cut)))
+        choices.append(cut)
+        previous=cut
+    if cuts:
+        choices.extend(range(cuts[-1]+1,cuts[-1]+rank_count+1))
+    else:
+        choices=list(range(rank_count))
+    result={}
+    for key in variables:
+        dom=domains[key]
+        low,high=dom.get('min'),dom.get('max')
+        vals=[value for value in choices
+              if (low is None or value>=low) and (high is None or value<=high)]
+        if not vals:return {}
+        result[key]=vals
+    return result
+
 def _independent_has_order_comparison(expr):
     if not isinstance(expr,dict):return False
     if expr.get('op') in ('lt','le','gt','ge'):return True
@@ -236,6 +312,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         dimensions=[];possible=True;partition_fields=[];partition_kinds=set()
         clauses=[*constraints,*(r['when'] for r in applicable)]
         integer_pair=_independent_integer_pair_values(names,domains,inputs,current_presence,clauses,definitions)
+        integer_range=({} if integer_pair else _independent_integer_range_values(
+            names,domains,inputs,current_presence,clauses,definitions))
         for field in sorted(names):
             if field not in domains or roles.get(field) in ('output','action'):
                 possible=False;break
@@ -247,6 +325,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     values=types.finite_values(domains[field])
                     if values is not None and presence=='optional':values=[types.MISSING,*values]
             else:values=types.finite_values(domains[field])
+            if field in integer_range:
+                values=integer_range[field]
+                partition_fields.append(field)
+                partition_kinds.add('integer_ref_range')
             if (values is None and field in inputs and current_presence(field)=='optional'
                     and all(_presence_exclusive(predicate,field)
                             for predicate in [*constraints,*(r['when'] for r in applicable)])):
@@ -326,6 +408,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
                     else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}
                     else 'integer-reference-order-partition/v2' if partition_kinds=={'integer_ref_multi_order'}
+                    else 'integer-reference-range-order-partition/v1' if partition_kinds=={'integer_ref_range'}
                     else 'mixed-exact-predicate-partition/v1')
             receipt.update(proof_method=method,
                            partition_fields=partition_fields,

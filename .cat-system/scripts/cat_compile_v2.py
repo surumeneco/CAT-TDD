@@ -1044,6 +1044,80 @@ def _integer_reference_equality_values(fields, names, predicates, input_presence
     representatives=[lower+i for i in range(width)]
     return {name:representatives for name in candidates}
 
+
+def _integer_reference_range_values(fields, names, predicates, input_presence, definitions):
+    """Exact local order classes across 2..3 integer Domains and literal cuts.
+
+    Every direct integer comparison is invariant under an order-preserving
+    re-ranking that fixes all integer literal constants and all Domain
+    endpoints. Splitting Z at these values makes every Domain constant
+    throughout each open interval. Up to N ordered representatives per
+    open interval cover every weak order of N reference values in that cell.
+    This is not a state-reachability, Effect, or Provider proof.
+    """
+    names=set(names)
+    refs=sorted(name for name in names if name in fields
+                and fields[name]['domain'].get('type')=='integer'
+                and set(fields[name]['domain']) <= {'type','min','max'}
+                and (name not in input_presence or input_presence[name]=='required'))
+    if not 2 <= len(refs) <= 3:return {}
+    group=set(refs)
+    cuts=set()
+    for name in refs:
+        domain=fields[name]['domain']
+        low,high=domain.get('min'),domain.get('max')
+        if low is not None and type(low) is not int:return {}
+        if high is not None and type(high) is not int:return {}
+        if low is not None and high is not None and low>high:return {}
+        if low is not None:cuts.add(low)
+        if high is not None:cuts.add(high)
+    saw_reference_pair=False
+    def supported(node):
+        nonlocal saw_reference_pair
+        if not isinstance(node,dict):return False
+        if not (group & used_refs(node,definitions)):return True
+        op=node.get('op');args=node.get('args',[])
+        if op in ('and','or','not') and isinstance(args,list):
+            return all(supported(arg) for arg in args)
+        if op not in ('eq','ne','lt','le','gt','ge') or not isinstance(args,list) or len(args)!=2:
+            return False
+        left,right=args
+        if (all(isinstance(a,dict) and set(a)=={'ref'} and a['ref'] in group for a in args)
+                and left['ref']!=right['ref']):
+            saw_reference_pair=True
+            return True
+        for ref,lit in ((left,right),(right,left)):
+            if (isinstance(ref,dict) and set(ref)=={'ref'} and ref['ref'] in group
+                    and isinstance(lit,dict) and set(lit)=={'literal'}
+                    and type(lit['literal']) is int):
+                cuts.add(lit['literal'])
+                return True
+        return False
+    if not all(supported(predicate) for predicate in predicates) or not saw_reference_pair:return {}
+    ordered_cuts=sorted(cuts)
+    values=[]
+    n=len(refs)
+    if not ordered_cuts:
+        values=list(range(n))
+    else:
+        for index,cut in enumerate(ordered_cuts):
+            if index==0:
+                values.extend(range(cut-n,cut))
+            else:
+                start=ordered_cuts[index-1]+1
+                values.extend(range(start,min(cut,start+n)))
+            values.append(cut)
+        values.extend(range(ordered_cuts[-1]+1,ordered_cuts[-1]+n+1))
+    result={}
+    for name in refs:
+        domain=fields[name]['domain']
+        low,high=domain.get('min'),domain.get('max')
+        admissible=[v for v in values
+                    if (low is None or v>=low) and (high is None or v<=high)]
+        if not admissible:return {}
+        result[name]=admissible
+    return result
+
 def _has_pair_order_comparison(node):
     """Ordering labels cannot be confused with equality-only receipts."""
     if not isinstance(node,dict):return False
@@ -1551,10 +1625,19 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         predicates=[*scoped_constraints,*(r['when'] for r in rr)]
         integer_pair=_integer_reference_equality_values(
             fields,ordered,predicates,input_presence,definitions)
+        integer_range=({} if integer_pair else _integer_reference_range_values(
+            fields,ordered,predicates,input_presence,definitions))
         for field_id in ordered:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
+            if field_id in integer_range:
+                # Values for every coupled reference must come from the same
+                # Domain-endpoint/literal cuts. A per-field interval sampler
+                # would not preserve x<y when x and y occupy the same cell.
+                values=integer_range[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('integer_ref_range')
             if (values is None and field_id in input_presence
                     and input_presence[field_id]=='optional'
                     and all(_presence_only_guard_use(predicate,field_id) for predicate in predicates)):
@@ -1647,6 +1730,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
                     else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}
                     else 'integer-reference-order-partition/v2' if partition_kinds=={'integer_ref_multi_order'}
+                    else 'integer-reference-range-order-partition/v1' if partition_kinds=={'integer_ref_range'}
                     else 'mixed-exact-predicate-partition/v1')
             check.update(proof_method=method,
                          partition_fields=partition_fields,
@@ -1945,10 +2029,14 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         guard_names=set().union(*(used_refs(predicate,defs) for predicate in predicates)) if predicates else set()
         integer_pair=_integer_reference_equality_values(
             fields,guard_names,predicates,presence,defs)
+        integer_range=({} if integer_pair else _integer_reference_range_values(
+            fields,guard_names,predicates,presence,defs))
         for field_id in variable_ids:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],presence[field_id])
                     if field_id in presence else typed.finite_values(field['domain']))
+            if field_id in integer_range:
+                values=integer_range[field_id]
             if values is None and field_id in presence and presence[field_id]=='optional' and field_id not in observed:
                 # The omission is a valid witness of an unobserved optional
                 # value; it is not a sample used as a finite-domain proof.

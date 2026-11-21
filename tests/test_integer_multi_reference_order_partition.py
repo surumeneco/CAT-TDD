@@ -150,7 +150,9 @@ class ExactMultiReferenceIntegerPartitionTests(unittest.TestCase):
                                       'integer[2..1000000] | required'),
                           encoding='utf-8')
             model = load(p, pi, tce, allow_draft=True, allow_partial=True)
-            self.assertEqual(model['coverage_checks']['submit']['result'], 'unproven')
+            self.assertEqual(model['coverage_checks']['submit']['result'], 'proved')
+            self.assertEqual(model['coverage_checks']['submit']['proof_method'],
+                             'integer-reference-range-order-partition/v1')
 
     def test_independent_source_verifier_rejects_forged_partition_metadata(self):
         with tempfile.TemporaryDirectory() as td:
