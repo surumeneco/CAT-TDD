@@ -1,0 +1,27 @@
+name: CAT core source diagnostic snapshot (temporary)
+on:
+  push:
+    branches:
+      - feature/exact-integer-reference-range-classes-20261121
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive exact checked-out source
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'commit=%s\ncore_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD:.cat-system)" > CORE_PROVENANCE.txt
+          git ls-tree -r HEAD -- .cat-system | wc -l >> CORE_PROVENANCE.txt
+          tar --format=posix -czf cat-core.tar.gz .cat-system
+          sha256sum cat-core.tar.gz >> CORE_PROVENANCE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cat-core-exact-snapshot
+          path: |
+            cat-core.tar.gz
+            CORE_PROVENANCE.txt
+          retention-days: 1
