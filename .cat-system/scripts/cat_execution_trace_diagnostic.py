@@ -30,6 +30,27 @@ def _label(value, label):
     return value
 
 
+_CORRELATION_KEYS = frozenset(('request_id', 'transaction_id', 'target_id'))
+
+
+def _event_correlation(event):
+    """Validate only explicitly submitted transport correlation identities.
+
+    An omitted binding is unknown, not implicitly equal to its ancestors.
+    The source-to-event and runtime-provider identities remain unverified.
+    """
+    if 'correlation' not in event:
+        return None
+    kind = event['kind']
+    binding = event['correlation']
+    _require(isinstance(binding, dict) and set(binding) == _CORRELATION_KEYS,
+             kind + ' correlation must bind request, transaction and target IDs')
+    _require(all(isinstance(value, str) and bool(value.strip())
+                 for value in binding.values()),
+             kind + ' correlation IDs must be nonempty strings')
+    return binding
+
+
 def _model_inventory(model):
     _require(isinstance(model, dict) and model.get('schema') == 'cat-test-model/v2',
              'requires cat-test-model/v2')
@@ -197,6 +218,10 @@ def evaluate(model, model_bytes, trace):
                          'conflicting Allowed Outcome for the same Rule execution')
                 selected_outcomes[choice] = event['outcome_index']
         run = run_by_id[rid]
+        if kind in ('request', 'response'):
+            # Transport identities are optional, but an explicitly declared
+            # label must be well-formed even when no Effect receipt follows.
+            _event_correlation(event)
         if kind == 'trigger':
             _require(event.get('parent_event_id') is None, 'trigger cannot have a parent')
             _require(event.get('operation') == run['entry_operation'],
@@ -210,6 +235,25 @@ def evaluate(model, model_bytes, trace):
             _require(parent is not None, 'parent event missing or not causally earlier')
             _require(parent['execution_id'] == rid,
                      'parent and child belong to different execution')
+            if kind == 'response':
+                # A response can have intermediate processing events, but
+                # cannot claim that a trigger or unrelated input was its
+                # initiating request. All ancestors are already in 'seen'
+                # and are in this exact run.
+                ancestor_id = parent_id
+                request = None
+                while ancestor_id is not None:
+                    ancestor = seen[ancestor_id]
+                    if ancestor['kind'] == 'request':
+                        request = ancestor
+                        break
+                    ancestor_id = ancestor.get('parent_event_id')
+                _require(request is not None, 'response lacks request ancestor')
+                request_binding = _event_correlation(request)
+                response_binding = _event_correlation(event)
+                if request_binding is not None and response_binding is not None:
+                    _require(request_binding == response_binding,
+                             'request/response correlation differs in causal pair')
             # Events are not allowed to change the observed run identity.
             if 'peer' in event:
                 _require(event['peer'] == run['peer'], 'event peer differs from run')
