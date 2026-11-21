@@ -127,14 +127,18 @@ class CompositionTests(unittest.TestCase):
             self.assertEqual(len(result['unresolved_connections']),0)
             self.assertFalse(result['bindings'][0]['external_effects_verified'])
 
-    def test_zero_field_operation_binding_can_be_structurally_matched(self):
-        # An explicitly bound signal/trigger may carry no payload fields.
-        # Structural PI consistency is not external delivery proof.
+    def test_operation_absent_fields_need_no_value_links(self):
+        # PI itself still declares fields. The linked Operations explicitly
+        # make both absent, so the connection transfers no field values.
         with tempfile.TemporaryDirectory() as td:
             producer=model('p.one','p.two','send')
             consumer=model('p.two','p.one','receive')
-            producer['fields']=[]
-            consumer['fields']=[]
+            producer['operation_presence']=[{
+                'source_pi':'p.one.pi','operation':'p.one.op',
+                'field':'output.value','presence':'absent'}]
+            consumer['operation_presence']=[{
+                'source_pi':'p.two.pi','operation':'p.two.op',
+                'field':'input.value','presence':'absent'}]
             links=binding()
             links['links'][0]['field_links']=[]
             a,b,bindings=self.write(Path(td),first=producer,second=consumer,links=links)
