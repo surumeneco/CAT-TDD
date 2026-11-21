@@ -85,6 +85,23 @@ class SetSemanticEqualityInclusionTests(unittest.TestCase):
                          'inconclusive')
         self.assertFalse(linked['external_effects_verified'])
 
+    def test_real_with_integral_member_retains_collision(self):
+        restricted = {'type': 'real', 'min': 0, 'max': 0}
+        self.assert_unsound_witness_rejected(restricted, JSON, [0, 0.0])
+
+    def test_real_interval_excluding_integers_can_widen_json_set(self):
+        restricted = {'type': 'real', 'min': 0.1, 'max': 0.9}
+        source = set_of(restricted)
+        target = set_of(JSON)
+        self.assertTrue(semantic_subtyping.subset(source, target))
+        self.assertTrue(semantic_types.contains(source, [0.1, 0.9]))
+        self.assertTrue(semantic_types.contains(target, [0.1, 0.9]))
+
+    def test_union_element_contract_does_not_hide_real_json_collision(self):
+        source = {'type': 'union', 'variants': [REAL, STRING]}
+        target = {'type': 'union', 'variants': [JSON, STRING]}
+        self.assert_unsound_witness_rejected(source, target, [1, 1.0])
+
     def test_safe_integer_elements_to_json_keep_valid_inclusion(self):
         source = set_of({'type': 'integer', 'min': -2, 'max': 3})
         target = set_of(JSON)
