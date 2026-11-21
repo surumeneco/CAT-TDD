@@ -127,7 +127,7 @@ def _independent_string_cells(domain, field, clauses):
 
 
 def _independent_integer_pair_values(names, domains, inputs, current_presence, clauses, definitions):
-    """Independently derive a two-reference equality truth partition."""
+    """Independently derive all two-reference integer comparison truth classes."""
     pair=sorted(name for name in names if name in domains
                 and isinstance(domains[name],dict)
                 and domains[name].get('type')=='integer'
@@ -151,12 +151,18 @@ def _independent_integer_pair_values(names, domains, inputs, current_presence, c
         args=expr.get('args',[])
         if kind in ('and','or','not') and isinstance(args,list):
             return all(safe(x) for x in args)
-        if kind in ('eq','ne') and isinstance(args,list) and len(args)==2:
+        if kind in ('eq','ne','lt','le','gt','ge') and isinstance(args,list) and len(args)==2:
             return (all(isinstance(x,dict) and set(x)=={'ref'} for x in args)
                     and {x['ref'] for x in args}==pair_set)
         return False
     if not all(safe(expr) for expr in clauses):return {}
     return {a:[start,start+1],b:[start,start+1]}
+
+
+def _independent_has_order_comparison(expr):
+    if not isinstance(expr,dict):return False
+    if expr.get('op') in ('lt','le','gt','ge'):return True
+    return any(_independent_has_order_comparison(x) for x in expr.get('args',[]))
 
 
 def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
@@ -248,7 +254,9 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             if values is None and field in integer_pair:
                 values=integer_pair[field]
                 partition_fields.append(field)
-                partition_kinds.add('integer_ref_pair')
+                partition_kinds.add('integer_ref_order' if any(
+                    _independent_has_order_comparison(clause) for clause in clauses)
+                    else 'integer_ref_pair')
             if values is None:
                 possible=False;break
             dimensions.append(values)
@@ -299,6 +307,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
+                    else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
                     else 'mixed-exact-predicate-partition/v1')
             receipt.update(proof_method=method,
                            partition_fields=partition_fields,
