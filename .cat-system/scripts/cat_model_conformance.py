@@ -501,6 +501,26 @@ def markdown_model(path):
         if len(peers)>1:
             boundary['peers']=peers
 
+    require(section(text,'PI boundaries','PI境界一覧') is not None,
+            'missing Markdown PI boundaries')
+    pi_boundaries=[];seen_pi_boundaries=set()
+    for row in table(text,'PI boundaries','PI境界一覧'):
+        ident=cell(row,'Source PI','出典PI')
+        require(ident not in seen_pi_boundaries,'duplicate Markdown PI boundary owner')
+        seen_pi_boundaries.add(ident)
+        direction=cell(row,'Direction','方向')
+        direction=DIRECTION_ALIASES.get(direction,direction)
+        try:peers=decimal_integer.loads(clean_expr(cell(row,'Peers (JSON)','相手Process一覧(JSON)')))
+        except (ValueError,TypeError) as exc:
+            raise Blocked('invalid Markdown PI peer list') from exc
+        require(peers is None or (isinstance(peers,list)
+                and all(isinstance(peer,str) and peer for peer in peers)),
+                'invalid Markdown PI peer list')
+        item={'artifact':ident,'peer':cell(row,'Peer process','相手Process'),
+              'direction':direction}
+        if peers is not None:item['peers']=peers
+        pi_boundaries.append(item)
+
     operations = {};operation_owners={}
     for row in table(text, 'PI operations', 'PI操作'):
         direction = cell(row, 'Direction', '方向')
@@ -591,7 +611,7 @@ def markdown_model(path):
             'operation_presence':operation_presence,
             'observation_availability':observation_availability,
             'markdown_domains':markdown_domains,
-            'interfaces': interfaces, 'boundary': boundary,
+            'interfaces': interfaces, 'boundary': boundary, 'pi_boundaries':pi_boundaries,
             'operations': operations, 'operation_owners':operation_owners,
             'triggers': triggers, 'fields': fields,
             'presence':presence, 'field_owners':field_owners,
@@ -729,7 +749,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
         # the normative PI/Operation Trigger and unresolved result-time scope.
         checks += ('constraint_bindings','normative_rule_inputs','rule_obligations','intrinsic_rule_proofs',
                    'named_type_definitions','operation_presence','observation_availability',
-                   'presence','field_owners','operation_owners')
+                   'presence','field_owners','operation_owners','pi_boundaries')
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
     for key in checks:
