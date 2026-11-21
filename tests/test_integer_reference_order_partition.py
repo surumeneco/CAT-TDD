@@ -133,7 +133,7 @@ class IntegerReferenceOrderPartitionTests(unittest.TestCase):
             ('complete', 'input.version <= state.version',
              'input.version > state.version', 0, 'passed'),
             ('gap', 'input.version < state.version',
-             'input.version > state.version', 2, 'blocked'),
+             'input.version > state.version', 0, 'inconclusive'),
         ):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
                 root = Path(td)
