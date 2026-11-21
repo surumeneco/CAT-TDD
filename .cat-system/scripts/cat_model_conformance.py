@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-from cat_compile_v2 import Blocked, format_expr, read_artifact, _effect_totality_checks
+from cat_compile_v2 import Blocked, format_expr, format_domain, read_artifact, _effect_totality_checks
 from catlib import semantic_rules
 from catlib import decimal_integer
 from catlib import semantic_types
@@ -426,6 +426,45 @@ def markdown_model(path):
             scope,
         )
 
+    # JSON code fence retains the exact typed definition graph, including
+    # nested Domain shapes and per-definition Source provenance. A missing
+    # fence is not an empty definition set.
+    nominal=section(text,'Resolved named types','解決済み名前付き型')
+    require(nominal is not None,'missing Markdown resolved named type inventory')
+    match=re.fullmatch(r'```json\s*\n(.*?)\n```',nominal,re.DOTALL)
+    require(match is not None,'invalid Markdown resolved named type inventory')
+    try:named_types_data=decimal_integer.loads(match.group(1))
+    except (ValueError,TypeError) as exc:
+        raise Blocked('malformed Markdown resolved named type inventory') from exc
+    require(isinstance(named_types_data,list),'resolved named types must be an array')
+    ids=[item.get('id') for item in named_types_data if isinstance(item,dict)]
+    require(len(ids)==len(named_types_data) and
+            all(isinstance(x,str) and x for x in ids) and len(set(ids))==len(ids),
+            'invalid/duplicate Markdown named type ID')
+    operation_section=section(text,'Operation presence','操作別Presence')
+    require(operation_section is not None,'missing Markdown Operation presence')
+    operation_presence=[];seen_operation_presence=set()
+    for row in table(text,'Operation presence','操作別Presence'):
+        key=(cell(row,'Operation','操作'),cell(row,'Field','フィールド'))
+        require(key not in seen_operation_presence,'duplicate Markdown Operation presence')
+        seen_operation_presence.add(key)
+        operation_presence.append((key[0],key[1],cell(row,'Presence'),cell(row,'Source PI','出典PI')))
+    operation_presence.sort()
+    observation_section=section(text,'Observation availability','観測利用可能時点')
+    require(observation_section is not None,'missing Markdown observation availability')
+    observation_availability={}
+    for row in table(text,'Observation availability','観測利用可能時点'):
+        ident=cell(row,'Observation ID','観測ID')
+        require(ident not in observation_availability,'duplicate Markdown observation availability')
+        try:available=decimal_integer.loads(clean_expr(cell(row,'Available on (JSON)','利用可能な起点(JSON)')))
+        except (ValueError,TypeError) as exc:
+            raise Blocked('invalid Markdown observation availability') from exc
+        require(available is None or (isinstance(available,list)
+                and all(isinstance(x,str) for x in available)),
+                'invalid Markdown observation Trigger list')
+        observation_availability[ident]=(cell(row,'Source','出典'),
+                                         tuple(available) if available is not None else None)
+
     # A source-bound intrinsic proof has eight independently checkable fields.
     # A status label in the Rule table is not itself a proof certificate.
     intrinsic_proofs=[]
@@ -473,10 +512,13 @@ def markdown_model(path):
     triggers = {cell(row, 'ID'): cell(row, 'Origin', '由来')
                 for row in table(text, 'Triggers', '起点')}
 
-    fields = {}
+    fields = {};markdown_domains={}
     for row in table(text, 'Fields', '仕様要素'):
         role = cell(row, 'Role', '役割')
-        fields[cell(row, 'ID')] = ROLE_ALIASES.get(role, role)
+        ident=cell(row,'ID')
+        require(ident not in fields,'duplicate Markdown Field')
+        fields[ident] = ROLE_ALIASES.get(role, role)
+        markdown_domains[ident]=clean_expr(cell(row,'Domain'))
 
     constraints = tuple(clean_expr(cell(row, 'Expression', '式'))
                         for row in table(text, 'PI constraints', 'PI制約'))
@@ -521,6 +563,10 @@ def markdown_model(path):
                                      if isinstance(requirement, str) else None),
             'sources': sources, 'normative_rule_inputs':rule_sources,
             'rule_obligations':rule_obligations, 'intrinsic_rule_proofs':intrinsic_proofs,
+            'named_type_definitions':named_types_data,
+            'operation_presence':operation_presence,
+            'observation_availability':observation_availability,
+            'markdown_domains':markdown_domains,
             'interfaces': interfaces, 'boundary': boundary,
             'operations': operations, 'triggers': triggers, 'fields': fields,
             'constraints': constraints, 'constraint_bindings':sorted(constraint_bindings),
@@ -655,7 +701,8 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     if Path(model).suffix.lower()!='.json':
         # Markdown need not carry JSON proof receipts, but it must preserve
         # the normative PI/Operation Trigger and unresolved result-time scope.
-        checks += ('constraint_bindings','normative_rule_inputs','rule_obligations','intrinsic_rule_proofs')
+        checks += ('constraint_bindings','normative_rule_inputs','rule_obligations','intrinsic_rule_proofs',
+                   'named_type_definitions','operation_presence','observation_availability')
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
     for key in checks:
@@ -667,6 +714,11 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
               else actual.get(key)==expected.get(key))
         if not same:
             mismatches.append(key)
+    if Path(model).suffix.lower()!='.json':
+        expected_display={ident:format_domain(domain,expected['source_language'])
+                          for ident,domain in expected['domains'].items()}
+        if actual['markdown_domains']!=expected_display:
+            mismatches.append('domains')
     if Path(model).suffix.lower()=='.json':
         if actual.get('source_metadata_integrity') is not True:
             mismatches.append('source_metadata_integrity')
@@ -784,13 +836,6 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
             mismatches.append('markdown_normative_status_unjustified')
     if Path(model).suffix.lower()!='.json' and expected.get('unverified_effect_ids'):
         mismatches.append('effect_totality: Markdown renderer lacks source-bound Effect proof receipts')
-    if Path(model).suffix.lower()!='.json' and expected.get('named_type_definitions'):
-        mismatches.append('named_type_definitions: Markdown renderer omits structural type provenance')
-    if Path(model).suffix.lower()!='.json' and expected.get('operation_presence'):
-        mismatches.append('operation_presence: Markdown renderer omits operation-specific semantics')
-    if Path(model).suffix.lower()!='.json' and any(v[1] is not None
-                                                    for v in expected.get('observation_availability',{}).values()):
-        mismatches.append('observation_availability: Markdown renderer omits trigger binding')
     return {
         'schema': 'cat-model-conformance/v1',
         'status': 'passed' if not mismatches else 'blocked',
