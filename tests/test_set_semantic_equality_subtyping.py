@@ -9,7 +9,10 @@ distinct. Source-to-Model/Provider truth is not established by these tests.
 from __future__ import annotations
 
 import unittest
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.cat-system' / 'scripts'))
 from catlib import semantic_types, semantic_subtyping
 import cat_process_composition as composition
 from test_process_composition import model, binding
