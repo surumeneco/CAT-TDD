@@ -194,7 +194,7 @@ class CorrelationTests(unittest.TestCase):
     def test_effect_event_must_refer_to_same_run_and_declared_target(self):
         with tempfile.TemporaryDirectory() as d:
             raw,t,p=data(Path(d));t['events'][4]['effect_target']='other'
-            with self.assertRaisesRegex(correlation.CorrelationError,'Rule/Outcome/target'):
+            with self.assertRaisesRegex(correlation.CorrelationError,'Effect target not declared'):
                 inspect(d,raw,t,p)
 
     def test_receipt_cannot_take_an_unrelated_event(self):
