@@ -154,6 +154,52 @@ class ExternalEvidenceTests(unittest.TestCase):
             raw,packet=inputs(Path(t));packet['observations'].append(dict(packet['observations'][0]))
             with self.assertRaisesRegex(evidence.ReceiptError,'duplicate observation'):
                 evidence.inspect(raw,packet,DRIVER,t)
+    def test_same_run_rule_cannot_attest_two_allowed_outcomes(self):
+        # Allowed Outcomes are alternatives for one Rule evaluation, not
+        # independent observations to be combined for one execution.
+        for status in ('succeeded', 'not-observed'):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as t:
+                root=Path(t);raw,packet=inputs(root)
+                entry={'rule_id':'rule','outcome_index':2,
+                       'effect_target':'action.keep','execution_id':'run1',
+                       'reported_status':status}
+                if status=='succeeded':
+                    observation={'schema':'cat-effect-observation/v1',
+                                 'rule_id':'rule','outcome_index':2,
+                                 'effect_target':'action.keep','execution_id':'run1',
+                                 'reported_status':'succeeded'}
+                    payload=json.dumps(observation,sort_keys=True).encode()
+                    (root/'obs2.json').write_bytes(payload)
+                    entry.update(observation_file='obs2.json',
+                                 observation_sha256=hashlib.sha256(payload).hexdigest())
+                packet['observations'].append(entry)
+                with self.assertRaisesRegex(evidence.ReceiptError,
+                                            'conflicting Allowed Outcome'):
+                    evidence.inspect(raw,packet,DRIVER,root)
+
+    def test_same_outcome_multiple_distinct_targets_still_allowed(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            model=json.loads(raw)
+            model['rules'][0]['allowed'][0]['write'].append(
+                {'target':'state.flag','expr':{'literal':False}})
+            raw=json.dumps(model,sort_keys=True).encode()
+            packet['model_sha256']=hashlib.sha256(raw).hexdigest()
+            observation={'schema':'cat-effect-observation/v1','rule_id':'rule',
+                         'outcome_index':1,'effect_target':'state.flag',
+                         'execution_id':'run1','reported_status':'succeeded'}
+            payload=json.dumps(observation,sort_keys=True).encode()
+            (root/'obs2.json').write_bytes(payload)
+            packet['observations'].append({
+                'rule_id':'rule','outcome_index':1,'effect_target':'state.flag',
+                'execution_id':'run1','reported_status':'succeeded',
+                'observation_file':'obs2.json',
+                'observation_sha256':hashlib.sha256(payload).hexdigest()})
+            result=evidence.inspect(raw,packet,DRIVER,root)
+            self.assertEqual(result['status'],'consistent-receipts-only')
+            self.assertEqual(len(result['receipts']),2)
+            self.assertEqual(result['normative_status'],'inconclusive')
+
     def test_checkout_proves_driver_blob_identity_not_external_effect(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);repo=root/'repository';repo.mkdir()
