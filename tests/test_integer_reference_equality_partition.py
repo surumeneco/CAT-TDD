@@ -179,14 +179,16 @@ class IntegerReferenceEqualityPartitionTests(unittest.TestCase):
             self.assertEqual(result.returncode,2,result.stderr+result.stdout)
             self.assertEqual(json.loads(result.stdout)['status'],'blocked')
 
-    def test_differing_bounded_domains_and_ordering_fail_closed(self):
+    def test_differing_bounded_domains_are_exact_but_arithmetic_remains_unproved(self):
         with tempfile.TemporaryDirectory() as td:
             p,pi,tce=fixture(Path(td),domain='integer[1..1000000]')
             pi.write_text(pi.read_text(encoding='utf-8').replace(
                 '| input.version | receive | integer[1..1000000] | required |',
                 '| input.version | receive | integer[2..1000000] | required |'),encoding='utf-8')
             model=load(p,pi,tce,allow_draft=True,allow_partial=True)
-            self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
+            self.assertEqual(model['coverage_checks']['submit']['result'],'proved')
+            self.assertEqual(model['coverage_checks']['submit']['proof_method'],
+                             'integer-reference-range-order-partition/v1')
         with tempfile.TemporaryDirectory() as td:
             model=load(*fixture(Path(td),domain='integer[1..1000000]',
                                 negative='input.version + 1 > state.version'),
