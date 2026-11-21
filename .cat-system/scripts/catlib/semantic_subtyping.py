@@ -50,6 +50,65 @@ def _has_nominal_reference(domain):
             or any(_has_nominal_reference(field.get('domain')) for field in domain.get('fields',[])))
 
 
+def _preserves_element_distinctness(source, target):
+    """Prove that target equality cannot merge source-distinct Set members.
+
+    A Set requires both value-domain inclusion *and* equality refinement:
+    for all source elements a,b, target_eq(a,b) implies source_eq(a,b).
+    This check is conservative and structural. In particular, the real
+    Domain admits both integer 1 and float 1.0 as distinguishable values,
+    while JSON equality identifies those numeric representations. A finite
+    sample is not evidence that a general widening preserves uniqueness.
+    """
+    if semantic_types.same(source,target):
+        return True
+    if isinstance(source,str):source={'type':source}
+    if isinstance(target,str):target={'type':target}
+    a=source.get('type');b=target.get('type')
+    if a=='reference':return _preserves_element_distinctness(source['of'],target)
+    if b=='reference':return _preserves_element_distinctness(source,target['of'])
+    if b=='nullable':
+        if a=='null':return True
+        return _preserves_element_distinctness(source['of'] if a=='nullable' else source,
+                                               target['of'])
+    if a=='nullable':
+        return b=='json' and _preserves_element_distinctness(source['of'],target)
+    # These domains all use strict typed scalar signatures for equality.
+    strict={'null','boolean','integer','real','string','bytes','enum'}
+    if a in strict and b in strict:return True
+    if b=='json':
+        # JSON equality additionally treats 1 and 1.0 as equal. Integer,
+        # enum, string and boolean domains cannot produce this pair.
+        if a in ('null','boolean','integer','string','enum','json'):return True
+        if a=='real':
+            # A real interval with no integral member cannot contain both
+            # integer and float representations of one numeric value.
+            low,high=source.get('min'),source.get('max')
+            if low is None or high is None:return False
+            import math
+            return math.ceil(low)>math.floor(high)
+        if a=='record':
+            return all(f.get('presence','required') in ('absent','undefined')
+                       or _preserves_element_distinctness(f['domain'],target)
+                       for f in source['fields'])
+        if a in ('sequence','set'):
+            return _preserves_element_distinctness(source['element'],target)
+        return False
+    if a==b=='record':
+        fields={f['id']:f for f in target['fields']}
+        return all(f.get('presence','required') in ('absent','undefined')
+                   or (f['id'] in fields and _preserves_element_distinctness(
+                       f['domain'],fields[f['id']]['domain']))
+                   for f in source['fields'])
+    if a==b and a in ('sequence','set'):
+        return _preserves_element_distinctness(source['element'],target['element'])
+    if a==b and a in ('json','instant'):return True
+    # The equality of arbitrary overlapping unions or different semantic
+    # domains is not mechanically proven; never claim Set inclusion here.
+    return False
+
+
+
 def subset(source,target):
     """True only for proved inclusion; False for a counterexample; None if unknown."""
     if not _valid_domain(source) or not _valid_domain(target):
@@ -156,7 +215,13 @@ def subset(source,target):
     if a in ('set','sequence') and b in ('set','sequence'):
         if a=='sequence' and b=='set':
             return False  # Sequence permits duplicates; Set forbids duplicates.
-        return subset(source['element'],target['element'])
+        inclusion=subset(source['element'],target['element'])
+        if a=='set' and b=='set' and inclusion is True:
+            # Element membership alone is insufficient: the receiver's
+            # equality must not merge two producer-distinct Set members.
+            return (True if _preserves_element_distinctness(
+                source['element'],target['element']) else None)
+        return inclusion
     if a==b=='record':
         # Records are closed: omitting a declaration means that key is always
         # missing. Presence is a separate state dimension from Domain.
