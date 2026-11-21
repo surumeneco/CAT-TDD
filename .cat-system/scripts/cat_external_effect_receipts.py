@@ -162,7 +162,7 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
                                         packet['implementation_head'],driver_bytes)
     records=packet.get('observations')
     require(isinstance(records,list), 'observations must be an array')
-    seen=set();out=[];inconclusive=[]
+    seen=set();selected_outcomes={};out=[];inconclusive=[]
     for entry in records:
         require(isinstance(entry,dict), 'observation receipt required')
         rid=entry.get('rule_id')
@@ -179,6 +179,15 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
         require(isinstance(run,str) and run, 'missing observation execution ID')
         key=(run,rid,index,target)
         require(key not in seen,'duplicate observation receipt')
+        # A run has one declared Trigger; an Allowed Outcome is an alternative
+        # result of that Rule evaluation. Several Effect targets may be
+        # observed within the selected outcome, but two different outcome
+        # indices for the *same Rule and execution* are inconsistent receipts.
+        choice=(run,rid)
+        prior_outcome=selected_outcomes.get(choice)
+        require(prior_outcome is None or prior_outcome==index,
+                'conflicting Allowed Outcome for the same Rule execution')
+        selected_outcomes[choice]=index
         seen.add(key)
         receipt_correlation=_declared_correlation(entry,'Effect receipt')
         status=entry.get('reported_status')
