@@ -326,7 +326,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'unjustified_effect_proofs':unjustified_effect_proofs,
         'unverified_effect_ids':unverified_effect_ids,
         'source_all_confirmed':source_all_confirmed,
-        'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],
+        'rule_obligations': {r['id']:(r['source_artifact'],r['source_kind'],r['condition'],r['requirement'],r['verification_contract'],
                                     ('intrinsic-proved' if r['id'] in intrinsic_ids else
                                      r.get('verification_status','unverified')),
                                     r.get('source_sha256'),r.get('scope_binding'))
@@ -416,6 +416,7 @@ def markdown_model(path):
                 raise Blocked('invalid Markdown normative Rule scope binding') from exc
         rule_obligations[ident]=(
             cell(row,'Source artifact','出典Artifact'),
+            cell(row,'Source kind','出典種別'),
             cell(row,'Condition','適用条件'),
             cell(row,'Requirement','要求'),
             cell(row,'Verification contract','検証契約'),
@@ -618,7 +619,7 @@ def json_model(path):
         'observation_availability':observation_availability,
         'normative_rule_inputs':{d['id']:(d['kind'],d.get('process'),d['sha256']) for d in model.get('normative_rule_inputs',[])},
         'named_type_definitions':model.get('named_type_definitions',[]),
-        'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],r.get('verification_status','unverified'),r.get('source_sha256'),r.get('scope_binding')) for r in model.get('rule_obligations',[])},
+        'rule_obligations':{r['id']:(r['source_artifact'],r.get('source_kind'),r['condition'],r['requirement'],r['verification_contract'],r.get('verification_status','unverified'),r.get('source_sha256'),r.get('scope_binding')) for r in model.get('rule_obligations',[])},
         'intrinsic_rule_proofs':model.get('intrinsic_rule_proofs',[]),
         'unverified_rule_ids':model.get('unverified_rule_ids',[]),
         'effect_checks':model.get('effect_checks'),
