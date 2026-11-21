@@ -2229,15 +2229,15 @@ def render_model_markdown(model):
         lines.append(f"| {_md(source['id'])} | {_md(source['kind'])} | "
                      f"{_md(source['process'])} | `{source['sha256']}` |")
     lines += ['',('## 規範Rule義務' if ja else '## Normative rule obligations'),'',
-              ('| ID | 出典Artifact | 適用条件 | 要求 | 検証契約 | 検証状態 | 出典SHA-256 | 適用範囲束縛 |' if ja else
-               '| ID | Source artifact | Condition | Requirement | Verification contract | Verification status | Source SHA-256 | Scope binding |'),
-              '| --- | --- | --- | --- | --- | --- | --- | --- |']
+              ('| ID | 出典Artifact | 出典種別 | 適用条件 | 要求 | 検証契約 | 検証状態 | 出典SHA-256 | 適用範囲束縛 |' if ja else
+               '| ID | Source artifact | Source kind | Condition | Requirement | Verification contract | Verification status | Source SHA-256 | Scope binding |'),
+              '| --- | --- | --- | --- | --- | --- | --- | --- | --- |']
     for rule in model.get('rule_obligations',[]):
         scope=rule.get('scope_binding')
         scope_text=('—' if scope is None else
                     json.dumps(scope,sort_keys=True,ensure_ascii=False,separators=(',',':')))
         lines.append(f"| {_md(rule['id'])} | {_md(rule['source_artifact'])} | "
-                     f"{_md(rule['condition'])} | {_md(rule['requirement'])} | "
+                     f"{_md(rule['source_kind'])} | {_md(rule['condition'])} | {_md(rule['requirement'])} | "
                      f"{_md(rule['verification_contract'])} | "
                      f"{_md(rule.get('verification_status','unverified'))} | "
                      f"{_md(rule.get('source_sha256') or '—')} | {_md(scope_text)} |")
