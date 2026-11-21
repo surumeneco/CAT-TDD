@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import unittest
 import sys
+import tempfile
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.cat-system' / 'scripts'))
 from catlib import semantic_types, semantic_subtyping
 import cat_process_composition as composition
 from test_process_composition import model, binding
+from test_cat_compile_readable import write_v2
+from cat_compile_v2 import Blocked, load
+from cat_model_conformance import validate as model_conformance
 
 
 JSON = {'type': 'json', 'root': 'value'}
@@ -44,6 +49,33 @@ def actual_binding(source, target):
     receiver['fields'][0]['domain'] = target
     return composition._link(binding()['links'][0],
                              {'p.one': sender, 'p.two': receiver})
+
+
+def direct_set_effect_sources(root, source_element):
+    process, pi, tce = write_v2(root, False)
+    process.write_text(process.read_text(encoding='utf-8').replace(
+        'state.ready | boolean', f'state.ready | set<{source_element}>'),
+        encoding='utf-8')
+    pi.write_text(pi.read_text(encoding='utf-8').replace(
+        'output.accepted | send | boolean',
+        'output.accepted | send | set<json>'), encoding='utf-8')
+    effects = tce.read_text(encoding='utf-8')
+    effects = effects.replace('state.ready = true; ', '')
+    effects = effects.replace('output.accepted = true',
+                              'output.accepted = state.ready')
+    effects = effects.replace('output.accepted = false',
+                              'output.accepted = state.ready')
+    tce.write_text(effects, encoding='utf-8')
+    # Synthetic approved-Source fixture for exercising the existing
+    # Compiler contract; these labels are not real product authority.
+    for path in (process, pi, tce):
+        path.write_text(
+            path.read_text(encoding='utf-8').replace(
+                'status: draft', 'status: confirmed').replace(
+                "decision_ref: ''",
+                'decision_ref: https://example.org/approved'),
+            encoding='utf-8')
+    return process, pi, tce
 
 
 class SetSemanticEqualityInclusionTests(unittest.TestCase):
@@ -101,6 +133,27 @@ class SetSemanticEqualityInclusionTests(unittest.TestCase):
         source = {'type': 'union', 'variants': [REAL, STRING]}
         target = {'type': 'union', 'variants': [JSON, STRING]}
         self.assert_unsound_witness_rejected(source, target, [1, 1.0])
+
+    def test_confirmed_compiler_must_not_prove_false_real_set_effect(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = direct_set_effect_sources(Path(temp), 'real')
+            with self.assertRaisesRegex(Blocked, 'Effect output.accepted: type mismatch'):
+                load(*source, allow_partial=True)
+
+    def test_confirmed_compiler_and_independent_model_keep_safe_integer_set(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = direct_set_effect_sources(root, 'integer')
+            compiled = load(*source, allow_partial=True)
+            self.assertEqual(compiled['status'], 'confirmed')
+            self.assertEqual(compiled['unverified_effect_ids'], [])
+            self.assertEqual(
+                {item['result'] for item in compiled['effect_checks'].values()},
+                {'proved'})
+            model_path = root / 'TestModel.json'
+            model_path.write_text(json.dumps(compiled), encoding='utf-8')
+            self.assertEqual(model_conformance(*source, model_path)['status'],
+                             'passed')
 
     def test_safe_integer_elements_to_json_keep_valid_inclusion(self):
         source = set_of({'type': 'integer', 'min': -2, 'max': 3})
