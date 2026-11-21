@@ -42,6 +42,40 @@ class RuleClaimTests(unittest.TestCase):
         self.assertEqual(result['normative_status'],'inconclusive')
         self.assertEqual(result['external_effect_proof'],'not-run')
 
+    def test_same_execution_rule_cannot_claim_two_allowed_outcomes(self):
+        m,t=source_bound()
+        # Both outcome IDs are valid for the same pinned Rule; the
+        # contradiction is selecting both in one logical execution.
+        m['rules'][0]['allowed'].append({'write':[{'target':'action.replace',
+                                                   'expr':{'literal':False}}]})
+        t['events'][4].update(rule_id='sync_rule',outcome_index=1)
+        t['events'][5].update(rule_id='sync_rule',outcome_index=2)
+        with self.assertRaisesRegex(diagnostic.TraceError,'conflicting Allowed Outcome'):
+            diagnose(m,t)
+
+    def test_distinct_rules_may_report_different_allowed_outcomes_in_one_run(self):
+        m,t=source_bound()
+        m['rules'].append({'id':'another_rule','source_artifact':'demo.tce',
+                           'allowed':[{'write':[]},{'write':[]}]})
+        t['events'][4].update(rule_id='sync_rule',outcome_index=1)
+        t['events'][5].update(rule_id='another_rule',outcome_index=2)
+        self.assertEqual(diagnose(m,t)['trace_integrity'],'consistent')
+
+    def test_same_rule_can_have_different_outcomes_across_separate_runs(self):
+        m,t=source_bound()
+        m['rules'][0]['allowed'].append({'write':[]})
+        t['events'][4].update(rule_id='sync_rule',outcome_index=1)
+        t['events'][5].update(rule_id='sync_rule',outcome_index=1)
+        t['runs'].append({'execution_id':'run-2','entry_operation':'manual','peer':'command'})
+        t['events'].extend([
+            {'event_id':'other-start','execution_id':'run-2','kind':'trigger',
+             'operation':'manual','peer':'command'},
+            {'event_id':'other-result','execution_id':'run-2','kind':'result',
+             'parent_event_id':'other-start','operation':'manual_result',
+             'peer':'command','outcome':'failure','rule_id':'sync_rule',
+             'outcome_index':2}])
+        self.assertEqual(diagnose(m,t)['trace_integrity'],'consistent')
+
     def test_absent_optional_claim_remains_valid(self):
         m,t=source_bound()
         self.assertEqual(diagnose(m,t)['trace_integrity'],'consistent')
