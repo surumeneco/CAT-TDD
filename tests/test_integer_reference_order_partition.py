@@ -109,7 +109,9 @@ class IntegerReferenceOrderPartitionTests(unittest.TestCase):
                 '| input.version | receive | integer[2..1000000] | required |'),
                 encoding='utf-8')
             m = load(p, pi, t, allow_draft=True, allow_partial=True)
-            self.assertEqual(m['coverage_checks']['submit']['result'], 'unproven')
+            self.assertEqual(m['coverage_checks']['submit']['result'], 'proved')
+            self.assertEqual(m['coverage_checks']['submit']['proof_method'],
+                             'integer-reference-range-order-partition/v1')
 
     def test_independent_verifier_rejects_forged_proof_scope(self):
         with tempfile.TemporaryDirectory() as td:
