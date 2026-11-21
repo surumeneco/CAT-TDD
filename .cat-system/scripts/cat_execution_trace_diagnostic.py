@@ -48,6 +48,28 @@ def _model_inventory(model):
     return source
 
 
+def _rule_outcomes(model):
+    """Index explicit Model Rule identities, not a normative runtime proof.
+
+    Older synthetic trace models have no Rule inventory; they can still
+    diagnose structural causality but cannot bind a Rule or Allowed Outcome.
+    """
+    if 'rules' not in model:
+        return None
+    rules = model['rules']
+    _require(isinstance(rules, list), 'invalid Model Rule inventory')
+    inventory = {}
+    for rule in rules:
+        _require(isinstance(rule, dict), 'invalid Model Rule')
+        rid = _label(rule.get('id'), 'Model Rule ID')
+        allowed = rule.get('allowed')
+        _require(rid not in inventory, 'duplicate Model Rule ID')
+        _require(isinstance(allowed, list) and bool(allowed),
+                 'Model Rule has no Allowed Outcome')
+        inventory[rid] = len(allowed)
+    return inventory
+
+
 def _operations(model):
     boundaries = {}
     for boundary in model.get('pi_boundaries', []):
@@ -100,6 +122,7 @@ def evaluate(model, model_bytes, trace):
     source = _model_inventory(model)
     _require(trace.get('source_sha256') == source, 'source identity mismatch')
     operations = _operations(model)
+    rule_outcomes = _rule_outcomes(model)
 
     runs = trace.get('runs')
     events = trace.get('events')
@@ -133,6 +156,19 @@ def evaluate(model, model_bytes, trace):
             _require(type(event['outcome_index']) is int
                      and event['outcome_index'] >= 1,
                      'event outcome index must be a positive integer')
+        # A declared trace Rule must belong to the *submitted* Model and its
+        # Allowed Outcome index must exist for that Rule. Only explicit claims
+        # are checked; no missing claim is synthesized from nearby events.
+        # This does not prove the trace is genuine or the Source is satisfied.
+        if rule_outcomes is not None and 'rule_id' in event:
+            rule_id = _label(event['rule_id'], 'event Rule ID')
+            _require(rule_id in rule_outcomes,
+                     'terminal Rule not declared in Model (unknown trace Rule)'
+                     if kind == 'result' else 'unknown trace Rule')
+            if 'outcome_index' in event:
+                _require(event['outcome_index'] <= rule_outcomes[rule_id],
+                         'terminal allowed Outcome not declared for Rule'
+                         if kind == 'result' else 'trace Allowed Outcome not declared for Rule')
         run = run_by_id[rid]
         if kind == 'trigger':
             _require(event.get('parent_event_id') is None, 'trigger cannot have a parent')
