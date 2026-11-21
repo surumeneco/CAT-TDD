@@ -28,10 +28,13 @@ def _source_input_presence(rule, fields, operations, overrides):
     active={}
     for op in accepted:
         active.setdefault(op['source_pi'],[]).append(op)
+    provided={}
     for op in operations:
-        if (op['direction']=='provide' and op.get('trigger')==trigger
-                and op['source_pi'] not in active):
-            active.setdefault(op['source_pi'],[]).append(op)
+        if op['direction']=='provide' and op.get('trigger')==trigger:
+            provided.setdefault(op['source_pi'],[]).append(op)
+    for owner,choices in provided.items():
+        if owner not in active:
+            active[owner]=choices
     result={}
     for field_id,field in fields.items():
         if field['role']!='input':
