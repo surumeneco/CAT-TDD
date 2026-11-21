@@ -41,7 +41,7 @@ class IntegerReferenceEqualityPartitionTests(unittest.TestCase):
             ('bounded-complete', {'domain':'integer[1..1000000]'}, 'passed', 0, 'confirmed', 'proved'),
             ('overlap', {'negative':'input.version == state.version'}, 'blocked', 2, None, None),
             ('uncovered', {'negative':'false'}, 'blocked', 2, None, None),
-            ('unsupported', {'negative':'input.version > state.version'}, 'inconclusive', 0, 'draft', 'unproven'),
+            ('unsupported', {'negative':'input.version + 1 > state.version'}, 'inconclusive', 0, 'draft', 'unproven'),
         ]
         for label, arguments, verdict, code, model_status, coverage in scenarios:
             with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
@@ -106,7 +106,7 @@ class IntegerReferenceEqualityPartitionTests(unittest.TestCase):
                        allow_draft=True,allow_partial=True)
             self.assertEqual(model['coverage_checks']['submit']['result'],'conflict')
         with tempfile.TemporaryDirectory() as td:
-            model=load(*fixture(Path(td),negative='input.version > state.version'),
+            model=load(*fixture(Path(td),negative='input.version + 1 > state.version'),
                        allow_draft=True,allow_partial=True)
             self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
         with tempfile.TemporaryDirectory() as td:
@@ -189,7 +189,7 @@ class IntegerReferenceEqualityPartitionTests(unittest.TestCase):
             self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
         with tempfile.TemporaryDirectory() as td:
             model=load(*fixture(Path(td),domain='integer[1..1000000]',
-                                negative='input.version > state.version'),
+                                negative='input.version + 1 > state.version'),
                        allow_draft=True,allow_partial=True)
             self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
 
