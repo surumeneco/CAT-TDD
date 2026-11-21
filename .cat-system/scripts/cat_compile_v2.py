@@ -1000,46 +1000,49 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
 
 
 def _integer_reference_equality_values(fields, names, predicates, input_presence, definitions):
-    """Exact Guard comparison classes for two references of one integer Domain.
+    """Exact weak-order Guard classes for 2..5 same-Domain integer references.
 
-    The common Domain must contain at least two integers, and every predicate
-    involving either reference must compare the pair only by ==/!=/</<=/>/>=
-    under Boolean composition. Adjacent representatives cover all three
-    possible ordering classes (<, =, >), even for an unbounded integer Domain.
-    This is not a reachability, Effect, or implementation proof.
+    Direct pairwise ==/!=/</<=/>/>= predicates under Boolean composition
+    depend only on the references' total preorder (including ties). Every
+    such preorder of N integers can be represented by N consecutive Domain
+    values, or by *all* Domain values if a finite interval is shorter.
+    The 2-reference v1 proof identity remains unchanged; N>=3 uses v2.
+    No initial-state reachability, Effect, or Provider proof is implied.
     """
     names=set(names)
     candidates=sorted(name for name in names if name in fields
                       and fields[name]['domain'].get('type')=='integer'
                       and set(fields[name]['domain']) <= {'type','min','max'}
                       and (name not in input_presence or input_presence[name]=='required'))
-    if len(candidates)!=2:return {}
-    a,b=candidates
-    domain=fields[a]['domain']
-    if domain!=fields[b]['domain']:return {}
+    if not 2 <= len(candidates) <= 5:return {}
+    domain=fields[candidates[0]]['domain']
+    if any(fields[name]['domain']!=domain for name in candidates[1:]):return {}
     low,high=domain.get('min'),domain.get('max')
     if low is not None and type(low) is not int:return {}
     if high is not None and type(high) is not int:return {}
-    # An unbounded lower interval can use an adjacent pair below its maximum.
-    # A bounded singleton has no distinct-value class and is already handled
-    # by exact finite enumeration, not by this two-class proof.
-    lower=low if low is not None else (min(0,high-1) if high is not None else 0)
-    if high is not None and lower+1>high:return {}
-    pair=set(candidates)
+    if low is not None and high is not None and low>high:return {}
+    width=min(len(candidates),high-low+1) if low is not None and high is not None else len(candidates)
+    if width<2:return {}  # Exact finite enumeration already handles a singleton.
+    # When only an upper bound exists, choose the highest width values if
+    # required. Re-ranking never leaves the declared integral Domain.
+    lower=low if low is not None else (min(0,high-width+1) if high is not None else 0)
+    if high is not None and lower+width-1>high:return {}
+    group=set(candidates)
     def supported(node):
         if not isinstance(node,dict):return False
-        if not pair.intersection(used_refs(node,definitions)):
+        if not group.intersection(used_refs(node,definitions)):
             return True
         op=node.get('op');args=node.get('args',[])
         if op in ('and','or','not') and isinstance(args,list):
             return all(supported(arg) for arg in args)
-        if op in ('eq','ne','lt','le','gt','ge') and len(args)==2:
-            return {arg.get('ref') for arg in args if isinstance(arg,dict) and set(arg)=={'ref'}}==pair and all(
-                isinstance(arg,dict) and set(arg)=={'ref'} for arg in args)
+        if op in ('eq','ne','lt','le','gt','ge') and isinstance(args,list) and len(args)==2:
+            return (all(isinstance(arg,dict) and set(arg)=={'ref'}
+                        and arg['ref'] in group for arg in args)
+                    and args[0]['ref']!=args[1]['ref'])
         return False
     if not all(supported(predicate) for predicate in predicates):return {}
-    return {a:[lower,lower+1],b:[lower,lower+1]}
-
+    representatives=[lower+i for i in range(width)]
+    return {name:representatives for name in candidates}
 
 def _has_pair_order_comparison(node):
     """Ordering labels cannot be confused with equality-only receipts."""
@@ -1575,9 +1578,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             if values is None and field_id in integer_pair:
                 values=integer_pair[field_id]
                 partition_fields.append(field_id)
-                partition_kinds.add('integer_ref_order' if any(
-                    _has_pair_order_comparison(clause) for clause in predicates)
-                    else 'integer_ref_pair')
+                partition_kinds.add((
+                    'integer_ref_multi_order' if any(
+                        _has_pair_order_comparison(clause) for clause in predicates)
+                    else 'integer_ref_multi_equality') if len(integer_pair)>=3 else (
+                    'integer_ref_order' if any(
+                        _has_pair_order_comparison(clause) for clause in predicates)
+                    else 'integer_ref_pair'))
             domainvalues.append(values)
         if any(values is None for values in domainvalues):
             per_trigger[trigger]={'result':'unproven',
@@ -1638,6 +1645,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
                     else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
+                    else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}
+                    else 'integer-reference-order-partition/v2' if partition_kinds=={'integer_ref_multi_order'}
                     else 'mixed-exact-predicate-partition/v1')
             check.update(proof_method=method,
                          partition_fields=partition_fields,
