@@ -144,5 +144,40 @@ class TraceRequestResponseCausalityTests(unittest.TestCase):
                     workpath, work, work['compilation'])
 
 
+    def test_explicit_run_correlation_rejects_malformed_identity_even_without_receipt(self):
+        for invalid in ({'request_id':'partial'},
+                        {**BINDING,'request_id':''},
+                        {**BINDING,'transaction_id':23}):
+            with self.subTest(invalid=invalid):
+                model, trace = payload()
+                trace['runs'][0]['correlation'] = invalid
+                with self.assertRaisesRegex(trace_runtime.TraceError,
+                                            'run correlation'):
+                    diagnose(model, trace)
+
+    def test_terminal_cannot_claim_different_explicit_run_correlation(self):
+        model, trace = payload()
+        trace['runs'][0]['correlation'] = dict(BINDING)
+        trace['events'][5]['correlation'] = other_request_id()
+        with self.assertRaisesRegex(trace_runtime.TraceError,
+                                    'run/terminal correlation'):
+            diagnose(model, trace)
+
+    def test_valid_run_and_terminal_binding_stays_non_normative(self):
+        model, trace = payload()
+        trace['runs'][0]['correlation'] = dict(BINDING)
+        trace['events'][5]['correlation'] = dict(BINDING)
+        checked = diagnose(model, trace)
+        self.assertEqual(checked['trace_integrity'], 'consistent')
+        self.assertEqual(checked['external_effect_proof'], 'not-run')
+
+    def test_explicit_correlation_on_other_event_must_be_well_formed(self):
+        model, trace = payload()
+        trace['events'][4]['correlation'] = {'transaction_id':'partial'}
+        with self.assertRaisesRegex(trace_runtime.TraceError,
+                                    'replace correlation'):
+            diagnose(model, trace)
+
+
 if __name__ == '__main__':
     unittest.main()
