@@ -394,6 +394,7 @@ def markdown_model(path):
     for row in table(text, 'Source artifacts', '出典Artifact'):
         ident = cell(row, 'Artifact ID')
         digest = clean_expr(cell(row, 'SHA-256'))
+        require(ident not in sources, 'duplicate Markdown Source artifact')
         sources[ident] = (cell(row, 'Kind', '種別'), digest)
 
     rule_sources = {}
@@ -505,12 +506,17 @@ def markdown_model(path):
         direction = cell(row, 'Direction', '方向')
         trigger = cell(row, 'Trigger', '起点')
         peer = row.get('Peer process', row.get('相手Process', '—')).strip()
-        operations[cell(row, 'ID')] = (DIRECTION_ALIASES.get(direction, direction),
+        ident=cell(row, 'ID')
+        require(ident not in operations, 'duplicate Markdown PI operation')
+        operations[ident] = (DIRECTION_ALIASES.get(direction, direction),
                                        None if trigger in ('-', '—', '') else trigger,
                                        None if peer in ('-', '—', '') else peer)
 
-    triggers = {cell(row, 'ID'): cell(row, 'Origin', '由来')
-                for row in table(text, 'Triggers', '起点')}
+    triggers = {}
+    for row in table(text, 'Triggers', '起点'):
+        ident=cell(row, 'ID')
+        require(ident not in triggers, 'duplicate Markdown Trigger')
+        triggers[ident]=cell(row, 'Origin', '由来')
 
     fields = {};markdown_domains={}
     for row in table(text, 'Fields', '仕様要素'):
@@ -533,11 +539,15 @@ def markdown_model(path):
     definitions = {}
     for row in table(text, 'DomainRule definitions', 'DomainRule定義'):
         params = tuple(x.strip() for x in cell(row, 'Parameters', '引数').split(',') if x.strip() and x.strip() != '—')
-        definitions[cell(row, 'ID')] = (params, clean_expr(cell(row, 'Expression', '式')))
+        ident=cell(row, 'ID')
+        require(ident not in definitions, 'duplicate Markdown DomainRule definition')
+        definitions[ident] = (params, clean_expr(cell(row, 'Expression', '式')))
 
     rules = {}
     for row in table(text, 'Rules', '規則'):
-        rules[cell(row, 'ID')] = (cell(row, 'Source TCE', '出典TCE'),
+        ident=cell(row, 'ID')
+        require(ident not in rules, 'duplicate Markdown TCE Rule')
+        rules[ident] = (cell(row, 'Source TCE', '出典TCE'),
                                   cell(row, 'Trigger', '起点'),
                                   clean_expr(cell(row, 'Condition', '条件')))
 
@@ -545,15 +555,19 @@ def markdown_model(path):
     for row in table(text, 'Effects', '効果'):
         target = cell(row, 'Target', '対象')
         expr = cell(row, 'Expression', '式')
-        effects.add((cell(row, 'Rule', '規則'), int(cell(row, 'Outcome', '結果')),
-                     None if target == '—' else target,
-                     None if expr == '—' else clean_expr(expr)))
+        entry=(cell(row, 'Rule', '規則'), int(cell(row, 'Outcome', '結果')),
+               None if target == '—' else target,
+               None if expr == '—' else clean_expr(expr))
+        require(entry not in effects, 'duplicate Markdown Effect')
+        effects.add(entry)
 
     frames = set()
     for row in table(text, 'Derived frame conditions', '導出された不変条件'):
-        frames.add((cell(row, 'Rule', '規則'), int(cell(row, 'Outcome', '結果')),
-                    tuple(sorted(split_list(cell(row, 'Unchanged state', '不変状態')))),
-                    tuple(sorted(split_list(cell(row, 'Absent outputs/actions', '不在の出力・作用'))))))
+        entry=(cell(row, 'Rule', '規則'), int(cell(row, 'Outcome', '結果')),
+               tuple(sorted(split_list(cell(row, 'Unchanged state', '不変状態')))),
+               tuple(sorted(split_list(cell(row, 'Absent outputs/actions', '不在の出力・作用')))))
+        require(entry not in frames, 'duplicate Markdown frame condition')
+        frames.add(entry)
 
     return {'model_schema': front.get('schema'), 'model_process': front.get('process'),
             'model_status': front.get('status'),
