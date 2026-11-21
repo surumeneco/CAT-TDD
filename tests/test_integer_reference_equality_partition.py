@@ -193,18 +193,22 @@ class IntegerReferenceEqualityPartitionTests(unittest.TestCase):
                        allow_draft=True,allow_partial=True)
             self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
 
-    def test_different_half_infinite_bounds_and_literal_mixture_fail_closed(self):
+    def test_different_half_infinite_bounds_and_literal_mixture_are_exactly_classified(self):
         with tempfile.TemporaryDirectory() as td:
             p,pi,t=fixture(Path(td))
             pi.write_text(pi.read_text(encoding='utf-8').replace(
                 '| input.version | receive | integer[1..] | required |',
                 '| input.version | receive | integer[2..] | required |'),encoding='utf-8')
             m=load(p,pi,t,allow_draft=True,allow_partial=True)
-            self.assertEqual(m['coverage_checks']['submit']['result'],'unproven')
+            self.assertEqual(m['coverage_checks']['submit']['result'],'proved')
+            self.assertEqual(m['coverage_checks']['submit']['proof_method'],
+                             'integer-reference-range-order-partition/v1')
         with tempfile.TemporaryDirectory() as td:
             m=load(*fixture(Path(td),positive='input.version == state.version and state.version > 1'),
                    allow_draft=True,allow_partial=True)
-            self.assertEqual(m['coverage_checks']['submit']['result'],'unproven')
+            self.assertEqual(m['coverage_checks']['submit']['result'],'uncovered')
+            self.assertEqual(m['coverage_checks']['submit']['proof_method'],
+                             'integer-reference-range-order-partition/v1')
 
     def test_tampered_receipt_does_not_pass_independent_conformance(self):
         with tempfile.TemporaryDirectory() as td:
