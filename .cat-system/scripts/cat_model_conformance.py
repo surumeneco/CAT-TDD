@@ -501,7 +501,7 @@ def markdown_model(path):
         if len(peers)>1:
             boundary['peers']=peers
 
-    operations = {}
+    operations = {};operation_owners={}
     for row in table(text, 'PI operations', 'PI操作'):
         direction = cell(row, 'Direction', '方向')
         trigger = cell(row, 'Trigger', '起点')
@@ -511,6 +511,7 @@ def markdown_model(path):
         operations[ident] = (DIRECTION_ALIASES.get(direction, direction),
                                        None if trigger in ('-', '—', '') else trigger,
                                        None if peer in ('-', '—', '') else peer)
+        operation_owners[ident]=cell(row,'Source PI','出典PI')
 
     triggers = {}
     for row in table(text, 'Triggers', '起点'):
@@ -518,13 +519,22 @@ def markdown_model(path):
         require(ident not in triggers, 'duplicate Markdown Trigger')
         triggers[ident]=cell(row, 'Origin', '由来')
 
-    fields = {};markdown_domains={}
+    fields = {};markdown_domains={};presence={};field_owners={}
     for row in table(text, 'Fields', '仕様要素'):
         role = cell(row, 'Role', '役割')
         ident=cell(row,'ID')
         require(ident not in fields,'duplicate Markdown Field')
-        fields[ident] = ROLE_ALIASES.get(role, role)
+        role=ROLE_ALIASES.get(role, role)
+        fields[ident] = role
         markdown_domains[ident]=clean_expr(cell(row,'Domain'))
+        base=cell(row,'Presence')
+        owner=cell(row,'Source PI','出典PI')
+        if role in ('input','output'):
+            presence[ident]=base
+            field_owners[ident]=owner
+        else:
+            require(base=='—' and owner=='—',
+                    'Process-owned Markdown field cannot declare PI ownership or Presence')
 
     constraints = tuple(clean_expr(cell(row, 'Expression', '式'))
                         for row in table(text, 'PI constraints', 'PI制約'))
@@ -582,7 +592,9 @@ def markdown_model(path):
             'observation_availability':observation_availability,
             'markdown_domains':markdown_domains,
             'interfaces': interfaces, 'boundary': boundary,
-            'operations': operations, 'triggers': triggers, 'fields': fields,
+            'operations': operations, 'operation_owners':operation_owners,
+            'triggers': triggers, 'fields': fields,
+            'presence':presence, 'field_owners':field_owners,
             'constraints': constraints, 'constraint_bindings':sorted(constraint_bindings),
             'definitions': definitions, 'rules': rules,
             'effects': effects, 'frames': frames}
@@ -716,7 +728,8 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
         # Markdown need not carry JSON proof receipts, but it must preserve
         # the normative PI/Operation Trigger and unresolved result-time scope.
         checks += ('constraint_bindings','normative_rule_inputs','rule_obligations','intrinsic_rule_proofs',
-                   'named_type_definitions','operation_presence','observation_availability')
+                   'named_type_definitions','operation_presence','observation_availability',
+                   'presence','field_owners','operation_owners')
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
     for key in checks:
