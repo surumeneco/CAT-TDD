@@ -66,7 +66,10 @@ def _rule_outcomes(model):
         _require(rid not in inventory, 'duplicate Model Rule ID')
         _require(isinstance(allowed, list) and bool(allowed),
                  'Model Rule has no Allowed Outcome')
-        inventory[rid] = len(allowed)
+        trigger = rule.get('trigger')
+        if trigger is not None:
+            _label(trigger, 'Model Rule Trigger')
+        inventory[rid] = {'count': len(allowed), 'trigger': trigger}
     return inventory
 
 
@@ -98,8 +101,11 @@ def _operations(model):
             peer = boundaries[pi][0]
         _require(peer == peer_binding.ORIGIN or peer in boundaries[pi],
                  'operation peer outside declared PI boundary')
+        trigger = op.get('trigger')
+        if trigger is not None:
+            _label(trigger, 'PI operation Trigger')
         operations[name] = {'direction': role, 'source_pi': pi, 'peer': peer,
-                            'declared_peers': boundaries[pi]}
+                            'declared_peers': boundaries[pi], 'trigger': trigger}
     return operations
 
 
@@ -166,8 +172,18 @@ def evaluate(model, model_bytes, trace):
             _require(rule_id in rule_outcomes,
                      'terminal Rule not declared in Model (unknown trace Rule)'
                      if kind == 'result' else 'unknown trace Rule')
+            # An execution has one accepted entry Operation. A Rule
+            # explicitly belonging to another Trigger cannot supply its
+            # Outcome or Effect evidence for this run. Unbound legacy Models
+            # provide no matching premise and remain only structural evidence.
+            entry = operations[run_by_id[rid]['entry_operation']]
+            entry_trigger = entry['trigger']
+            rule_trigger = rule_outcomes[rule_id]['trigger']
+            if entry_trigger is not None and rule_trigger is not None:
+                _require(entry_trigger == rule_trigger,
+                         'Rule Trigger differs from declared entry Operation Trigger')
             if 'outcome_index' in event:
-                _require(event['outcome_index'] <= rule_outcomes[rule_id],
+                _require(event['outcome_index'] <= rule_outcomes[rule_id]['count'],
                          'terminal allowed Outcome not declared for Rule'
                          if kind == 'result' else 'trace Allowed Outcome not declared for Rule')
                 # Each run has one declared Trigger. One evaluation of a
