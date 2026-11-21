@@ -431,7 +431,7 @@ def markdown_model(path):
     # fence is not an empty definition set.
     nominal=section(text,'Resolved named types','解決済み名前付き型')
     require(nominal is not None,'missing Markdown resolved named type inventory')
-    match=re.fullmatch(r'```json\\s*\\n(.*?)\\n```',nominal,re.DOTALL)
+    match=re.fullmatch(r'```json\s*\n(.*?)\n```',nominal,re.DOTALL)
     require(match is not None,'invalid Markdown resolved named type inventory')
     try:named_types_data=decimal_integer.loads(match.group(1))
     except (ValueError,TypeError) as exc:
