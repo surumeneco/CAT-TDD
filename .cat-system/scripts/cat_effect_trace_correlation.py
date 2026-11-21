@@ -88,6 +88,10 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
                     if op.get('direction')=='accept'}
     rule_triggers={rule['id']:rule.get('trigger') for rule in model.get('rules',[])}
     used_event_ids=set()
+    # A not-observed receipt has no event ID: it declares an unresolved
+    # Rule/Outcome/target instead. It may account for one Trace claim with
+    # the same explicit tuple, but cannot authenticate that event.
+    unobserved_receipt_inventory={}
     unresolved=list(inspected_trace['unresolved'])+list(inspected_effects['unresolved'])
     rows=[]
     for receipt in packet['observations']:
@@ -133,6 +137,8 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
                     events, terminal['event_id'],
                     _correlation(receipt, 'unobserved receipt'))
             require(event_id in (None,''),'unobserved Effect cannot claim trace event')
+            key=(run,rid,index,target)
+            unobserved_receipt_inventory[key]=unobserved_receipt_inventory.get(key,0)+1
             rows.append({'execution_id':run,'rule_id':rid,'effect_target':target,
                          'status':'inconclusive','reason':'effect-not-observed'})
             continue
@@ -175,6 +181,43 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         rows.append({'execution_id':run,'rule_id':rid,'outcome_index':index,
                      'effect_target':target,'effect_event_id':event_id,
                      'reported_status':reported,'status':status})
+
+    # Every explicit Effect claim in a Trace is itself a submitted piece of
+    # evidence. A packet covering zero of those events must not be described
+    # as identity-consistent-only merely because no mismatching receipt was
+    # supplied. Absence is *inconclusive*, not a fabricated false event or
+    # an automatically proven/no-op Effect. Do not invent claims for ordinary
+    # unbound request/followup/replace events in legacy traces.
+    for event in trace['events']:
+        if event['kind'] not in ('request','replace','followup'):
+            continue
+        fields=('rule_id','outcome_index','effect_target')
+        declared=[field for field in fields if field in event]
+        if not declared:
+            continue
+        if len(declared)!=len(fields):
+            unresolved.append({
+                'execution_id':event['execution_id'],
+                'event_id':event['event_id'],
+                'declared_fields':declared,
+                'reason':'trace-effect-binding-incomplete'})
+            continue
+        if event['event_id'] in used_event_ids:
+            continue
+        key=(event['execution_id'],event['rule_id'],
+             event['outcome_index'],event['effect_target'])
+        available=unobserved_receipt_inventory.get(key,0)
+        if available:
+            unobserved_receipt_inventory[key]=available-1
+            continue  # A matching receipt exists, but declares not-observed.
+        unresolved.append({
+            'execution_id':event['execution_id'],
+            'event_id':event['event_id'],
+            'rule_id':event['rule_id'],
+            'outcome_index':event['outcome_index'],
+            'effect_target':event['effect_target'],
+            'reason':'trace-effect-without-receipt'})
+
     return {'schema':'cat-effect-trace-correlation/v1',
             'status':'inconclusive' if unresolved else 'identity-consistent-only',
             'normative_status':'inconclusive','formal_gate_status':'not-run',
