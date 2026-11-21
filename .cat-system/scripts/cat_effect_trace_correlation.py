@@ -61,6 +61,12 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
     events={e['event_id']:e for e in trace['events']}
     terminals={e['execution_id']:e for e in trace['events'] if e['kind']=='result'}
     runs={r['execution_id']:r for r in trace['runs']}
+    # The receipt knows its Rule/Outcome, while only the run's accepted PI
+    # Operation identifies the Trigger. Join both explicit Source Model claims
+    # before accepting any Effect receipt, including not-observed receipts.
+    entry_triggers={op['id']:op.get('trigger') for op in model.get('pi_operations',[])
+                    if op.get('direction')=='accept'}
+    rule_triggers={rule['id']:rule.get('trigger') for rule in model.get('rules',[])}
     used_event_ids=set()
     unresolved=list(inspected_trace['unresolved'])+list(inspected_effects['unresolved'])
     rows=[]
@@ -68,6 +74,11 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         run=receipt['execution_id']
         require(run in runs,'Effect receipt names an execution absent from trace')
         rid=receipt['rule_id']
+        entry_trigger=entry_triggers.get(runs[run]['entry_operation'])
+        rule_trigger=rule_triggers.get(rid)
+        if entry_trigger is not None and rule_trigger is not None:
+            require(entry_trigger==rule_trigger,
+                    'Effect receipt Rule Trigger differs from declared entry Operation Trigger')
         index=receipt['outcome_index']
         target=receipt['effect_target']
         reported=receipt['reported_status']
