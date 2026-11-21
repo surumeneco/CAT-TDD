@@ -2254,6 +2254,28 @@ def render_model_markdown(model):
                      f"{_md(rule['verification_contract'])} | "
                      f"{_md(rule.get('verification_status','unverified'))} | "
                      f"{_md(rule.get('source_sha256') or '—')} | {_md(scope_text)} |")
+    # Exact typed declarations are not equivalent to display-only Domain names.
+    # Preserve full resolved definitions, including their Source and SHA.
+    lines += ['',('## 解決済み名前付き型' if ja else '## Resolved named types'),'',
+              '```json',json.dumps(model.get('named_type_definitions',[]),
+                  ensure_ascii=False,sort_keys=True,indent=2),'```']
+    # Operations can override the base PI Presence for a particular Trigger.
+    lines += ['',('## 操作別Presence' if ja else '## Operation presence'),'',
+              ('| 操作 | フィールド | Presence | 出典PI |' if ja else
+               '| Operation | Field | Presence | Source PI |'),
+              '| --- | --- | --- | --- |']
+    for entry in model.get('operation_presence',[]):
+        lines.append('| '+' | '.join(_md(entry[key]) for key in
+            ('operation','field','presence','source_pi'))+' |')
+    lines += ['',('## 観測利用可能時点' if ja else '## Observation availability'),'',
+              ('| 観測ID | 出典 | 利用可能な起点(JSON) |' if ja else
+               '| Observation ID | Source | Available on (JSON) |'),
+              '| --- | --- | --- |']
+    for entry in model['fields']:
+        if entry['role']!='observation':continue
+        available=(entry['available_on'] if 'available_on' in entry else None)
+        lines.append(f"| {_md(entry['id'])} | {_md(entry['source'])} | "+
+                     '`'+json.dumps(available,ensure_ascii=False,separators=(',',':'))+'` |')
     # Only established Source-bound intrinsic structural predicates can have
     # proof certificates. Preserve the entire certificate in readable Models;
     # a Rule's `intrinsic-proved` label alone cannot prove its predicate.
