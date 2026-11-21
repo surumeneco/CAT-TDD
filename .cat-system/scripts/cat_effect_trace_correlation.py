@@ -48,6 +48,26 @@ def _check_correlations(pairs):
             'request/transaction/target correlation differs within execution')
 
 
+def _check_causal_transport_lineage(events, event_id, receipt_binding):
+    """Join *explicit* request/response labels on the claimed causal path.
+
+    Only ancestors of this Effect or terminal are joined to its receipt;
+    a different sibling request in the same run may have a distinct identity.
+    Unlabeled legacy events stay unlabeled rather than inheriting a guessed
+    transaction or request ID. This checks self-reported identities only.
+    """
+    if event_id is None or receipt_binding is None:
+        return
+    while event_id is not None:
+        event = events[event_id]  # parent/event graph already validated
+        if event['kind'] in ('request', 'response'):
+            observed = _correlation(event, 'causal ' + event['kind'])
+            if observed is not None:
+                require(observed == receipt_binding,
+                        'causal request/response correlation differs from Effect receipt')
+        event_id = event.get('parent_event_id')
+
+
 def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
               repository_root=None,driver_repo_path=None):
     model=json.loads(model_bytes)
@@ -108,6 +128,10 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
             if terminal is not None and 'correlation' in terminal:
                 identities.append(('declared terminal',terminal))
             _check_correlations(identities)
+            if terminal is not None:
+                _check_causal_transport_lineage(
+                    events, terminal['event_id'],
+                    _correlation(receipt, 'unobserved receipt'))
             require(event_id in (None,''),'unobserved Effect cannot claim trace event')
             rows.append({'execution_id':run,'rule_id':rid,'effect_target':target,
                          'status':'inconclusive','reason':'effect-not-observed'})
@@ -131,6 +155,11 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         if terminal is not None:
             identity_records.append(('terminal trace event',terminal))
         _check_correlations(identity_records)
+        receipt_binding = _correlation(receipt, 'Effect receipt')
+        _check_causal_transport_lineage(events, event_id, receipt_binding)
+        if terminal is not None:
+            _check_causal_transport_lineage(
+                events, terminal['event_id'], receipt_binding)
         if terminal is None:
             unresolved.append({'execution_id':run,'reason':'terminal-result-not-observed'})
             status='inconclusive'
