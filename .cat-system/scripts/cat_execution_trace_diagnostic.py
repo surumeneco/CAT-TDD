@@ -142,6 +142,7 @@ def evaluate(model, model_bytes, trace):
              'result', 'followup'}
     seen = {}
     kinds_by_run = {rid: {'trigger': 0, 'result': 0, 'unknown': 0} for rid in run_by_id}
+    selected_outcomes = {}  # (execution_id, Rule ID) -> explicit Allowed Outcome
     for index, event in enumerate(events):
         _require(isinstance(event, dict), 'event record required')
         eid = _label(event.get('event_id'), 'event_id')
@@ -169,6 +170,16 @@ def evaluate(model, model_bytes, trace):
                 _require(event['outcome_index'] <= rule_outcomes[rule_id],
                          'terminal allowed Outcome not declared for Rule'
                          if kind == 'result' else 'trace Allowed Outcome not declared for Rule')
+                # Each run has one declared Trigger. One evaluation of a
+                # Source-bound Rule selects one of its alternative Outcomes;
+                # two explicit selections in the same run cannot both hold.
+                # Only validate present declarations. No outcome is inferred
+                # for unbound events, legacy synthetic Models, or other runs.
+                choice = (rid, rule_id)
+                prior = selected_outcomes.get(choice)
+                _require(prior is None or prior == event['outcome_index'],
+                         'conflicting Allowed Outcome for the same Rule execution')
+                selected_outcomes[choice] = event['outcome_index']
         run = run_by_id[rid]
         if kind == 'trigger':
             _require(event.get('parent_event_id') is None, 'trigger cannot have a parent')
