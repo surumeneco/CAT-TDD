@@ -2296,6 +2296,20 @@ def render_model_markdown(model):
         direction={'receive':'受信','send':'送信','bidirectional':'双方向'}.get(boundary['direction'],boundary['direction']) if ja else boundary['direction']
         for peer in boundary.get('peers',[boundary['peer']]):
             lines.append(f"| {_md(peer)} | {_md(direction)} |")
+    if model.get('pi_boundaries') is not None:
+        # A Process may have several PIs, each with a distinct peer/direction.
+        # The legacy singular PI boundary view is insufficient for this graph.
+        lines += ['',('## PI境界一覧' if ja else '## PI boundaries'),'',
+                  ('| 出典PI | 相手Process | 方向 | 相手Process一覧(JSON) |' if ja else
+                   '| Source PI | Peer process | Direction | Peers (JSON) |'),
+                  '| --- | --- | --- | --- |']
+        direction_ja={'receive':'受信','send':'送信','bidirectional':'双方向'}
+        for boundary in model['pi_boundaries']:
+            direction=(direction_ja.get(boundary['direction'],boundary['direction'])
+                       if ja else boundary['direction'])
+            peers=json.dumps(boundary.get('peers'),ensure_ascii=False,separators=(',',':'))
+            lines.append(f"| {_md(boundary['artifact'])} | {_md(boundary['peer'])} | "
+                         f"{_md(direction)} | `{_md(peers)}` |")
     if model.get('pi_operations') is not None:
         has_peer=any('peer' in op for op in model['pi_operations'])
         heading=('| ID | 方向 | 起点 | 相手Process | 出典PI |' if ja else '| ID | Direction | Trigger | Peer process | Source PI |') if has_peer else ('| ID | 方向 | 起点 | 出典PI |' if ja else '| ID | Direction | Trigger | Source PI |')
