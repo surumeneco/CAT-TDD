@@ -19,6 +19,7 @@ from catlib import semantic_rules
 from catlib import decimal_integer
 from catlib import semantic_types
 from catlib import independent_coverage
+from catlib import independent_effect_proof
 from catlib.markdown import parse_frontmatter
 from catlib import semantic_named_types as named_types
 
@@ -232,6 +233,10 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                   for _,fm,tce in tces for rule in tce['rules']]
     effect_definitions={item['id']:item for item in domain['definitions']} if domain else {}
     effect_checks=_effect_totality_checks(effect_rules,effect_fields,effect_definitions)
+    # Revalidate every positive Effect claim via a separate Source-based
+    # proof path. A shared Compiler helper bug must not certify a Model.
+    unjustified_effect_proofs=independent_effect_proof.unjustified_positive(
+        effect_rules,effect_fields,effect_definitions,effect_checks)
     unverified_effect_ids=sorted(ident for ident,check in effect_checks.items()
                                  if check['result']!='proved')
     source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
@@ -309,6 +314,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'intrinsic_rule_proofs':intrinsic_proofs,
         'unverified_rule_ids':sorted(all_rule_ids-intrinsic_ids),
         'effect_checks':effect_checks,
+        'unjustified_effect_proofs':unjustified_effect_proofs,
         'unverified_effect_ids':unverified_effect_ids,
         'source_all_confirmed':source_all_confirmed,
         'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],
@@ -632,6 +638,8 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     expected = source_semantics(process, pi, tce, domain_rule,common_rules,domain_specs,allow_draft)
     actual = json_model(model) if Path(model).suffix.lower() == '.json' else markdown_model(model)
     mismatches = []
+    if expected['unjustified_effect_proofs']:
+        mismatches.append('effect_totality_independent')
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
     if Path(model).suffix.lower()!='.json':
