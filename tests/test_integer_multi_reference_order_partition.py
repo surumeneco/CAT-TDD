@@ -110,7 +110,10 @@ class ExactMultiReferenceIntegerPartitionTests(unittest.TestCase):
             paths = multi(root, domain='integer[4..5]')
             model = load(*paths, allow_draft=True, allow_partial=True)
             proof = model['coverage_checks']['submit']
-            self.assertNotEqual(proof['result'], 'proved')
+            # The remaining rule covers every feasible state, but the
+            # strict triple ordering is unreachable in a two-value Domain.
+            # Guard coverage and Rule reachability are separate claims.
+            self.assertEqual(proof['result'], 'proved')
             self.assertIn('demo.accept', proof['unreachable_rules'])
             self.assertNotEqual(proof.get('proof_method'), 'integer-reference-order-partition/v2')
 
