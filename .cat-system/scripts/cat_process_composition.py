@@ -143,9 +143,16 @@ def _link(binding,models):
                        'value_domain_proof':('proved' if transfers_value and inclusion is True
                                              else 'not-applicable' if not transfers_value
                                              else 'inconclusive')})
-    # Partial field links cannot prove the receiver PI boundary. There is no
-    # authorized operation-to-field projection in this schema; any value-
-    # capable receiver field left unmapped remains inconclusive.
+    # A field link is a declared connection, not an implicit projection. The
+    # receiver's unbound Inputs and the producer's unbound Outputs must both
+    # remain visible unless the linked Operation guarantees they are absent.
+    # In particular, an extra required/optional/undefined output cannot be
+    # silently omitted merely because all receiver Inputs are bound.
+    seen_sources={source_id for source_id,_ in seen}
+    unmapped_source_fields=sorted(f['id'] for f in source.get('fields',[])
+        if f.get('role')=='output' and f.get('source_pi')==a
+        and _effective_presence(source,source_op,f)!='absent'
+        and f.get('id') not in seen_sources)
     unmapped_target_fields=sorted(f['id'] for f in target.get('fields',[])
         if f.get('role')=='input' and f.get('source_pi')==b
         and _effective_presence(target,target_op,f)!='absent'
@@ -154,8 +161,9 @@ def _link(binding,models):
             'source_pi':a,'target_pi':b,'source_operation':source_op,
             'target_operation':target_op,'field_links':checks,
             'unmapped_target_fields':unmapped_target_fields,
+            'unmapped_source_fields':unmapped_source_fields,
             'operation_peer_binding':{'source':source_binding,'target':target_binding},
-            'status':'structurally-matched' if not unmapped_target_fields
+            'status':'structurally-matched' if not unmapped_source_fields and not unmapped_target_fields
                     and source_binding=='static' and target_binding=='static'
                     and all(c['status']=='matched' for c in checks) else 'inconclusive',
             'external_effects_verified':False}
