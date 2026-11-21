@@ -90,7 +90,25 @@ def _rule_outcomes(model):
         trigger = rule.get('trigger')
         if trigger is not None:
             _label(trigger, 'Model Rule Trigger')
-        inventory[rid] = {'count': len(allowed), 'trigger': trigger}
+        # A selected Allowed Outcome can only claim its own explicitly
+        # declared Effect targets. Keep this structural receipt inventory
+        # separate from verification of actual external execution.
+        targets = []
+        for outcome in allowed:
+            _require(isinstance(outcome, dict), 'invalid Model Allowed Outcome')
+            writes = outcome.get('write', [])
+            _require(isinstance(writes, list),
+                     'invalid Model Allowed Outcome Effect inventory')
+            selected = set()
+            for write in writes:
+                _require(isinstance(write, dict)
+                         and isinstance(write.get('target'), str)
+                         and bool(write['target']),
+                         'invalid Model Allowed Outcome Effect target')
+                selected.add(write['target'])
+            targets.append(selected)
+        inventory[rid] = {'count': len(allowed), 'trigger': trigger,
+                          'effect_targets': targets}
     return inventory
 
 
@@ -208,6 +226,11 @@ def evaluate(model, model_bytes, trace):
                 _require(event['outcome_index'] <= rule_outcomes[rule_id]['count'],
                          'terminal allowed Outcome not declared for Rule'
                          if kind == 'result' else 'trace Allowed Outcome not declared for Rule')
+                if kind in ('request', 'replace', 'followup') and 'effect_target' in event:
+                    _require(isinstance(event['effect_target'], str)
+                             and event['effect_target'] in
+                             rule_outcomes[rule_id]['effect_targets'][event['outcome_index'] - 1],
+                             'Effect target not declared in selected Rule Allowed Outcome')
                 # Each run has one declared Trigger. One evaluation of a
                 # Source-bound Rule selects one of its alternative Outcomes;
                 # two explicit selections in the same run cannot both hold.
