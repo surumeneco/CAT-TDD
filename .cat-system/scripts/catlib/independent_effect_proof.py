@@ -16,37 +16,43 @@ from cat_compile_v2 import Blocked, eval_expr, used_refs
 
 
 def _source_input_presence(rule, fields, operations, overrides):
-    """Independently bind each input to its Trigger's actual PI Operation."""
+    """Independently check Presence across all possible active PI Operations.
+
+    Ambiguous accepted Operations do not erase a valid literal Effect proof.
+    For an input read, *every* possible active Operation must guarantee
+    required Presence before an unguarded positive proof is admissible.
+    """
     trigger=rule['trigger']
     accepted=[op for op in operations
               if op['direction']=='accept' and op.get('trigger')==trigger]
-    if len(accepted)>1:
-        return None
-    active={op['source_pi']:op for op in accepted}
-    provider={}
+    active={}
+    for op in accepted:
+        active.setdefault(op['source_pi'],[]).append(op)
     for op in operations:
-        if op['direction']=='provide' and op.get('trigger')==trigger:
-            provider.setdefault(op['source_pi'],[]).append(op)
-    for owner,claims in provider.items():
-        if owner not in active:
-            if len(claims)!=1:
-                return None
-            active[owner]=claims[0]
+        if (op['direction']=='provide' and op.get('trigger')==trigger
+                and op['source_pi'] not in active):
+            active.setdefault(op['source_pi'],[]).append(op)
     result={}
     for field_id,field in fields.items():
         if field['role']!='input':
             continue
-        operation=active.get(field.get('source_pi'))
-        matched=([item for item in overrides
-                  if operation is not None
-                  and item['operation']==operation['id']
-                  and item['field']==field_id
-                  and item.get('source_pi')==field.get('source_pi')])
-        if len(matched)>1:
-            return None
-        result[field_id]=matched[0]['presence'] if matched else field.get('presence','required')
+        baseline=field.get('presence','required')
+        options=active.get(field.get('source_pi'),[])
+        statuses=[]
+        for operation in options:
+            matches=[item for item in overrides
+                     if item['operation']==operation['id']
+                     and item['field']==field_id
+                     and item.get('source_pi')==field.get('source_pi')]
+            if len(matches)>1:
+                return None
+            statuses.append(matches[0]['presence'] if matches else baseline)
+        # The Effect can treat an input as required only if every possible
+        # active Operation has that property; otherwise it is conservatively
+        # nonrequired. No candidate means the declared PI default applies.
+        result[field_id]=('required' if statuses and all(x=='required' for x in statuses)
+                          else 'optional' if statuses else baseline)
     return result
-
 
 def _symbolic(expr, target, fields):
     """An independent sufficient condition for exact integer/Set closure."""
