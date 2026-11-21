@@ -285,6 +285,37 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     source_all_confirmed=(all(fm.get('status')=='confirmed'
                               for _,fm in files if fm['kind'] not in ('common-rule','domain-spec'))
                           and all(doc['status']=='confirmed' for doc in rule_docs))
+    # The Compiler's human-facing Source-to-Model mapping is itself a
+    # claim about normative provenance. Reconstruct it directly from parsed
+    # Process/PI/TCE/Rule/DomainRule inputs, not from any compiler map or
+    # self-asserted Model metadata. This is *not* an extra reachability proof.
+    source_semantic_map={
+        'process':{
+            'artifact':pf['id'],
+            'triggers':[item['id'] for item in p['triggers']],
+            'interfaces':list(p.get('interfaces',[])),
+            'state':[item['id'] for item in p.get('state_fields',[])],
+            'observations':[item['id'] for item in p.get('observations',[])],
+            'actions':[item['id'] for item in p.get('actions',[])]},
+        'pi':{
+            'artifact':pif['id'] if len(pi_docs)==1 else None,
+            'artifacts':[fm['id'] for _,fm,_ in pi_docs],
+            'fields':[item['id'] for _,_,a in pi_docs for item in a['fields']],
+            'operations':[item['id'] for _,_,a in pi_docs
+                          for item in a.get('operations',[])],
+            'constraint_count':sum(len(a.get('constraints',[])) for _,_,a in pi_docs)},
+        'tce':[{'artifact':fm['id'],
+                'rules':[item['id'] for item in a['rules']],
+                'outcome_count':sum(len(item['allowed']) for item in a['rules']),
+                'local_coverage':a['coverage']}
+               for _,fm,a in tces],
+        'common_rules':[doc['id'] for doc in rule_docs if doc['kind']=='common-rule'],
+        'domain_specs':[doc['id'] for doc in rule_docs if doc['kind']=='domain-spec'],
+        'type_definitions':[item['id'] for item in named_type_definitions],
+        'domain_rule':{
+            'artifact':dfile['id'] if dfile else None,
+            'definitions':sorted(item['id'] for item in domain['definitions']) if domain else []},
+    }
     return {
         'process':p['process'],
         'source_authority':{'markdown-v2':'cat-markdown/v2',
@@ -293,6 +324,9 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'source_language':(tf.get('language','en') if pf.get('semantic_contract')=='markdown-v2'
                            else 'en'),
         'process_closed_world':p['closed_world'],
+        'source_semantic_map':source_semantic_map,
+        'local_coverage_requirements':{fm['id']:a['coverage'] for _,fm,a in tces},
+        'pi_artifacts':[fm['id'] for _,fm,_ in pi_docs],
         'source_guard_audit':source_guard_audit,
         'constraint_scopes':sorted(constraint_scopes),
         'constraint_bindings':sorted(markdown_bindings),
@@ -697,6 +731,12 @@ def json_model(path):
                   for item in model.get('pi_operations', [])}
     return {
         'process':model.get('process'),
+        'source_semantic_map':model.get('source_semantic_map'),
+        'local_coverage_requirements':model.get('local_coverage_requirements'),
+        'pi_artifacts':model.get('pi_artifacts'),
+        'model_type':model.get('model_type'),
+        'limits':model.get('limits'),
+        'normalized_ir':model.get('normalized_ir'),
         'sources': sources,
         'source_metadata_integrity': source_metadata_integrity,
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
@@ -752,6 +792,19 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                    'presence','field_owners','operation_owners','pi_boundaries')
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
+        checks += ('source_semantic_map','local_coverage_requirements','pi_artifacts')
+    if Path(model).suffix.lower()=='.json':
+        # These are fixed Compiler proof-scope declarations, not product
+        # assumptions a submitting Model can silently strengthen or remove.
+        for key,claim in (
+            ('model_type','symbolic-relation'),
+            ('limits',['finite-guard-closure-only','no-general-reachability-proof',
+                       'no-process-composition']),
+            ('normalized_ir','cat-machine/v2' if expected['source_authority']
+                                  in ('cat-markdown/v1','cat-markdown/v2') else None),
+        ):
+            if actual.get(key)!=claim:
+                mismatches.append(key)
     for key in checks:
         # Python structural == conflates bool with int (True == 1). Domains
         # and named type definitions contain typed literal values and must
