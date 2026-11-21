@@ -88,5 +88,33 @@ class EffectOperationPresenceTests(unittest.TestCase):
             self.assertEqual(validate(p,pi,tce,dest)['status'],'passed')
 
 
+    def test_ambiguous_accepted_operation_presence_remains_source_consistent(self):
+        # The Guard already marks the ambiguous Trigger unproven. Its Effect
+        # proof must not silently fall back to base required Presence when
+        # one of the accepted Operations explicitly makes the input absent.
+        for other_presence,proved in (('absent',False),('required',True)):
+            with self.subTest(other_presence=other_presence),tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                p,pi,tce=self.fixture(root,base='required',override='required')
+                pi.write_text(pi.read_text().replace(
+                    '| submit_op | accept | submit |',
+                    '| submit_op | accept | submit |\\n| submit_alt | accept | submit |'
+                        .replace('\\n','\n')).replace(
+                    '| submit_op | input.score | required |',
+                    '| submit_op | input.score | required |\\n'
+                    '| submit_alt | input.score | '+other_presence+' |'
+                        .replace('\\n','\n')))
+                model=load(p,pi,tce,allow_partial=True)
+                self.assertEqual(model['coverage_checks']['submit']['result'],'unproven')
+                reads=[v for k,v in model['effect_checks'].items()
+                       if k.endswith(':output.accepted')]
+                self.assertEqual(len(reads),2)
+                self.assertTrue(all((v['result']=='proved')==proved for v in reads),reads)
+                path=root/'Model.json'
+                path.write_text(json.dumps(model))
+                result=validate(p,pi,tce,path)
+                self.assertEqual(result['status'],'passed',result)
+
+
 if __name__=='__main__':
     unittest.main()
