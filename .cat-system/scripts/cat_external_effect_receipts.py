@@ -162,7 +162,7 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
                                         packet['implementation_head'],driver_bytes)
     records=packet.get('observations')
     require(isinstance(records,list), 'observations must be an array')
-    seen=set();selected_outcomes={};out=[];inconclusive=[]
+    seen=set();selected_outcomes={};execution_correlations={};out=[];inconclusive=[]
     for entry in records:
         require(isinstance(entry,dict), 'observation receipt required')
         rid=entry.get('rule_id')
@@ -190,6 +190,14 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
         selected_outcomes[choice]=index
         seen.add(key)
         receipt_correlation=_declared_correlation(entry,'Effect receipt')
+        # All submitted effects from one logical execution must bind the same
+        # declared request/transaction/target tuple. No declaration remains
+        # valid for legacy packets, but a partly declared run is ambiguous.
+        if run in execution_correlations:
+            require(execution_correlations[run]==receipt_correlation,
+                    'inconsistent execution correlation across Effect receipts')
+        else:
+            execution_correlations[run]=receipt_correlation
         status=entry.get('reported_status')
         require(status in ('succeeded','failed','unknown','not-observed'),
                 'unsupported reported Effect status')
