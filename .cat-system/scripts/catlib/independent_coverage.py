@@ -127,37 +127,49 @@ def _independent_string_cells(domain, field, clauses):
 
 
 def _independent_integer_pair_values(names, domains, inputs, current_presence, clauses, definitions):
-    """Independently derive all two-reference integer comparison truth classes."""
-    pair=sorted(name for name in names if name in domains
-                and isinstance(domains[name],dict)
-                and domains[name].get('type')=='integer'
-                and set(domains[name]) <= {'type','min','max'}
-                and (name not in inputs or current_presence(name)=='required'))
-    if len(pair)!=2:return {}
-    a,b=pair
-    domain=domains[a]
-    if domain!=domains[b]:return {}
+    """Reconstruct finite weak-order truth classes directly from Source data.
+
+    All direct reference/reference comparisons within a same-domain group are
+    invariant under strictly monotone re-labelling of its distinct values.
+    For N<=5 references, N ordered representative values cover every
+    possible tie/order pattern; small bounded Domains use their entire range.
+    This does not borrow a Compiler coverage receipt or establish reachability.
+    """
+    group=sorted(name for name in names if name in domains
+                 and isinstance(domains[name],dict)
+                 and domains[name].get('type')=='integer'
+                 and set(domains[name]) <= {'type','min','max'}
+                 and (name not in inputs or current_presence(name)=='required'))
+    if len(group)<2 or len(group)>5:return {}
+    domain=domains[group[0]]
+    if any(domains[name]!=domain for name in group[1:]):return {}
     start,end=domain.get('min'),domain.get('max')
     if start is not None and type(start) is not int:return {}
     if end is not None and type(end) is not int:return {}
+    if start is not None and end is not None and start>end:return {}
+    # Cap the number of ranks by the exact finite Domain cardinality when
+    # necessary. An all-distinct N-tuple then correctly becomes impossible.
+    cardinality=(end-start+1) if start is not None and end is not None else None
+    ranks=len(group) if cardinality is None else min(cardinality,len(group))
+    if ranks<2:return {}
     if start is None:
-        start=(end-1 if end is not None and end<1 else 0)
-    if end is not None and start>=end:return {}
-    pair_set=set(pair)
+        start=(end-ranks+1 if end is not None and end<ranks-1 else 0)
+    if end is not None and start+ranks-1>end:return {}
+    group_set=set(group)
     def safe(expr):
         if not isinstance(expr,dict):return False
-        if not (used_refs(expr,definitions)&pair_set):return True
-        kind=expr.get('op')
+        if not (used_refs(expr,definitions)&group_set):return True
+        op=expr.get('op')
         args=expr.get('args',[])
-        if kind in ('and','or','not') and isinstance(args,list):
+        if op in ('and','or','not') and isinstance(args,list):
             return all(safe(x) for x in args)
-        if kind in ('eq','ne','lt','le','gt','ge') and isinstance(args,list) and len(args)==2:
-            return (all(isinstance(x,dict) and set(x)=={'ref'} for x in args)
-                    and {x['ref'] for x in args}==pair_set)
+        if op in ('eq','ne','lt','le','gt','ge') and isinstance(args,list) and len(args)==2:
+            if not all(isinstance(x,dict) and set(x)=={'ref'} for x in args):return False
+            return args[0]['ref']!=args[1]['ref'] and all(x['ref'] in group_set for x in args)
         return False
     if not all(safe(expr) for expr in clauses):return {}
-    return {a:[start,start+1],b:[start,start+1]}
-
+    ranks_values=list(range(start,start+ranks))
+    return {key:ranks_values for key in group}
 
 def _independent_has_order_comparison(expr):
     if not isinstance(expr,dict):return False
@@ -254,9 +266,13 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             if values is None and field in integer_pair:
                 values=integer_pair[field]
                 partition_fields.append(field)
-                partition_kinds.add('integer_ref_order' if any(
-                    _independent_has_order_comparison(clause) for clause in clauses)
-                    else 'integer_ref_pair')
+                partition_kinds.add((
+                    'integer_ref_multi_order' if any(
+                        _independent_has_order_comparison(clause) for clause in clauses)
+                    else 'integer_ref_multi_equality') if len(integer_pair)>=3 else (
+                    'integer_ref_order' if any(
+                        _independent_has_order_comparison(clause) for clause in clauses)
+                    else 'integer_ref_pair'))
             if values is None:
                 possible=False;break
             dimensions.append(values)
@@ -308,6 +324,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
                     else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
+                    else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}
+                    else 'integer-reference-order-partition/v2' if partition_kinds=={'integer_ref_multi_order'}
                     else 'mixed-exact-predicate-partition/v1')
             receipt.update(proof_method=method,
                            partition_fields=partition_fields,
