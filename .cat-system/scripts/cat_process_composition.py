@@ -108,7 +108,11 @@ def _link(binding,models):
     if not target_binding:
         raise CompositionError('target operation is not accepted by its PI or assigned to peer')
     fields=binding.get('field_links')
-    if not isinstance(fields,list) or not fields:
+    # An explicit empty inventory is legitimate when the linked Operations
+    # transfer no field values (all relevant fields are absent). Do not
+    # confuse this with an omitted binding inventory, and do not skip the
+    # unmapped source/target Field checks below.
+    if not isinstance(fields,list):
         raise CompositionError('connection requires typed field links')
     seen=set();seen_targets=set();checks=[]
     for mapping in fields:
