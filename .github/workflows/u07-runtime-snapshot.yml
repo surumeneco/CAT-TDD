@@ -1,0 +1,27 @@
+name: U07 temporary source transport
+on:
+  push:
+    branches:
+      - feature/u07-runtime-acceptance-20261122
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Preserve pinned upstream Git tree as archive
+        shell: bash
+        run: |
+          git archive --format=zip --output=cat-tdd-source.zip 9b6b3601f5a55e24e04bc42a586056e427ab74b3
+          sha256sum cat-tdd-source.zip | tee cat-tdd-source.sha256
+          git rev-parse 9b6b3601f5a55e24e04bc42a586056e427ab74b3^{tree}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: u07-pinned-source-9b6b3601
+          path: |
+            cat-tdd-source.zip
+            cat-tdd-source.sha256
+          retention-days: 7
