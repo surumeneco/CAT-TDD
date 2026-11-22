@@ -14,6 +14,7 @@ import tempfile
 import sys
 from cat_compile_v2 import load, Blocked
 import cat_model_conformance
+from catlib.markdown import parse_frontmatter
 
 SCHEMA='cat-assembly-regression/v1'
 
@@ -40,12 +41,42 @@ def safe(root,rel):
     return path
 
 
+
+def _explicitly_unassembled_domains(root,data):
+    """Only an exact, hashed manifest exclusion can omit a declared library Source.
+
+    Free-text domain_rule_policy is not a machine-readable normative rule.
+    An explicit TCE reference cannot be overridden by an exclusion.
+    """
+    declarations=data.get('unassembled_sources',[])
+    if not isinstance(declarations,list):
+        raise Blocked('unassembled_sources must be an array')
+    excluded={}
+    for entry in declarations:
+        if not isinstance(entry,dict) or entry.get('kind')!='domain-rule':
+            continue
+        path=entry.get('path')
+        file=safe(root,path)
+        if path in excluded or not isinstance(entry.get('sha256'),str) or sha(file.read_bytes())!=entry['sha256']:
+            raise Blocked('unassembled DomainRule SHA mismatch or duplicate')
+        fm=parse_frontmatter(file)
+        if fm.get('kind')!='domain-rule' or fm.get('id')!=entry.get('id'):
+            raise Blocked('unassembled DomainRule identity mismatch')
+        selected=data.get('selected')
+        if selected is not None:
+            if not isinstance(selected,list) or len([s for s in selected if isinstance(s,dict) and s.get('path')==path and s.get('id')==entry['id'] and s.get('sha256')==entry['sha256']])!=1:
+                raise Blocked('unassembled DomainRule must match exact selected Source')
+        excluded[path]=entry
+    return excluded
+
+
 def review(root,assembly,allow_draft=False):
     root=Path(root).resolve(strict=True)
     assembly=safe(root,assembly)
     raw=assembly.read_bytes();data=json.loads(raw)
     if data.get('schema')!='cat-reviewed-source-assembly/v1' or not isinstance(data.get('processes'),list):
         raise Blocked('review assembly schema invalid')
+    excluded=_explicitly_unassembled_domains(root,data)
     seen=set();rows=[]
     with tempfile.TemporaryDirectory(prefix='cat-assembly-regression-') as td:
         for entry in data['processes']:
@@ -64,6 +95,17 @@ def review(root,assembly,allow_draft=False):
             if not inputs['pis'] or not inputs['tces'] or len(inputs['domain_rules'])>1:
                 raise Blocked('assembly must include PI/TCE and at most one DomainRule')
             domain=inputs['domain_rules'][0] if inputs['domain_rules'] else None
+            unassembled=[]
+            if domain is not None:
+                rel=str(domain.relative_to(root))
+                if rel in excluded:
+                    domain_id=excluded[rel]['id']
+                    for tce in inputs['tces']:
+                        refs=parse_frontmatter(tce).get('refs',[])
+                        if not isinstance(refs,list) or domain_id in refs:
+                            raise Blocked('explicitly referenced or malformed TCE DomainRule cannot be unassembled')
+                    unassembled.append(rel)
+                    domain=None
             all_paths=[inputs['process'],*inputs['pis'],*inputs['tces'],*inputs['domain_specs'],*inputs['common_rules'],*inputs['domain_rules']]
             local_shas={str(p.relative_to(root)):sha(p.read_bytes()) for p in all_paths}
             try:
@@ -81,14 +123,15 @@ def review(root,assembly,allow_draft=False):
                     'source_count':len(model['source_records']),
                     'unverified_rule_count':len(model.get('unverified_rule_ids',[])),
                     'model_sha256':sha(out.read_bytes()),'input_sha256':local_shas,
-                    'process_closure':'not-run','implementation_conformance':'not-run'})
+                    'process_closure':'not-run','implementation_conformance':'not-run',
+                    'unassembled_domain_rules':unassembled})
             except (Blocked,ValueError,TypeError,KeyError,OSError) as exc:
                 row={'owner':entry['owner'],'status':'blocked','reason':str(exc),
                      'input_sha256':local_shas,
                      'process_closure':'not-run','implementation_conformance':'not-run'}
                 # A separate diagnostic subset can isolate a shared DomainRule
                 # binding error. It NEVER changes the full-assembly verdict.
-                if allow_draft and inputs['domain_rules']:
+                if allow_draft and domain is not None:
                     try:
                         subset=load(inputs['process'],inputs['pis'],inputs['tces'],None,
                                     allow_draft=True,common_rules=inputs['common_rules'],
