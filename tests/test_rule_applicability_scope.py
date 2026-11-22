@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'.cat-system'/'scripts'))
-from cat_compile_v2 import load
+from cat_compile_v2 import load, render_model_markdown
 import cat_flow
 import cat_model_conformance as independent
 from test_intrinsic_rule_proofs import build
@@ -36,6 +36,62 @@ class ExplicitRuleScopeTests(unittest.TestCase):
             target=root/'Model.json'
             target.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
             self.assertEqual(independent.validate(p,pi,[t],target,common_rules=[r])['status'],'passed')
+
+    def test_markdown_model_preserves_normative_rule_source_and_full_obligation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            p,pi,t,r=self._fixture(root,'demo.process.other')
+            model=load(p,pi,t,common_rules=[r])
+            path=root/'Model.md'
+            path.write_text(render_model_markdown(model),encoding='utf-8')
+            rendered=path.read_text(encoding='utf-8')
+            self.assertIn('## Normative rule sources',rendered)
+            self.assertIn('## Normative rule obligations',rendered)
+            self.assertIn('demo.process.other',rendered)
+            self.assertIn('not-applicable',rendered)
+            self.assertEqual(independent.validate(p,pi,[t],path,common_rules=[r])['status'],'passed')
+
+            for removed in ('## Normative rule sources','## Normative rule obligations'):
+                with self.subTest(removed=removed):
+                    altered=rendered.replace(removed,'## Removed rule metadata')
+                    path.write_text(altered,encoding='utf-8')
+                    verdict=independent.validate(p,pi,[t],path,common_rules=[r])
+                    self.assertEqual(verdict['status'],'blocked',verdict)
+
+    def test_markdown_rule_requirement_scope_and_source_are_not_forgeable(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            p,pi,t,r=self._fixture(root,'demo.process.other')
+            model=load(p,pi,t,common_rules=[r])
+            original=render_model_markdown(model)
+            path=root/'Model.md'
+            path.write_text(original,encoding='utf-8')
+            mutations=(
+                ('requirement','Retain the declared result relation','Any result is acceptable'),
+                ('scope','demo.process.other','demo.process.another'),
+                ('status','not-applicable','intrinsic-proved'),
+                ('source Process','| demo.rule.document | common-rule | demo.process |',
+                 '| demo.rule.document | common-rule | foreign.process |'),
+            )
+            for name,before,after in mutations:
+                with self.subTest(name=name):
+                    self.assertIn(before,original)
+                    path.write_text(original.replace(before,after,1),encoding='utf-8')
+                    verdict=independent.validate(p,pi,[t],path,common_rules=[r])
+                    self.assertEqual(verdict['status'],'blocked',verdict)
+
+    def test_declaring_process_is_source_bound_and_tamper_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            p,pi,t,r=self._fixture(root,'demo.process.other')
+            model=load(p,pi,t,common_rules=[r])
+            self.assertEqual(model['normative_rule_inputs'][0]['process'],'demo.process')
+            model['normative_rule_inputs'][0]['process']='foreign.process'
+            target=root/'Model.json'
+            target.write_text(json.dumps(model,ensure_ascii=False),encoding='utf-8')
+            verdict=independent.validate(p,pi,[t],target,common_rules=[r])
+            self.assertEqual(verdict['status'],'blocked')
+            self.assertIn('normative_rule_inputs',verdict['mismatches'])
 
     def test_process_closure_gate_respects_verified_nonapplicability(self):
         for condition,expected in (

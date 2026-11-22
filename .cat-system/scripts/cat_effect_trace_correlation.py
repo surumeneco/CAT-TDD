@@ -48,6 +48,26 @@ def _check_correlations(pairs):
             'request/transaction/target correlation differs within execution')
 
 
+def _check_causal_transport_lineage(events, event_id, receipt_binding):
+    """Join *explicit* request/response labels on the claimed causal path.
+
+    Only ancestors of this Effect or terminal are joined to its receipt;
+    a different sibling request in the same run may have a distinct identity.
+    Unlabeled legacy events stay unlabeled rather than inheriting a guessed
+    transaction or request ID. This checks self-reported identities only.
+    """
+    if event_id is None or receipt_binding is None:
+        return
+    while event_id is not None:
+        event = events[event_id]  # parent/event graph already validated
+        if event['kind'] in ('request', 'response'):
+            observed = _correlation(event, 'causal ' + event['kind'])
+            if observed is not None:
+                require(observed == receipt_binding,
+                        'causal request/response correlation differs from Effect receipt')
+        event_id = event.get('parent_event_id')
+
+
 def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
               repository_root=None,driver_repo_path=None):
     model=json.loads(model_bytes)
@@ -61,13 +81,28 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
     events={e['event_id']:e for e in trace['events']}
     terminals={e['execution_id']:e for e in trace['events'] if e['kind']=='result'}
     runs={r['execution_id']:r for r in trace['runs']}
+    # The receipt knows its Rule/Outcome, while only the run's accepted PI
+    # Operation identifies the Trigger. Join both explicit Source Model claims
+    # before accepting any Effect receipt, including not-observed receipts.
+    entry_triggers={op['id']:op.get('trigger') for op in model.get('pi_operations',[])
+                    if op.get('direction')=='accept'}
+    rule_triggers={rule['id']:rule.get('trigger') for rule in model.get('rules',[])}
     used_event_ids=set()
+    # A not-observed receipt has no event ID: it declares an unresolved
+    # Rule/Outcome/target instead. It may account for one Trace claim with
+    # the same explicit tuple, but cannot authenticate that event.
+    unobserved_receipt_inventory={}
     unresolved=list(inspected_trace['unresolved'])+list(inspected_effects['unresolved'])
     rows=[]
     for receipt in packet['observations']:
         run=receipt['execution_id']
         require(run in runs,'Effect receipt names an execution absent from trace')
         rid=receipt['rule_id']
+        entry_trigger=entry_triggers.get(runs[run]['entry_operation'])
+        rule_trigger=rule_triggers.get(rid)
+        if entry_trigger is not None and rule_trigger is not None:
+            require(entry_trigger==rule_trigger,
+                    'Effect receipt Rule Trigger differs from declared entry Operation Trigger')
         index=receipt['outcome_index']
         target=receipt['effect_target']
         reported=receipt['reported_status']
@@ -77,6 +112,12 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         # Rule/Outcome. If the submitted terminal explicitly names another,
         # the packet is contradictory, not merely lacking Effect evidence.
         if terminal is not None:
+            # Missing terminal index is an unproved binding, but a present
+            # JSON bool/float is not a valid 1-origin integer outcome index.
+            if 'outcome_index' in terminal:
+                require(type(terminal['outcome_index']) is int
+                        and terminal['outcome_index'] >= 1,
+                        'terminal outcome index must be a positive integer')
             require(terminal.get('rule_id') in (None,rid),
                     'terminal Rule differs from Effect receipt')
             require(terminal.get('outcome_index') in (None,index),
@@ -91,7 +132,13 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
             if terminal is not None and 'correlation' in terminal:
                 identities.append(('declared terminal',terminal))
             _check_correlations(identities)
+            if terminal is not None:
+                _check_causal_transport_lineage(
+                    events, terminal['event_id'],
+                    _correlation(receipt, 'unobserved receipt'))
             require(event_id in (None,''),'unobserved Effect cannot claim trace event')
+            key=(run,rid,index,target)
+            unobserved_receipt_inventory[key]=unobserved_receipt_inventory.get(key,0)+1
             rows.append({'execution_id':run,'rule_id':rid,'effect_target':target,
                          'status':'inconclusive','reason':'effect-not-observed'})
             continue
@@ -103,6 +150,9 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         require(event is not None and event['kind'] in ('request','replace','followup'),
                 'Effect event missing or not a supported side-effect kind')
         require(event['execution_id']==run,'Effect event belongs to another execution')
+        require(type(event.get('outcome_index')) is int
+                and event['outcome_index'] >= 1,
+                'Effect event outcome index must be a positive integer')
         require(event.get('rule_id')==rid and event.get('outcome_index')==index
                 and event.get('effect_target')==target,
                 'Effect event Rule/Outcome/target does not match Source-bound receipt')
@@ -111,6 +161,11 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         if terminal is not None:
             identity_records.append(('terminal trace event',terminal))
         _check_correlations(identity_records)
+        receipt_binding = _correlation(receipt, 'Effect receipt')
+        _check_causal_transport_lineage(events, event_id, receipt_binding)
+        if terminal is not None:
+            _check_causal_transport_lineage(
+                events, terminal['event_id'], receipt_binding)
         if terminal is None:
             unresolved.append({'execution_id':run,'reason':'terminal-result-not-observed'})
             status='inconclusive'
@@ -126,6 +181,43 @@ def correlate(model_bytes,trace,packet,driver_bytes,observation_root,
         rows.append({'execution_id':run,'rule_id':rid,'outcome_index':index,
                      'effect_target':target,'effect_event_id':event_id,
                      'reported_status':reported,'status':status})
+
+    # Every explicit Effect claim in a Trace is itself a submitted piece of
+    # evidence. A packet covering zero of those events must not be described
+    # as identity-consistent-only merely because no mismatching receipt was
+    # supplied. Absence is *inconclusive*, not a fabricated false event or
+    # an automatically proven/no-op Effect. Do not invent claims for ordinary
+    # unbound request/followup/replace events in legacy traces.
+    for event in trace['events']:
+        if event['kind'] not in ('request','replace','followup'):
+            continue
+        fields=('rule_id','outcome_index','effect_target')
+        declared=[field for field in fields if field in event]
+        if not declared:
+            continue
+        if len(declared)!=len(fields):
+            unresolved.append({
+                'execution_id':event['execution_id'],
+                'event_id':event['event_id'],
+                'declared_fields':declared,
+                'reason':'trace-effect-binding-incomplete'})
+            continue
+        if event['event_id'] in used_event_ids:
+            continue
+        key=(event['execution_id'],event['rule_id'],
+             event['outcome_index'],event['effect_target'])
+        available=unobserved_receipt_inventory.get(key,0)
+        if available:
+            unobserved_receipt_inventory[key]=available-1
+            continue  # A matching receipt exists, but declares not-observed.
+        unresolved.append({
+            'execution_id':event['execution_id'],
+            'event_id':event['event_id'],
+            'rule_id':event['rule_id'],
+            'outcome_index':event['outcome_index'],
+            'effect_target':event['effect_target'],
+            'reason':'trace-effect-without-receipt'})
+
     return {'schema':'cat-effect-trace-correlation/v1',
             'status':'inconclusive' if unresolved else 'identity-consistent-only',
             'normative_status':'inconclusive','formal_gate_status':'not-run',

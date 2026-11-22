@@ -895,7 +895,8 @@ def _symbolic_effect_containment(expr, target_domain, fields):
     return None
 
 
-def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
+def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
+                             pi_operations=(), operation_presence=()):
     """Prove Effect target containment separately from Guard closure.
 
     A direct reference uses structural Domain inclusion. A narrow set of
@@ -906,7 +907,28 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
     Unsupported, nonfinite or exhausted cases remain unproven.
     """
     checks={}
+    declared_fields=fields
     for rule in rules:
+        # A Guard with ambiguous accepted Operations is already unproven.
+        # For Effect input reads, nevertheless inspect *every* such Operation:
+        # silently falling back to the base PI Presence can produce a false
+        # positive Effect proof that the independent Source audit rejects.
+        accepted=[op for op in pi_operations
+                  if op['direction']=='accept' and op.get('trigger')==rule['trigger']]
+        bindings=_input_operation_bindings(pi_operations,rule['trigger'])
+        def input_presence(field):
+            if len(accepted)>1:
+                # The referenced PI input must be available under every
+                # candidate accepted Operation. A different owning PI or any
+                # optional/absent/undefined override prevents positive proof.
+                return ('required' if all(
+                    op['source_pi']==field.get('source_pi') and
+                    _presence_for_field(field,op,operation_presence)=='required'
+                    for op in accepted) else 'optional')
+            return _trigger_input_presence(field,bindings,operation_presence)
+        fields={key:({**field,'presence':input_presence(field)}
+                     if field['role']=='input' else field)
+                for key,field in declared_fields.items()}
         for outcome_number,outcome in enumerate(rule['allowed'],1):
             for write_number,write in enumerate(outcome['write'],1):
                 target=write['target'];expr=write['expr']
@@ -975,6 +997,132 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096):
                 checks[ident]=({'result':'proved'} if reason is None
                                else {'result':'unproven','reason':reason})
     return checks
+
+
+def _integer_reference_equality_values(fields, names, predicates, input_presence, definitions):
+    """Exact weak-order Guard classes for 2..5 same-Domain integer references.
+
+    Direct pairwise ==/!=/</<=/>/>= predicates under Boolean composition
+    depend only on the references' total preorder (including ties). Every
+    such preorder of N integers can be represented by N consecutive Domain
+    values, or by *all* Domain values if a finite interval is shorter.
+    The 2-reference v1 proof identity remains unchanged; N>=3 uses v2.
+    No initial-state reachability, Effect, or Provider proof is implied.
+    """
+    names=set(names)
+    candidates=sorted(name for name in names if name in fields
+                      and fields[name]['domain'].get('type')=='integer'
+                      and set(fields[name]['domain']) <= {'type','min','max'}
+                      and (name not in input_presence or input_presence[name]=='required'))
+    if not 2 <= len(candidates) <= 5:return {}
+    domain=fields[candidates[0]]['domain']
+    if any(fields[name]['domain']!=domain for name in candidates[1:]):return {}
+    low,high=domain.get('min'),domain.get('max')
+    if low is not None and type(low) is not int:return {}
+    if high is not None and type(high) is not int:return {}
+    if low is not None and high is not None and low>high:return {}
+    width=min(len(candidates),high-low+1) if low is not None and high is not None else len(candidates)
+    if width<2:return {}  # Exact finite enumeration already handles a singleton.
+    # When only an upper bound exists, choose the highest width values if
+    # required. Re-ranking never leaves the declared integral Domain.
+    lower=low if low is not None else (min(0,high-width+1) if high is not None else 0)
+    if high is not None and lower+width-1>high:return {}
+    group=set(candidates)
+    def supported(node):
+        if not isinstance(node,dict):return False
+        if not group.intersection(used_refs(node,definitions)):
+            return True
+        op=node.get('op');args=node.get('args',[])
+        if op in ('and','or','not') and isinstance(args,list):
+            return all(supported(arg) for arg in args)
+        if op in ('eq','ne','lt','le','gt','ge') and isinstance(args,list) and len(args)==2:
+            return (all(isinstance(arg,dict) and set(arg)=={'ref'}
+                        and arg['ref'] in group for arg in args)
+                    and args[0]['ref']!=args[1]['ref'])
+        return False
+    if not all(supported(predicate) for predicate in predicates):return {}
+    representatives=[lower+i for i in range(width)]
+    return {name:representatives for name in candidates}
+
+
+def _integer_reference_range_values(fields, names, predicates, input_presence, definitions):
+    """Exact local order classes across 2..3 integer Domains and literal cuts.
+
+    Every direct integer comparison is invariant under an order-preserving
+    re-ranking that fixes all integer literal constants and all Domain
+    endpoints. Splitting Z at these values makes every Domain constant
+    throughout each open interval. Up to N ordered representatives per
+    open interval cover every weak order of N reference values in that cell.
+    This is not a state-reachability, Effect, or Provider proof.
+    """
+    names=set(names)
+    refs=sorted(name for name in names if name in fields
+                and fields[name]['domain'].get('type')=='integer'
+                and set(fields[name]['domain']) <= {'type','min','max'}
+                and (name not in input_presence or input_presence[name]=='required'))
+    if not 2 <= len(refs) <= 3:return {}
+    group=set(refs)
+    cuts=set()
+    for name in refs:
+        domain=fields[name]['domain']
+        low,high=domain.get('min'),domain.get('max')
+        if low is not None and type(low) is not int:return {}
+        if high is not None and type(high) is not int:return {}
+        if low is not None and high is not None and low>high:return {}
+        if low is not None:cuts.add(low)
+        if high is not None:cuts.add(high)
+    saw_reference_pair=False
+    def supported(node):
+        nonlocal saw_reference_pair
+        if not isinstance(node,dict):return False
+        if not (group & used_refs(node,definitions)):return True
+        op=node.get('op');args=node.get('args',[])
+        if op in ('and','or','not') and isinstance(args,list):
+            return all(supported(arg) for arg in args)
+        if op not in ('eq','ne','lt','le','gt','ge') or not isinstance(args,list) or len(args)!=2:
+            return False
+        left,right=args
+        if (all(isinstance(a,dict) and set(a)=={'ref'} and a['ref'] in group for a in args)
+                and left['ref']!=right['ref']):
+            saw_reference_pair=True
+            return True
+        for ref,lit in ((left,right),(right,left)):
+            if (isinstance(ref,dict) and set(ref)=={'ref'} and ref['ref'] in group
+                    and isinstance(lit,dict) and set(lit)=={'literal'}
+                    and type(lit['literal']) is int):
+                cuts.add(lit['literal'])
+                return True
+        return False
+    if not all(supported(predicate) for predicate in predicates) or not saw_reference_pair:return {}
+    ordered_cuts=sorted(cuts)
+    values=[]
+    n=len(refs)
+    if not ordered_cuts:
+        values=list(range(n))
+    else:
+        for index,cut in enumerate(ordered_cuts):
+            if index==0:
+                values.extend(range(cut-n,cut))
+            else:
+                start=ordered_cuts[index-1]+1
+                values.extend(range(start,min(cut,start+n)))
+            values.append(cut)
+        values.extend(range(ordered_cuts[-1]+1,ordered_cuts[-1]+n+1))
+    result={}
+    for name in refs:
+        domain=fields[name]['domain']
+        low,high=domain.get('min'),domain.get('max')
+        admissible=[v for v in values
+                    if (low is None or v>=low) and (high is None or v<=high)]
+        if not admissible:return {}
+        result[name]=admissible
+    return result
+
+def _has_pair_order_comparison(node):
+    """Ordering labels cannot be confused with equality-only receipts."""
+    if not isinstance(node,dict):return False
+    return (node.get('op') in ('lt','le','gt','ge')
+            or any(_has_pair_order_comparison(x) for x in node.get('args',[])))
 
 
 def _presence_cases(domain,presence):
@@ -1475,10 +1623,21 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         partition_fields=[]
         partition_kinds=set()
         predicates=[*scoped_constraints,*(r['when'] for r in rr)]
+        integer_pair=_integer_reference_equality_values(
+            fields,ordered,predicates,input_presence,definitions)
+        integer_range=({} if integer_pair else _integer_reference_range_values(
+            fields,ordered,predicates,input_presence,definitions))
         for field_id in ordered:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
+            if field_id in integer_range:
+                # Values for every coupled reference must come from the same
+                # Domain-endpoint/literal cuts. A per-field interval sampler
+                # would not preserve x<y when x and y occupy the same cell.
+                values=integer_range[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('integer_ref_range')
             if (values is None and field_id in input_presence
                     and input_presence[field_id]=='optional'
                     and all(_presence_only_guard_use(predicate,field_id) for predicate in predicates)):
@@ -1499,6 +1658,16 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 if values is not None:
                     partition_fields.append(field_id)
                     partition_kinds.add('string')
+            if values is None and field_id in integer_pair:
+                values=integer_pair[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add((
+                    'integer_ref_multi_order' if any(
+                        _has_pair_order_comparison(clause) for clause in predicates)
+                    else 'integer_ref_multi_equality') if len(integer_pair)>=3 else (
+                    'integer_ref_order' if any(
+                        _has_pair_order_comparison(clause) for clause in predicates)
+                    else 'integer_ref_pair'))
             domainvalues.append(values)
         if any(values is None for values in domainvalues):
             per_trigger[trigger]={'result':'unproven',
@@ -1518,11 +1687,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             presence_unproven.update(special & relevant)
             continue
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr);unknown=None
+        admissible=0
         for values in itertools.product(*domainvalues):
             env=dict(zip(ordered,values))
             try:
                 if not all(eval_expr(c,env,definitions) for c in scoped_constraints):
                     continue
+                admissible+=1
                 hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
             except Blocked as exc:
                 unknown=str(exc)
@@ -1535,6 +1706,16 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                   'guard_refs':ordered}
             presence_unproven.update(special & relevant)
             continue
+        if not admissible:
+            # A closed truth table over zero accepted states is vacuous.
+            # It does not establish an executable Trigger's Source closure.
+            per_trigger[trigger]={'result':'unproven',
+                                  'reason':'no admissible Source-constrained Guard state',
+                                  'guard_refs':ordered,
+                                  'unreachable_rules':sorted(unreachable),
+                                  'excluded_by_pi_constraints':bool(scoped_constraints)}
+            presence_unproven.update(special & relevant)
+            continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
         check={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered',
                'guard_refs':ordered,'overlap_count':len(overlaps) if not partition_fields else None,
@@ -1545,7 +1726,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
-                    else 'integer-string-literal-partition/v1')
+                    else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
+                    else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
+                    else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}
+                    else 'integer-reference-order-partition/v2' if partition_kinds=={'integer_ref_multi_order'}
+                    else 'integer-reference-range-order-partition/v1' if partition_kinds=={'integer_ref_range'}
+                    else 'mixed-exact-predicate-partition/v1')
             check.update(proof_method=method,
                          partition_fields=partition_fields,
                          abstract_state_count=combinations,
@@ -1582,7 +1768,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     unverified_rule_ids=sorted({r['id'] for r in rule_obligations
                                 if r['verification_status']!='not-applicable'}-proven_rule_ids)
     # Guard coverage does not prove all Effect expressions total and in Domain.
-    effect_checks=_effect_totality_checks(rules,fields,definitions)
+    effect_checks=_effect_totality_checks(
+        rules,fields,definitions,pi_operations=pi_operations,
+        operation_presence=operation_presence)
     unverified_effect_ids=sorted(key for key,proof in effect_checks.items()
                                  if proof['result']!='proved')
     normative_model = (all(fm['status']=='confirmed' for _,fm in files)
@@ -1605,7 +1793,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     result['unresolved_interfaces']=unresolved_interfaces if contract=='markdown-v2' else []
     result['pi_artifacts']=[fm['id'] for _,fm,_ in pi_docs]
     result['rule_obligations']=rule_obligations
-    result['normative_rule_inputs']=[{'id':d['id'],'kind':d['kind'],'sha256':d['sha256']} for d in rule_docs]
+    result['normative_rule_inputs']=[{'id':d['id'],'kind':d['kind'],'process':d['process'],
+                                      'sha256':d['sha256']} for d in rule_docs]
     result['named_type_definitions']=resolved_type_definitions
     result['unverified_rule_ids']=unverified_rule_ids
     result['effect_checks']=effect_checks
@@ -1837,10 +2026,17 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             for outcome in rule['allowed']:
                 for write in outcome['write']:
                     observed.update(used_refs(write['expr'],defs))
+        guard_names=set().union(*(used_refs(predicate,defs) for predicate in predicates)) if predicates else set()
+        integer_pair=_integer_reference_equality_values(
+            fields,guard_names,predicates,presence,defs)
+        integer_range=({} if integer_pair else _integer_reference_range_values(
+            fields,guard_names,predicates,presence,defs))
         for field_id in variable_ids:
             field=fields[field_id]
             values=(_presence_cases(field['domain'],presence[field_id])
                     if field_id in presence else typed.finite_values(field['domain']))
+            if field_id in integer_range:
+                values=integer_range[field_id]
             if values is None and field_id in presence and presence[field_id]=='optional' and field_id not in observed:
                 # The omission is a valid witness of an unobserved optional
                 # value; it is not a sample used as a finite-domain proof.
@@ -1853,6 +2049,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                                    or presence[field_id]=='required'):
                 values=semantic_string_partition.string_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and field_id in integer_pair:
+                values=integer_pair[field_id]
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)
@@ -2141,6 +2339,62 @@ def render_model_markdown(model):
     if records is None:
         records=[{'id':aid,'kind':kind,'sha256':digest} for aid,(kind,digest) in zip(model['source_artifacts'],model['source_sha256'].items())]
     for rec in records:lines.append(f"| {_md(rec['id'])} | {_md(rec['kind'])} | `{rec['sha256']}` |")
+    # Source-bound CommonRule/DomainSpec inventory is normative data, not a
+    # comment on TCE behavior. The Markdown Model must retain the same
+    # ownership, meaning and unresolved proof status as the JSON Model.
+    lines += ['',('## 規範Rule出典' if ja else '## Normative rule sources'),'',
+              ('| 出典ID | 種別 | 宣言元Process | SHA-256 |' if ja else
+               '| Source ID | Kind | Declaring Process | SHA-256 |'),
+              '| --- | --- | --- | --- |']
+    for source in model.get('normative_rule_inputs',[]):
+        lines.append(f"| {_md(source['id'])} | {_md(source['kind'])} | "
+                     f"{_md(source['process'])} | `{source['sha256']}` |")
+    lines += ['',('## 規範Rule義務' if ja else '## Normative rule obligations'),'',
+              ('| ID | 出典Artifact | 出典種別 | 適用条件 | 要求 | 検証契約 | 検証状態 | 出典SHA-256 | 適用範囲束縛 |' if ja else
+               '| ID | Source artifact | Source kind | Condition | Requirement | Verification contract | Verification status | Source SHA-256 | Scope binding |'),
+              '| --- | --- | --- | --- | --- | --- | --- | --- | --- |']
+    for rule in model.get('rule_obligations',[]):
+        scope=rule.get('scope_binding')
+        scope_text=('—' if scope is None else
+                    json.dumps(scope,sort_keys=True,ensure_ascii=False,separators=(',',':')))
+        lines.append(f"| {_md(rule['id'])} | {_md(rule['source_artifact'])} | "
+                     f"{_md(rule['source_kind'])} | {_md(rule['condition'])} | {_md(rule['requirement'])} | "
+                     f"{_md(rule['verification_contract'])} | "
+                     f"{_md(rule.get('verification_status','unverified'))} | "
+                     f"{_md(rule.get('source_sha256') or '—')} | {_md(scope_text)} |")
+    # Exact typed declarations are not equivalent to display-only Domain names.
+    # Preserve full resolved definitions, including their Source and SHA.
+    lines += ['',('## 解決済み名前付き型' if ja else '## Resolved named types'),'',
+              '```json',json.dumps(model.get('named_type_definitions',[]),
+                  ensure_ascii=False,sort_keys=True,indent=2),'```']
+    # Operations can override the base PI Presence for a particular Trigger.
+    lines += ['',('## 操作別Presence' if ja else '## Operation presence'),'',
+              ('| 操作 | フィールド | Presence | 出典PI |' if ja else
+               '| Operation | Field | Presence | Source PI |'),
+              '| --- | --- | --- | --- |']
+    for entry in model.get('operation_presence',[]):
+        lines.append('| '+' | '.join(_md(entry[key]) for key in
+            ('operation','field','presence','source_pi'))+' |')
+    lines += ['',('## 観測利用可能時点' if ja else '## Observation availability'),'',
+              ('| 観測ID | 出典 | 利用可能な起点(JSON) |' if ja else
+               '| Observation ID | Source | Available on (JSON) |'),
+              '| --- | --- | --- |']
+    for entry in model['fields']:
+        if entry['role']!='observation':continue
+        available=(entry['available_on'] if 'available_on' in entry else None)
+        lines.append(f"| {_md(entry['id'])} | {_md(entry['source'])} | "+
+                     '`'+json.dumps(available,ensure_ascii=False,separators=(',',':'))+'` |')
+    # Only established Source-bound intrinsic structural predicates can have
+    # proof certificates. Preserve the entire certificate in readable Models;
+    # a Rule's `intrinsic-proved` label alone cannot prove its predicate.
+    lines += ['',('## 内在Rule証明' if ja else '## Intrinsic rule proofs'),'',
+              ('| Rule ID | 出典Artifact | 出典SHA-256 | 要求 | 検証契約 | 証明方法 | 適用範囲 | 証明状態 |' if ja else
+               '| Rule ID | Source artifact | Source SHA-256 | Requirement | Verification contract | Proof method | Scope | Proof status |'),
+              '| --- | --- | --- | --- | --- | --- | --- | --- |']
+    for proof in model.get('intrinsic_rule_proofs',[]):
+        lines.append('| '+' | '.join(_md(proof[field]) for field in
+            ('rule_id','source_artifact','source_sha256','requirement',
+             'verification_contract','proof_method','scope','status'))+' |')
     if model.get('process_interfaces') is not None:
         lines += ['',('## Process境界' if ja else '## Process interfaces'),'', '| PI |','| --- |']
         for ref in model.get('process_interfaces',[]): lines.append(f"| {_md(ref)} |")
@@ -2150,26 +2404,61 @@ def render_model_markdown(model):
         direction={'receive':'受信','send':'送信','bidirectional':'双方向'}.get(boundary['direction'],boundary['direction']) if ja else boundary['direction']
         for peer in boundary.get('peers',[boundary['peer']]):
             lines.append(f"| {_md(peer)} | {_md(direction)} |")
+    if model.get('pi_boundaries') is not None:
+        # A Process may have several PIs, each with a distinct peer/direction.
+        # The legacy singular PI boundary view is insufficient for this graph.
+        lines += ['',('## PI境界一覧' if ja else '## PI boundaries'),'',
+                  ('| 出典PI | 相手Process | 方向 | 相手Process一覧(JSON) |' if ja else
+                   '| Source PI | Peer process | Direction | Peers (JSON) |'),
+                  '| --- | --- | --- | --- |']
+        direction_ja={'receive':'受信','send':'送信','bidirectional':'双方向'}
+        for boundary in model['pi_boundaries']:
+            direction=(direction_ja.get(boundary['direction'],boundary['direction'])
+                       if ja else boundary['direction'])
+            peers=json.dumps(boundary.get('peers'),ensure_ascii=False,separators=(',',':'))
+            lines.append(f"| {_md(boundary['artifact'])} | {_md(boundary['peer'])} | "
+                         f"{_md(direction)} | `{_md(peers)}` |")
     if model.get('pi_operations') is not None:
         has_peer=any('peer' in op for op in model['pi_operations'])
-        heading=('| ID | 方向 | 起点 | 相手Process |' if ja else '| ID | Direction | Trigger | Peer process |') if has_peer else ('| ID | 方向 | 起点 |' if ja else '| ID | Direction | Trigger |')
+        heading=('| ID | 方向 | 起点 | 相手Process | 出典PI |' if ja else '| ID | Direction | Trigger | Peer process | Source PI |') if has_peer else ('| ID | 方向 | 起点 | 出典PI |' if ja else '| ID | Direction | Trigger | Source PI |')
         lines += ['',('## PI操作' if ja else '## PI operations'),'',heading,
-                  '| --- | --- | --- | --- |' if has_peer else '| --- | --- | --- |']
+                  '| --- | --- | --- | --- | --- |' if has_peer else '| --- | --- | --- | --- |']
         direction_ja={'accept':'受付','provide':'提供'}
         for op in model.get('pi_operations',[]):
             direction=direction_ja.get(op['direction'],op['direction']) if ja else op['direction']
             row=f"| {_md(op['id'])} | {_md(direction)} | {_md(op.get('trigger') or '—')} |"
             if has_peer:
                 row+=f" {_md(op.get('peer') or '—')} |"
+            row+=f" {_md(op.get('source_pi') or '—')} |"
             lines.append(row)
     lines += ['',('## 起点' if ja else '## Triggers'),'',('| ID | 由来 |' if ja else '| ID | Origin |'),'| --- | --- |']
     for t in model['triggers']:lines.append(f"| {_md(t['id'])} | {_md(t['origin'])} |")
-    lines += ['',('## 仕様要素' if ja else '## Fields'),'',('| ID | 役割 | Domain |' if ja else '| ID | Role | Domain |'),'| --- | --- | --- |']
+    lines += ['',('## 仕様要素' if ja else '## Fields'),'',('| ID | 役割 | Domain | Presence | 出典PI |' if ja else '| ID | Role | Domain | Presence | Source PI |'),'| --- | --- | --- | --- | --- |']
     role_ja={'input':'受信','output':'送信','state':'状態','observation':'観測','action':'作用'}
-    for f in model['fields']:lines.append(f"| {_md(f['id'])} | {_md(role_ja.get(f['role'],f['role']) if ja else f['role'])} | `{_md(format_domain(f['domain'],lang))}` |")
+    for f in model['fields']:
+        is_pi_field=f['role'] in ('input','output')
+        lines.append(f"| {_md(f['id'])} | {_md(role_ja.get(f['role'],f['role']) if ja else f['role'])} | `{_md(format_domain(f['domain'],lang))}` | {_md(f.get('presence','required') if is_pi_field else '—')} | {_md((f.get('source_pi') or '—') if is_pi_field else '—')} |")
     if model['pi_constraints']:
         lines += ['',('## PI制約' if ja else '## PI constraints'),'',('| 式 |' if ja else '| Expression |'),'| --- |']
         for c in model['pi_constraints']:lines.append(f'| `{_md(format_expr(c,language=lang))}` |')
+    if model.get('pi_constraint_scopes'):
+        # The human-readable TestModel must preserve the owning PI and the
+        # exact Trigger/evaluation-time binding, not merely the formula text.
+        # Missing binding is an unresolved Source relation, not a no-op.
+        lines += ['',('## PI制約の束縛' if ja else '## PI constraint bindings'),'',
+                  ('| 出典PI | 起点 | 式 | 未証明理由 |' if ja else
+                   '| Source PI | Triggers | Expression | Unproved reason |'),
+                  '| --- | --- | --- | --- |']
+        unbound=model.get('unbound_pi_constraints',[])
+        for binding in model['pi_constraint_scopes']:
+            matches=[item['reason'] for item in unbound
+                     if item['source_pi']==binding['source_pi']
+                     and item['expr']==binding['expr']]
+            reason=(matches[0] if not binding['triggers'] and matches else '—')
+            lines.append('| '+_md(binding['source_pi'])+' | '
+                         +_md(', '.join(binding['triggers']) or '—')+' | `'
+                         +_md(format_expr(binding['expr'],language=lang))+'` | '
+                         +_md(reason)+' |')
     if model['definitions']:
         lines += ['',('## DomainRule定義' if ja else '## DomainRule definitions'),'',('| ID | 引数 | 式 |' if ja else '| ID | Parameters | Expression |'),'| --- | --- | --- |']
         for d in model['definitions']:lines.append(f"| {_md(d['id'])} | {_md(', '.join(d['params']) or '—')} | `{_md(format_expr(d['body'],d['params'],lang))}` |")

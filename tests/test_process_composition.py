@@ -127,6 +127,62 @@ class CompositionTests(unittest.TestCase):
             self.assertEqual(len(result['unresolved_connections']),0)
             self.assertFalse(result['bindings'][0]['external_effects_verified'])
 
+    def test_operation_absent_fields_need_no_value_links(self):
+        # PI itself still declares fields. The linked Operations explicitly
+        # make both absent, so the connection transfers no field values.
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            consumer=model('p.two','p.one','receive')
+            producer['operation_presence']=[{
+                'source_pi':'p.one.pi','operation':'p.one.op',
+                'field':'output.value','presence':'absent'}]
+            consumer['operation_presence']=[{
+                'source_pi':'p.two.pi','operation':'p.two.op',
+                'field':'input.value','presence':'absent'}]
+            links=binding()
+            links['links'][0]['field_links']=[]
+            a,b,bindings=self.write(Path(td),first=producer,second=consumer,links=links)
+            result=composer.compose([a,b],bindings)
+            self.assertEqual(result['bindings'][0]['status'],'structurally-matched')
+            self.assertEqual(result['bindings'][0]['field_links'],[])
+            self.assertEqual(result['unresolved_connections'],[])
+            self.assertFalse(result['bindings'][0]['external_effects_verified'])
+            self.assertEqual(result['status'],'inconclusive')
+
+    def test_absent_fields_do_not_force_meaningless_field_links(self):
+        with tempfile.TemporaryDirectory() as td:
+            producer=model('p.one','p.two','send')
+            consumer=model('p.two','p.one','receive')
+            producer['fields'][0]['presence']='absent'
+            consumer['fields'][0]['presence']='absent'
+            links=binding()
+            links['links'][0]['field_links']=[]
+            a,b,bindings=self.write(Path(td),first=producer,second=consumer,links=links)
+            result=composer.compose([a,b],bindings)
+            self.assertEqual(result['bindings'][0]['status'],'structurally-matched')
+            self.assertEqual(result['bindings'][0]['unmapped_source_fields'],[])
+            self.assertEqual(result['bindings'][0]['unmapped_target_fields'],[])
+
+    def test_empty_field_links_do_not_hide_value_carrying_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            links=binding()
+            links['links'][0]['field_links']=[]
+            a,b,bindings=self.write(Path(td),links=links)
+            result=composer.compose([a,b],bindings)
+            self.assertEqual(result['bindings'][0]['status'],'inconclusive')
+            self.assertEqual(result['bindings'][0]['unmapped_source_fields'],['output.value'])
+            self.assertEqual(result['bindings'][0]['unmapped_target_fields'],['input.value'])
+            self.assertIn('PI binding exists but structural proof is inconclusive',
+                          {item['reason'] for item in result['unresolved_connections']})
+
+    def test_field_links_inventory_cannot_be_omitted(self):
+        with tempfile.TemporaryDirectory() as td:
+            links=binding()
+            del links['links'][0]['field_links']
+            a,b,bindings=self.write(Path(td),links=links)
+            with self.assertRaisesRegex(composer.CompositionError,'field links'):
+                composer.compose([a,b],bindings)
+
     def test_other_pi_field_cannot_be_borrowed_for_binding(self):
         with tempfile.TemporaryDirectory() as td:
             producer=model('p.one','p.two','send')

@@ -50,6 +50,73 @@ class ExternalEvidenceTests(unittest.TestCase):
             e.update(reported_status='not-observed',observation_file=None,observation_sha256=None)
             r=evidence.inspect(raw,packet,DRIVER,t)
             self.assertEqual(r['status'],'inconclusive')
+    def test_observation_correlation_agrees_with_declared_receipt(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            ids={'request_id':'req-7','transaction_id':'tx-3','target_id':'object-9'}
+            packet['observations'][0]['correlation']=dict(ids)
+            observed=json.loads((root/'obs.json').read_bytes())
+            observed['correlation']=dict(ids)
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'obs.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            result=evidence.inspect(raw,packet,DRIVER,root)
+            self.assertEqual(result['status'],'consistent-receipts-only')
+            self.assertEqual(result['normative_status'],'inconclusive')
+            self.assertEqual(result['provider_authentication_status'],'not-run')
+
+    def test_observation_correlation_cannot_rebind_transaction_even_with_current_sha(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            packet['observations'][0]['correlation']={
+                'request_id':'req-7','transaction_id':'tx-3','target_id':'object-9'}
+            observed=json.loads((root/'obs.json').read_bytes())
+            observed['correlation']={
+                'request_id':'req-7','transaction_id':'tx-other','target_id':'object-9'}
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'obs.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            with self.assertRaisesRegex(evidence.ReceiptError,'observation correlation'):
+                evidence.inspect(raw,packet,DRIVER,root)
+
+    def test_observation_explicit_correlation_requires_receipt_identity(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            observed=json.loads((root/'obs.json').read_bytes())
+            observed['correlation']={
+                'request_id':'req-7','transaction_id':'tx-3','target_id':'object-9'}
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'obs.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            with self.assertRaisesRegex(evidence.ReceiptError,'observation correlation'):
+                evidence.inspect(raw,packet,DRIVER,root)
+
+    def test_malformed_observation_correlation_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            observed=json.loads((root/'obs.json').read_bytes())
+            observed['correlation']={'request_id':'req-7','transaction_id':''}
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'obs.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            with self.assertRaisesRegex(evidence.ReceiptError,'observation correlation'):
+                evidence.inspect(raw,packet,DRIVER,root)
+
+    def test_observation_outcome_index_preserves_json_integer_identity(self):
+        # A hashed observation containing true or 1.0 cannot attest to
+        # Allowed Outcome 1, even though Python compares them equal to 1.
+        for invalid in (True, 1.0, False, 0.0, "1", None):
+            with self.subTest(outcome_index=repr(invalid)), tempfile.TemporaryDirectory() as t:
+                root = Path(t)
+                raw, packet = inputs(root)
+                observed = json.loads((root/'obs.json').read_bytes())
+                observed['outcome_index'] = invalid
+                content = json.dumps(observed, sort_keys=True).encode()
+                (root/'obs.json').write_bytes(content)
+                packet['observations'][0]['observation_sha256'] = hashlib.sha256(content).hexdigest()
+                with self.assertRaisesRegex(evidence.ReceiptError, 'outcome_index'):
+                    evidence.inspect(raw, packet, DRIVER, root)
+
     def test_wrong_source_or_model_sha_blocks(self):
         with tempfile.TemporaryDirectory() as t:
             raw,packet=inputs(Path(t));packet['source_sha256']['demo.tce']='c'*64
@@ -87,6 +154,52 @@ class ExternalEvidenceTests(unittest.TestCase):
             raw,packet=inputs(Path(t));packet['observations'].append(dict(packet['observations'][0]))
             with self.assertRaisesRegex(evidence.ReceiptError,'duplicate observation'):
                 evidence.inspect(raw,packet,DRIVER,t)
+    def test_same_run_rule_cannot_attest_two_allowed_outcomes(self):
+        # Allowed Outcomes are alternatives for one Rule evaluation, not
+        # independent observations to be combined for one execution.
+        for status in ('succeeded', 'not-observed'):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as t:
+                root=Path(t);raw,packet=inputs(root)
+                entry={'rule_id':'rule','outcome_index':2,
+                       'effect_target':'action.keep','execution_id':'run1',
+                       'reported_status':status}
+                if status=='succeeded':
+                    observation={'schema':'cat-effect-observation/v1',
+                                 'rule_id':'rule','outcome_index':2,
+                                 'effect_target':'action.keep','execution_id':'run1',
+                                 'reported_status':'succeeded'}
+                    payload=json.dumps(observation,sort_keys=True).encode()
+                    (root/'obs2.json').write_bytes(payload)
+                    entry.update(observation_file='obs2.json',
+                                 observation_sha256=hashlib.sha256(payload).hexdigest())
+                packet['observations'].append(entry)
+                with self.assertRaisesRegex(evidence.ReceiptError,
+                                            'conflicting Allowed Outcome'):
+                    evidence.inspect(raw,packet,DRIVER,root)
+
+    def test_same_outcome_multiple_distinct_targets_still_allowed(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);raw,packet=inputs(root)
+            model=json.loads(raw)
+            model['rules'][0]['allowed'][0]['write'].append(
+                {'target':'state.flag','expr':{'literal':False}})
+            raw=json.dumps(model,sort_keys=True).encode()
+            packet['model_sha256']=hashlib.sha256(raw).hexdigest()
+            observation={'schema':'cat-effect-observation/v1','rule_id':'rule',
+                         'outcome_index':1,'effect_target':'state.flag',
+                         'execution_id':'run1','reported_status':'succeeded'}
+            payload=json.dumps(observation,sort_keys=True).encode()
+            (root/'obs2.json').write_bytes(payload)
+            packet['observations'].append({
+                'rule_id':'rule','outcome_index':1,'effect_target':'state.flag',
+                'execution_id':'run1','reported_status':'succeeded',
+                'observation_file':'obs2.json',
+                'observation_sha256':hashlib.sha256(payload).hexdigest()})
+            result=evidence.inspect(raw,packet,DRIVER,root)
+            self.assertEqual(result['status'],'consistent-receipts-only')
+            self.assertEqual(len(result['receipts']),2)
+            self.assertEqual(result['normative_status'],'inconclusive')
+
     def test_checkout_proves_driver_blob_identity_not_external_effect(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);repo=root/'repository';repo.mkdir()

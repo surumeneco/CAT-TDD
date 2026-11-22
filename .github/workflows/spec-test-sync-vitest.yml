@@ -1,13 +1,14 @@
 name: Spec-test-sync generated Vitest acceptance
 
 on:
-  push:
-    branches:
-      - 'feature/spec-test-sync-completion-*'
+  pull_request:
     paths:
       - '.github/workflows/spec-test-sync-vitest.yml'
       - '.cat-system/scripts/cat_spec_test_sync.py'
       - '.cat-system/scripts/cat_suite_manifest.py'
+      - '.cat-system/scripts/cat_compile_v2.py'
+      - '.cat-system/scripts/cat_model_conformance.py'
+      - '.cat-system/skills/tech-vitest/scripts/**'
       - 'tests/test_spec_test_sync_integration.py'
   workflow_dispatch:
 

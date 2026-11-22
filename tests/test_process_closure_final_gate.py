@@ -1,4 +1,4 @@
-"""CAT-AUD-R01: execute the canonical final Process Closure CLI.
+"""Execute the canonical final Process Closure CLI.
 
 These are strictly synthetic Confirmed-looking Source fixtures. A successful
 fixture Gate demonstrates only the currently specified finite local coverage

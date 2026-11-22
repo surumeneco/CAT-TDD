@@ -16,10 +16,17 @@ def _row(text):
         raise RuleError('invalid Markdown table')
     result=[];part=[];escape=False
     for ch in text[1:-1]:
-        if escape:part.append(ch);escape=False
+        if escape:
+            # Markdown tables escape pipes and literal backslashes. A slash
+            # before any other character (e.g. regex \d or \.) is part of
+            # the normative Rule text and must not be silently discarded.
+            if ch not in ('|', chr(92)):
+                part.append(chr(92))
+            part.append(ch);escape=False
         elif ch==chr(92):escape=True
         elif ch=='|':result.append(''.join(part).strip());part=[]
         else:part.append(ch)
+    if escape:part.append(chr(92))
     result.append(''.join(part).strip())
     return result
 
@@ -80,6 +87,12 @@ def load(path, process, allow_draft=False):
     scope=fm.get('process')
     if not isinstance(scope,str) or not scope:raise RuleError('missing scope')
     source_sha=hashlib.sha256(raw).hexdigest()
+    # Every normative Rule (including unresolved free-text Rules) is tied to
+    # the *same exact Source bytes* as the document inventory. A Rule that
+    # merely names its Source ID without retaining the SHA is not a complete
+    # provenance-bound obligation for a later machine verification contract.
+    for rule in rules:
+        rule['source_sha256']=source_sha
     for definition in types:
         definition.update(source_artifact=fm['id'],source_sha256=source_sha)
     return {'id':fm['id'],'kind':fm['kind'],'process':scope,

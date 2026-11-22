@@ -60,7 +60,7 @@ class ExactPartitionTests(unittest.TestCase):
                 second='input.enabled + 1 >= 0'),allow_draft=True,allow_partial=True)
             self.assertEqual(m['coverage_checks']['submit']['result'],'unproven')
 
-    def test_other_field_comparison_remains_unproven(self):
+    def test_same_integer_domain_observation_pair_has_exact_order_partition(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             p,pi,t=fixture(root,first='input.enabled < observation.other',
@@ -68,7 +68,10 @@ class ExactPartitionTests(unittest.TestCase):
             p.write_text(p.read_text().replace('## Actions',
                 '| observation.other | input | integer |\n## Actions'))
             m=load(p,pi,t,allow_draft=True,allow_partial=True)
-            self.assertEqual(m['coverage_checks']['submit']['result'],'unproven')
+            self.assertEqual(m['coverage_checks']['submit']['result'],'proved')
+            self.assertEqual(m['coverage_checks']['submit']['proof_method'],
+                             'integer-reference-order-partition/v1')
+            self.assertIn('no-general-reachability-proof',m['limits'])
 
     def test_dynamic_eq_is_not_mistaken_for_literal(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -122,6 +122,26 @@ class EffectGateIntegration(unittest.TestCase):
             (root/'observation.json').write_text('changed observation')
             self.assertEqual(flow.conformance_evidence_status(wp,w,'implementation-conformance')['status'],'stale')
 
+    def test_observation_file_cannot_claim_other_transaction_under_matching_sha(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);w,wp=setup(root)
+            trace=json.loads((root/'Trace.json').read_text(encoding='utf-8'))
+            packet=json.loads((root/'Packet.json').read_text(encoding='utf-8'))
+            trace['runs'][0]['correlation']=dict(BINDING)
+            trace['events'][4]['correlation']=dict(BINDING)
+            trace['events'][5]['correlation']=dict(BINDING)
+            packet['observations'][0]['correlation']=dict(BINDING)
+            observed=json.loads((root/'observation.json').read_bytes())
+            observed['correlation']={**BINDING,'transaction_id':'another-tx'}
+            content=json.dumps(observed,sort_keys=True).encode()
+            (root/'observation.json').write_bytes(content)
+            packet['observations'][0]['observation_sha256']=hashlib.sha256(content).hexdigest()
+            (root/'Trace.json').write_text(json.dumps(trace),encoding='utf-8')
+            (root/'Packet.json').write_text(json.dumps(packet),encoding='utf-8')
+            result=flow.conformance_work(wp,w,'implementation-conformance')
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('observation correlation',result['reason'])
+
     def test_unobserved_effect_with_other_terminal_outcome_blocks_formal_gate(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);w,wp=setup(root)
@@ -153,6 +173,16 @@ class EffectGateIntegration(unittest.TestCase):
             verdict=flow.conformance_work(wp,work,'implementation-conformance')
             self.assertEqual(verdict['status'],'blocked',verdict)
             self.assertIn('correlation',verdict['reason'])
+
+    def test_boolean_terminal_outcome_index_cannot_pass_official_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);work,workpath=setup(root)
+            trace=json.loads((root/'Trace.json').read_text(encoding='utf-8'))
+            trace['events'][5]['outcome_index']=True
+            (root/'Trace.json').write_text(json.dumps(trace),encoding='utf-8')
+            result=flow.conformance_work(workpath,work,'implementation-conformance')
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('outcome index',result['reason'])
 
     def test_incomplete_evidence_contract_is_rejected(self):
         with tempfile.TemporaryDirectory() as t:

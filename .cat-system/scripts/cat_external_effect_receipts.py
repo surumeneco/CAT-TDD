@@ -32,6 +32,19 @@ def _sha(value):
     return isinstance(value,str) and bool(re.fullmatch('[0-9a-f]{64}',value))
 
 
+_CORRELATION_KEYS=frozenset(('request_id','transaction_id','target_id'))
+
+
+def _declared_correlation(record,label):
+    if 'correlation' not in record:
+        return None
+    value=record['correlation']
+    require(isinstance(value,dict) and set(value)==_CORRELATION_KEYS
+            and all(isinstance(v,str) and bool(v.strip()) for v in value.values()),
+            label+' correlation requires nonempty request/transaction/target IDs')
+    return value
+
+
 def _local(root,name):
     require(isinstance(name,str) and bool(name), 'observation file path required')
     root=Path(root).resolve(strict=True)
@@ -149,7 +162,7 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
                                         packet['implementation_head'],driver_bytes)
     records=packet.get('observations')
     require(isinstance(records,list), 'observations must be an array')
-    seen=set();out=[];inconclusive=[]
+    seen=set();selected_outcomes={};execution_correlations={};out=[];inconclusive=[]
     for entry in records:
         require(isinstance(entry,dict), 'observation receipt required')
         rid=entry.get('rule_id')
@@ -166,7 +179,25 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
         require(isinstance(run,str) and run, 'missing observation execution ID')
         key=(run,rid,index,target)
         require(key not in seen,'duplicate observation receipt')
+        # A run has one declared Trigger; an Allowed Outcome is an alternative
+        # result of that Rule evaluation. Several Effect targets may be
+        # observed within the selected outcome, but two different outcome
+        # indices for the *same Rule and execution* are inconsistent receipts.
+        choice=(run,rid)
+        prior_outcome=selected_outcomes.get(choice)
+        require(prior_outcome is None or prior_outcome==index,
+                'conflicting Allowed Outcome for the same Rule execution')
+        selected_outcomes[choice]=index
         seen.add(key)
+        receipt_correlation=_declared_correlation(entry,'Effect receipt')
+        # All submitted effects from one logical execution must bind the same
+        # declared request/transaction/target tuple. No declaration remains
+        # valid for legacy packets, but a partly declared run is ambiguous.
+        if run in execution_correlations:
+            require(execution_correlations[run]==receipt_correlation,
+                    'inconsistent execution correlation across Effect receipts')
+        else:
+            execution_correlations[run]=receipt_correlation
         status=entry.get('reported_status')
         require(status in ('succeeded','failed','unknown','not-observed'),
                 'unsupported reported Effect status')
@@ -179,6 +210,20 @@ def inspect(model_bytes,packet,driver_bytes,observation_root,
             require(isinstance(observation,dict)
                     and observation.get('schema')=='cat-effect-observation/v1',
                     'invalid observation payload')
+            # The observation file is hashed and independently supplied. If
+            # it declares correlation IDs, they cannot contradict (or be
+            # hidden by omitting) the envelope's claim for this Effect.
+            # Legacy observation files without IDs remain valid; matching
+            # self-reported labels are NOT independent provider attestation.
+            observation_correlation=_declared_correlation(observation,'observation')
+            if observation_correlation is not None:
+                require(receipt_correlation==observation_correlation,
+                        'observation correlation differs from Effect receipt')
+            # JSON booleans and floating-point values must not impersonate the
+            # one-origin integer identifier of a declared Allowed Outcome.
+            require(type(observation.get('outcome_index')) is int
+                    and observation['outcome_index'] >= 1,
+                    'observation outcome_index must be a positive integer')
             for field,expected in [('rule_id',rid),('outcome_index',index),
                                    ('effect_target',target),('execution_id',run),
                                    ('reported_status',status)]:

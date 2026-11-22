@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 from catlib import semantic_types
+from catlib.semantic_rules import explicit_process_targets
 
 SCHEMA='cat-verifier-registry/v1'
 SUBJECTS={'static','structural','http','dom','database','discord','bluemap',
@@ -169,9 +170,90 @@ def evaluate(model_file,registry_file):
         for source_id,doc in docs.items():
             if source_id not in recorded or recorded[source_id].get('sha256')!=doc.get('sha256'):
                 raise VerifierError('source record hash mismatch for '+source_id)
+            if recorded[source_id].get('kind')!=doc.get('kind'):
+                raise VerifierError('source record kind mismatch for '+source_id)
+    not_applicable={}
     for rid,rule in rules.items():
-        if rule.get('source_artifact') not in docs:
+        source_id=rule.get('source_artifact')
+        if source_id not in docs:
             raise VerifierError('unbound normative rule source '+rid)
+        source=docs[source_id]
+        # A Registry with a rehashed Model is only internal consistency
+        # evidence. Check the Rule's own provenance, including applicable
+        # Source-bound Process scopes, before evaluating even a test fixture.
+        # Do not exempt free-text / unscoped Rules from provenance checks.
+        # Registry SHA and model SHA are not an independent Source proof, but
+        # every Rule obligation must at least bind its owning Source record
+        # before fixture execution and Rule fingerprinting.
+        if rule.get('source_sha256')!=source.get('sha256'):
+            raise VerifierError('normative rule source SHA mismatch for '+rid)
+        if rule.get('source_kind')!=source.get('kind'):
+            raise VerifierError('normative rule source kind mismatch for '+rid)
+        declaring_process=source.get('process')
+        evaluated_process=model.get('process')
+        # A verifier result cannot be borrowed across Source Process scopes,
+        # even when a free-text Rule has no explicit target list. Preserve the
+        # legacy synthetic fixture format when *both* Process fields are absent;
+        # a partially declared or conflicting scope is never sufficient.
+        if declaring_process is not None or evaluated_process is not None:
+            if (not isinstance(declaring_process,str) or not declaring_process
+                or not isinstance(evaluated_process,str) or not evaluated_process
+                or (evaluated_process != declaring_process
+                    and not evaluated_process.startswith(declaring_process+'.'))):
+                raise VerifierError('normative rule Process scope mismatch (scope binding) for '+rid)
+        if isinstance(declaring_process,str) and declaring_process:
+            targets=explicit_process_targets(rule.get('condition'),declaring_process)
+            if targets is not None:
+                expected={'schema':'cat-rule-explicit-process-scope/v1',
+                          'targets':list(targets),
+                          'evaluated_process':model.get('process'),
+                          'source_sha256':source.get('sha256')}
+                if (rule.get('scope_binding')!=expected or
+                    rule.get('source_sha256')!=source.get('sha256') or
+                    rule.get('verification_status')!=
+                    ('unverified' if model.get('process') in targets else 'not-applicable')):
+                    raise VerifierError('applicable rule scope binding invalid for '+rid)
+            elif rule.get('scope_binding') is not None:
+                raise VerifierError('unsupported normative rule scope binding for '+rid)
+        if rule.get('verification_status')!='not-applicable':
+            continue
+        # Only a traceable, syntactically unambiguous Process exclusion may
+        # suppress a verifier obligation. This verifies the Model's internal
+        # source binding; independent Source-to-Model verification is separate.
+        scope=rule.get('scope_binding')
+        source=docs[source_id]
+        condition=rule.get('condition')
+        targets=[part.strip() for part in condition.split(';')] if isinstance(condition,str) else []
+        declaring_process=source.get('process')
+        evaluated_process=model.get('process')
+        def in_declaring_tree(process):
+            return (isinstance(declaring_process,str) and bool(declaring_process)
+                    and isinstance(process,str) and
+                    (process==declaring_process or process.startswith(declaring_process+'.')))
+        if (not isinstance(scope,dict)
+            or set(scope)!={'schema','targets','evaluated_process','source_sha256'}
+            or scope.get('schema')!='cat-rule-explicit-process-scope/v1'
+            or not isinstance(model.get('process'),str)
+            or scope['evaluated_process']!=model['process']
+            or scope['source_sha256']!=source.get('sha256')
+            or rule.get('source_sha256')!=source.get('sha256')
+            or not targets or any(not re.fullmatch(r'[^\W\d][\w-]*(?:\.[^\W\d][\w-]*)+',target,re.UNICODE)
+                                  for target in targets)
+            # The original Source-bound scope grammar only permits descendants
+            # of its declaring Process. Internal Model/Registry hashes alone
+            # cannot justify a Rule exemption for a foreign Process.
+            or not in_declaring_tree(evaluated_process)
+            or not all(in_declaring_tree(target) for target in targets)
+            or scope['targets']!=targets or model['process'] in targets):
+            raise VerifierError('not-applicable scope binding invalid for '+rid)
+        not_applicable[rid]={
+            'rule_id':rid,'source_artifact':source_id,
+            'source_sha256':source['sha256'],
+            'status':'not-applicable','normative_status':'not-applicable',
+            'reason':'source-bound Process target list excludes evaluated Process',
+            'scope_binding':scope,'verification_scope':'explicit-process-scope-only',
+            'normative_rule_sha256':digest(json.dumps(rule,sort_keys=True,ensure_ascii=False).encode('utf-8')),
+        }
     seen=set();out=[]
     for e in entries:
         if not isinstance(e,dict) or not {'rule_id','source_artifact','source_sha256','subject','verifier_id','fixture','assertions'}<=set(e):
@@ -181,6 +263,8 @@ def evaluate(model_file,registry_file):
             raise VerifierError('duplicate/unknown rule '+str(rid))
         seen.add(rid)
         rule=rules[rid]
+        if rid in not_applicable:
+            raise VerifierError('cannot register verifier for not-applicable rule '+rid)
         source=docs.get(e['source_artifact'])
         if rule['source_artifact']!=e['source_artifact'] or source is None or source['sha256']!=e['source_sha256']:
             raise VerifierError('rule/source hash mismatch '+rid)
@@ -211,6 +295,9 @@ def evaluate(model_file,registry_file):
         if state=='passed' and any(c['status']=='failed' for c in checks):
             state,reason='failed','one or more deterministic assertions failed'
         out.append({'rule_id':rid,'source_artifact':rule['source_artifact'],'subject':subject,
+                    'source_sha256':source['sha256'],
+                    'scope_binding':rule.get('scope_binding'),
+                    'normative_rule_sha256':digest(json.dumps(rule,sort_keys=True,ensure_ascii=False).encode('utf-8')),
                     'verifier_id':e['verifier_id'],'status':state,'reason':reason,
                     # Asserted fixture observations are not a semantic proof
                     # of the normative Requirement (nor independent runtime fact).
@@ -220,9 +307,17 @@ def evaluate(model_file,registry_file):
                     'runner_sha256':e.get('runner',{}).get('sha256'),
                     'checks':checks})
     for rid in sorted(set(rules)-seen):
-        out.append({'rule_id':rid,'source_artifact':rules[rid]['source_artifact'],
-                    'status':'not-run','reason':'no registered verifier for normative rule'})
-    statuses=[e['status'] for e in out]
+        if rid in not_applicable:
+            out.append(not_applicable[rid])
+        else:
+            obligation=rules[rid]
+            source=docs[obligation['source_artifact']]
+            out.append({'rule_id':rid,'source_artifact':obligation['source_artifact'],
+                        'source_sha256':source['sha256'],
+                        'scope_binding':obligation.get('scope_binding'),
+                        'normative_rule_sha256':digest(json.dumps(obligation,sort_keys=True,ensure_ascii=False).encode('utf-8')),
+                        'status':'not-run','reason':'no registered verifier for normative rule'})
+    statuses=[e['status'] for e in out if e['status']!='not-applicable']
     if 'failed' in statuses:status='failed'
     elif 'not-run' in statuses:status='inconclusive'
     elif statuses and all(s=='passed' for s in statuses):status='passed'

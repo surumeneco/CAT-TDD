@@ -62,6 +62,26 @@ class EffectTotalityTests(unittest.TestCase):
             self.assertIn('unverified_effect_ids',result['mismatches'])
             self.assertIn('normative_status_unjustified',result['mismatches'])
 
+    def test_independent_source_checker_rejects_shared_false_effect_proof(self):
+        # Simulate a defect in the compiler's Effect helper shared by the
+        # Source-to-Model checker: a false positive must not certify Source.
+        import json
+        from unittest.mock import patch
+        from cat_model_conformance import validate
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=self.fixture(root)
+            model=load(p,pi,tce,allow_partial=True)
+            self.assertTrue(model['unverified_effect_ids'])
+            forged={key:{'result':'proved'} for key in model['effect_checks']}
+            model.update(status='confirmed',unverified_effect_ids=[],effect_checks=forged)
+            dest=root/'Model.json'
+            dest.write_text(json.dumps(model),encoding='utf-8')
+            with patch('cat_model_conformance._effect_totality_checks',return_value=forged):
+                result=validate(p,pi,tce,dest)
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('effect_totality_independent',result['mismatches'])
+
     def test_source_proof_changes_with_effect_domain(self):
         import json
         from cat_model_conformance import validate

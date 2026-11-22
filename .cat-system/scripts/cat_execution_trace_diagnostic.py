@@ -30,6 +30,27 @@ def _label(value, label):
     return value
 
 
+_CORRELATION_KEYS = frozenset(('request_id', 'transaction_id', 'target_id'))
+
+
+def _event_correlation(event):
+    """Validate only explicitly submitted transport correlation identities.
+
+    An omitted binding is unknown, not implicitly equal to its ancestors.
+    The source-to-event and runtime-provider identities remain unverified.
+    """
+    if 'correlation' not in event:
+        return None
+    kind = event.get('kind', 'run')
+    binding = event['correlation']
+    _require(isinstance(binding, dict) and set(binding) == _CORRELATION_KEYS,
+             kind + ' correlation must bind request, transaction and target IDs')
+    _require(all(isinstance(value, str) and bool(value.strip())
+                 for value in binding.values()),
+             kind + ' correlation IDs must be nonempty strings')
+    return binding
+
+
 def _model_inventory(model):
     _require(isinstance(model, dict) and model.get('schema') == 'cat-test-model/v2',
              'requires cat-test-model/v2')
@@ -46,6 +67,49 @@ def _model_inventory(model):
         _require(name not in source, 'duplicate source identity')
         source[name] = sha
     return source
+
+
+def _rule_outcomes(model):
+    """Index explicit Model Rule identities, not a normative runtime proof.
+
+    Older synthetic trace models have no Rule inventory; they can still
+    diagnose structural causality but cannot bind a Rule or Allowed Outcome.
+    """
+    if 'rules' not in model:
+        return None
+    rules = model['rules']
+    _require(isinstance(rules, list), 'invalid Model Rule inventory')
+    inventory = {}
+    for rule in rules:
+        _require(isinstance(rule, dict), 'invalid Model Rule')
+        rid = _label(rule.get('id'), 'Model Rule ID')
+        allowed = rule.get('allowed')
+        _require(rid not in inventory, 'duplicate Model Rule ID')
+        _require(isinstance(allowed, list) and bool(allowed),
+                 'Model Rule has no Allowed Outcome')
+        trigger = rule.get('trigger')
+        if trigger is not None:
+            _label(trigger, 'Model Rule Trigger')
+        # A selected Allowed Outcome can only claim its own explicitly
+        # declared Effect targets. Keep this structural receipt inventory
+        # separate from verification of actual external execution.
+        targets = []
+        for outcome in allowed:
+            _require(isinstance(outcome, dict), 'invalid Model Allowed Outcome')
+            writes = outcome.get('write', [])
+            _require(isinstance(writes, list),
+                     'invalid Model Allowed Outcome Effect inventory')
+            selected = set()
+            for write in writes:
+                _require(isinstance(write, dict)
+                         and isinstance(write.get('target'), str)
+                         and bool(write['target']),
+                         'invalid Model Allowed Outcome Effect target')
+                selected.add(write['target'])
+            targets.append(selected)
+        inventory[rid] = {'count': len(allowed), 'trigger': trigger,
+                          'effect_targets': targets}
+    return inventory
 
 
 def _operations(model):
@@ -76,8 +140,11 @@ def _operations(model):
             peer = boundaries[pi][0]
         _require(peer == peer_binding.ORIGIN or peer in boundaries[pi],
                  'operation peer outside declared PI boundary')
+        trigger = op.get('trigger')
+        if trigger is not None:
+            _label(trigger, 'PI operation Trigger')
         operations[name] = {'direction': role, 'source_pi': pi, 'peer': peer,
-                            'declared_peers': boundaries[pi]}
+                            'declared_peers': boundaries[pi], 'trigger': trigger}
     return operations
 
 
@@ -100,6 +167,7 @@ def evaluate(model, model_bytes, trace):
     source = _model_inventory(model)
     _require(trace.get('source_sha256') == source, 'source identity mismatch')
     operations = _operations(model)
+    rule_outcomes = _rule_outcomes(model)
 
     runs = trace.get('runs')
     events = trace.get('events')
@@ -113,12 +181,14 @@ def evaluate(model, model_bytes, trace):
         peer = _label(run.get('peer'), 'run peer')
         op = _label(run.get('entry_operation'), 'run entry_operation')
         _check_operation(operations, op, 'accept', peer)
+        _event_correlation(run)  # Optional declared run identity.
         run_by_id[rid] = run
 
     kinds = {'trigger', 'input', 'request', 'response', 'projection', 'replace',
              'result', 'followup'}
     seen = {}
     kinds_by_run = {rid: {'trigger': 0, 'result': 0, 'unknown': 0} for rid in run_by_id}
+    selected_outcomes = {}  # (execution_id, Rule ID) -> explicit Allowed Outcome
     for index, event in enumerate(events):
         _require(isinstance(event, dict), 'event record required')
         eid = _label(event.get('event_id'), 'event_id')
@@ -127,7 +197,54 @@ def evaluate(model, model_bytes, trace):
         _require(rid in run_by_id, 'event references unknown execution')
         kind = event.get('kind')
         _require(kind in kinds, 'unsupported event kind')
+        # Optional Allowed Outcome binding must retain JSON integer identity.
+        # The independent Source/Effect verifier checks membership separately.
+        if 'outcome_index' in event:
+            _require(type(event['outcome_index']) is int
+                     and event['outcome_index'] >= 1,
+                     'event outcome index must be a positive integer')
+        # A declared trace Rule must belong to the *submitted* Model and its
+        # Allowed Outcome index must exist for that Rule. Only explicit claims
+        # are checked; no missing claim is synthesized from nearby events.
+        # This does not prove the trace is genuine or the Source is satisfied.
+        if rule_outcomes is not None and 'rule_id' in event:
+            rule_id = _label(event['rule_id'], 'event Rule ID')
+            _require(rule_id in rule_outcomes,
+                     'terminal Rule not declared in Model (unknown trace Rule)'
+                     if kind == 'result' else 'unknown trace Rule')
+            # An execution has one accepted entry Operation. A Rule
+            # explicitly belonging to another Trigger cannot supply its
+            # Outcome or Effect evidence for this run. Unbound legacy Models
+            # provide no matching premise and remain only structural evidence.
+            entry = operations[run_by_id[rid]['entry_operation']]
+            entry_trigger = entry['trigger']
+            rule_trigger = rule_outcomes[rule_id]['trigger']
+            if entry_trigger is not None and rule_trigger is not None:
+                _require(entry_trigger == rule_trigger,
+                         'Rule Trigger differs from declared entry Operation Trigger')
+            if 'outcome_index' in event:
+                _require(event['outcome_index'] <= rule_outcomes[rule_id]['count'],
+                         'terminal allowed Outcome not declared for Rule'
+                         if kind == 'result' else 'trace Allowed Outcome not declared for Rule')
+                if kind in ('request', 'replace', 'followup') and 'effect_target' in event:
+                    _require(isinstance(event['effect_target'], str)
+                             and event['effect_target'] in
+                             rule_outcomes[rule_id]['effect_targets'][event['outcome_index'] - 1],
+                             'Effect target not declared in selected Rule Allowed Outcome')
+                # Each run has one declared Trigger. One evaluation of a
+                # Source-bound Rule selects one of its alternative Outcomes;
+                # two explicit selections in the same run cannot both hold.
+                # Only validate present declarations. No outcome is inferred
+                # for unbound events, legacy synthetic Models, or other runs.
+                choice = (rid, rule_id)
+                prior = selected_outcomes.get(choice)
+                _require(prior is None or prior == event['outcome_index'],
+                         'conflicting Allowed Outcome for the same Rule execution')
+                selected_outcomes[choice] = event['outcome_index']
         run = run_by_id[rid]
+        # Every present correlation label is an explicit evidence claim.
+        # Other event kinds do not get a fabricated run/transport binding.
+        _event_correlation(event)
         if kind == 'trigger':
             _require(event.get('parent_event_id') is None, 'trigger cannot have a parent')
             _require(event.get('operation') == run['entry_operation'],
@@ -141,6 +258,25 @@ def evaluate(model, model_bytes, trace):
             _require(parent is not None, 'parent event missing or not causally earlier')
             _require(parent['execution_id'] == rid,
                      'parent and child belong to different execution')
+            if kind == 'response':
+                # A response can have intermediate processing events, but
+                # cannot claim that a trigger or unrelated input was its
+                # initiating request. All ancestors are already in 'seen'
+                # and are in this exact run.
+                ancestor_id = parent_id
+                request = None
+                while ancestor_id is not None:
+                    ancestor = seen[ancestor_id]
+                    if ancestor['kind'] == 'request':
+                        request = ancestor
+                        break
+                    ancestor_id = ancestor.get('parent_event_id')
+                _require(request is not None, 'response lacks request ancestor')
+                request_binding = _event_correlation(request)
+                response_binding = _event_correlation(event)
+                if request_binding is not None and response_binding is not None:
+                    _require(request_binding == response_binding,
+                             'request/response correlation differs in causal pair')
             # Events are not allowed to change the observed run identity.
             if 'peer' in event:
                 _require(event['peer'] == run['peer'], 'event peer differs from run')
@@ -161,6 +297,14 @@ def evaluate(model, model_bytes, trace):
                 op = _label(event.get('operation'), 'result operation')
                 _require(event.get('peer') == run['peer'], 'result peer differs from run')
                 _check_operation(operations, op, 'provide', run['peer'])
+                # A run and its one terminal identify the same response.
+                # Distinct sibling side effects may use other transactions,
+                # so this is intentionally NOT imposed on every event.
+                declared_run = _event_correlation(run)
+                declared_result = _event_correlation(event)
+                if declared_run is not None and declared_result is not None:
+                    _require(declared_run == declared_result,
+                             'run/terminal correlation differs within execution')
                 outcome = event.get('outcome')
                 _require(outcome in ('success', 'failure', 'unknown'),
                          'result outcome must be success/failure/unknown')

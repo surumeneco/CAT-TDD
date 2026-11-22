@@ -14,11 +14,13 @@ import re
 import sys
 from pathlib import Path
 
-from cat_compile_v2 import Blocked, format_expr, read_artifact, _effect_totality_checks
+from cat_compile_v2 import Blocked, format_expr, format_domain, read_artifact, _effect_totality_checks
 from catlib import semantic_rules
 from catlib import decimal_integer
 from catlib import semantic_types
 from catlib import independent_coverage
+from catlib import independent_effect_proof
+from catlib.markdown import parse_frontmatter
 from catlib import semantic_named_types as named_types
 
 
@@ -225,16 +227,31 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     # Effect proof inventory is derived from independent normative TCE/PI/Process
     # reads rather than trusting the submitted JSON TestModel's claimed proofs.
     effect_fields={ident:{'id':ident,'role':role,'domain':domains[ident],
-                          'presence':presence.get(ident,'required')}
+                          'presence':presence.get(ident,'required'),
+                          'source_pi':field_owners.get(ident)}
                    for ident,role in fields.items()}
     effect_rules=[{**rule,'source_artifact':fm['id']}
                   for _,fm,tce in tces for rule in tce['rules']]
     effect_definitions={item['id']:item for item in domain['definitions']} if domain else {}
-    effect_checks=_effect_totality_checks(effect_rules,effect_fields,effect_definitions)
+    effect_operations=[{**operation,'source_pi':fm['id']}
+                       for _,fm,pi in pi_docs for operation in pi.get('operations',[])]
+    effect_presence=[{**override,'source_pi':fm['id']}
+                     for _,fm,pi in pi_docs
+                     for override in pi.get('operation_presence',[])]
+    effect_checks=_effect_totality_checks(
+        effect_rules,effect_fields,effect_definitions,
+        pi_operations=effect_operations,operation_presence=effect_presence)
+    # Revalidate every positive Effect claim via a separate Source-based
+    # proof path. A shared Compiler helper bug must not certify a Model.
+    unjustified_effect_proofs=independent_effect_proof.unjustified_positive(
+        effect_rules,effect_fields,effect_definitions,effect_checks,
+        pi_operations=effect_operations,operation_presence=effect_presence)
     unverified_effect_ids=sorted(ident for ident,check in effect_checks.items()
                                  if check['result']!='proved')
     source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
     constraint_scopes=[]
+    unbound_constraints=[]
+    markdown_bindings=[]
     for _,fm,pi in pi_docs:
         accepted=sorted({op['trigger'] for op in pi.get('operations',[])
                          if op['direction']=='accept'})
@@ -247,9 +264,19 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
             # a field-name-only matching expression.
             owner_only=all(ref in own_fields for ref in refs)
             input_only=owner_only and all(own_fields[ref]['role']=='input' for ref in refs)
-            constraint_scopes.append((fm['id'],
-                       tuple(accepted if input_only else []),
+            active=accepted if input_only else []
+            constraint_scopes.append((fm['id'],tuple(active),
                        format_expr(expr,language=fm.get('language','en'))))
+            if pf.get('semantic_contract')=='markdown-v2':
+                reason=(('non-input result relation' if not input_only
+                         else 'no accepted Operation to bind PI constraint')
+                        if not active else None)
+                markdown_bindings.append((fm['id'],tuple(active),
+                                          format_expr(expr,language=tf.get('language','en')),
+                                          reason))
+                if reason is not None:
+                    unbound_constraints.append({'source_pi':fm['id'],
+                                                'expr':expr,'reason':reason})
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
     intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
@@ -258,11 +285,55 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     source_all_confirmed=(all(fm.get('status')=='confirmed'
                               for _,fm in files if fm['kind'] not in ('common-rule','domain-spec'))
                           and all(doc['status']=='confirmed' for doc in rule_docs))
+    # The Compiler's human-facing Source-to-Model mapping is itself a
+    # claim about normative provenance. Reconstruct it directly from parsed
+    # Process/PI/TCE/Rule/DomainRule inputs, not from any compiler map or
+    # self-asserted Model metadata. This is *not* an extra reachability proof.
+    source_semantic_map={
+        'process':{
+            'artifact':pf['id'],
+            'triggers':[item['id'] for item in p['triggers']],
+            'interfaces':list(p.get('interfaces',[])),
+            'state':[item['id'] for item in p.get('state_fields',[])],
+            'observations':[item['id'] for item in p.get('observations',[])],
+            'actions':[item['id'] for item in p.get('actions',[])]},
+        'pi':{
+            'artifact':pif['id'] if len(pi_docs)==1 else None,
+            'artifacts':[fm['id'] for _,fm,_ in pi_docs],
+            'fields':[item['id'] for _,_,a in pi_docs for item in a['fields']],
+            'operations':[item['id'] for _,_,a in pi_docs
+                          for item in a.get('operations',[])],
+            'constraint_count':sum(len(a.get('constraints',[])) for _,_,a in pi_docs)},
+        'tce':[{'artifact':fm['id'],
+                'rules':[item['id'] for item in a['rules']],
+                'outcome_count':sum(len(item['allowed']) for item in a['rules']),
+                'local_coverage':a['coverage']}
+               for _,fm,a in tces],
+        'common_rules':[doc['id'] for doc in rule_docs if doc['kind']=='common-rule'],
+        'domain_specs':[doc['id'] for doc in rule_docs if doc['kind']=='domain-spec'],
+        'type_definitions':[item['id'] for item in named_type_definitions],
+        'domain_rule':{
+            'artifact':dfile['id'] if dfile else None,
+            'definitions':sorted(item['id'] for item in domain['definitions']) if domain else []},
+    }
     return {
         'process':p['process'],
+        'source_authority':{'markdown-v2':'cat-markdown/v2',
+                            'markdown-v1':'cat-markdown/v1',
+                            'machine-only':'cat-machine/v2'}[pf.get('semantic_contract','markdown-v1')],
+        'source_language':(tf.get('language','en') if pf.get('semantic_contract')=='markdown-v2'
+                           else 'en'),
         'process_closed_world':p['closed_world'],
+        'source_semantic_map':source_semantic_map,
+        'local_coverage_requirements':{fm['id']:a['coverage'] for _,fm,a in tces},
+        'pi_artifacts':[fm['id'] for _,fm,_ in pi_docs],
         'source_guard_audit':source_guard_audit,
         'constraint_scopes':sorted(constraint_scopes),
+        'constraint_bindings':sorted(markdown_bindings),
+        # A result-time or ownerless PI constraint is not proved by local
+        # acceptance-Guard partitioning. Independently retain its exact Source.
+        'unbound_pi_constraints':(unbound_constraints
+                                  if pf.get('semantic_contract')=='markdown-v2' else None),
         'sources': {
             fm['id']: (fm['kind'], hashlib.sha256(Path(path).read_bytes()).hexdigest())
             for path, fm in files
@@ -281,14 +352,15 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'triggers': {item['id']: item['origin'] for item in p['triggers']},
         'fields': fields, 'domains':domains, 'presence':presence,'field_owners':field_owners,
         'observation_availability':observation_availability,
-        'normative_rule_inputs': {d['id']:(d['kind'],d['sha256']) for d in rule_docs},
+        'normative_rule_inputs': {d['id']:(d['kind'],d['process'],d['sha256']) for d in rule_docs},
         'named_type_definitions':named_type_definitions,
         'intrinsic_rule_proofs':intrinsic_proofs,
         'unverified_rule_ids':sorted(all_rule_ids-intrinsic_ids),
         'effect_checks':effect_checks,
+        'unjustified_effect_proofs':unjustified_effect_proofs,
         'unverified_effect_ids':unverified_effect_ids,
         'source_all_confirmed':source_all_confirmed,
-        'rule_obligations': {r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],
+        'rule_obligations': {r['id']:(r['source_artifact'],r['source_kind'],r['condition'],r['requirement'],r['verification_contract'],
                                     ('intrinsic-proved' if r['id'] in intrinsic_ids else
                                      r.get('verification_status','unverified')),
                                     r.get('source_sha256'),r.get('scope_binding'))
@@ -347,12 +419,106 @@ DIRECTION_ALIASES = {'受信': 'receive', '送信': 'send', '双方向': 'bidire
 
 
 def markdown_model(path):
+    # Front matter carries a separate normative authority/coverage claim. It
+    # must be validated along with body tables, not ignored as presentation.
+    front = parse_frontmatter(Path(path))
     text = markdown_body(path)
+    requirement = section(text, 'Coverage requirement', '網羅要求')
     sources = {}
     for row in table(text, 'Source artifacts', '出典Artifact'):
         ident = cell(row, 'Artifact ID')
         digest = clean_expr(cell(row, 'SHA-256'))
+        require(ident not in sources, 'duplicate Markdown Source artifact')
         sources[ident] = (cell(row, 'Kind', '種別'), digest)
+
+    rule_sources = {}
+    for row in table(text, 'Normative rule sources', '規範Rule出典'):
+        ident=cell(row,'Source ID','出典ID')
+        require(ident not in rule_sources,'duplicate Markdown normative Rule source')
+        rule_sources[ident]=(cell(row,'Kind','種別'),cell(row,'Declaring Process','宣言元Process'),
+                             clean_expr(cell(row,'SHA-256')))
+
+    rule_obligations = {}
+    for row in table(text,'Normative rule obligations','規範Rule義務'):
+        ident=cell(row,'ID')
+        require(ident not in rule_obligations,'duplicate Markdown normative Rule obligation')
+        scope=cell(row,'Scope binding','適用範囲束縛')
+        if scope=='—':
+            scope=None
+        else:
+            try:scope=json.loads(scope)
+            except (ValueError,TypeError) as exc:
+                raise Blocked('invalid Markdown normative Rule scope binding') from exc
+        rule_obligations[ident]=(
+            cell(row,'Source artifact','出典Artifact'),
+            cell(row,'Source kind','出典種別'),
+            cell(row,'Condition','適用条件'),
+            cell(row,'Requirement','要求'),
+            cell(row,'Verification contract','検証契約'),
+            cell(row,'Verification status','検証状態'),
+            (None if cell(row,'Source SHA-256','出典SHA-256')=='—'
+             else cell(row,'Source SHA-256','出典SHA-256')),
+            scope,
+        )
+
+    # JSON code fence retains the exact typed definition graph, including
+    # nested Domain shapes and per-definition Source provenance. A missing
+    # fence is not an empty definition set.
+    nominal=section(text,'Resolved named types','解決済み名前付き型')
+    require(nominal is not None,'missing Markdown resolved named type inventory')
+    match=re.fullmatch(r'```json\s*\n(.*?)\n```',nominal,re.DOTALL)
+    require(match is not None,'invalid Markdown resolved named type inventory')
+    try:named_types_data=decimal_integer.loads(match.group(1))
+    except (ValueError,TypeError) as exc:
+        raise Blocked('malformed Markdown resolved named type inventory') from exc
+    require(isinstance(named_types_data,list),'resolved named types must be an array')
+    ids=[item.get('id') for item in named_types_data if isinstance(item,dict)]
+    require(len(ids)==len(named_types_data) and
+            all(isinstance(x,str) and x for x in ids) and len(set(ids))==len(ids),
+            'invalid/duplicate Markdown named type ID')
+    operation_section=section(text,'Operation presence','操作別Presence')
+    require(operation_section is not None,'missing Markdown Operation presence')
+    operation_presence=[];seen_operation_presence=set()
+    for row in table(text,'Operation presence','操作別Presence'):
+        key=(cell(row,'Operation','操作'),cell(row,'Field','フィールド'))
+        require(key not in seen_operation_presence,'duplicate Markdown Operation presence')
+        seen_operation_presence.add(key)
+        operation_presence.append((key[0],key[1],cell(row,'Presence'),cell(row,'Source PI','出典PI')))
+    operation_presence.sort()
+    observation_section=section(text,'Observation availability','観測利用可能時点')
+    require(observation_section is not None,'missing Markdown observation availability')
+    observation_availability={}
+    for row in table(text,'Observation availability','観測利用可能時点'):
+        ident=cell(row,'Observation ID','観測ID')
+        require(ident not in observation_availability,'duplicate Markdown observation availability')
+        try:available=decimal_integer.loads(clean_expr(cell(row,'Available on (JSON)','利用可能な起点(JSON)')))
+        except (ValueError,TypeError) as exc:
+            raise Blocked('invalid Markdown observation availability') from exc
+        require(available is None or (isinstance(available,list)
+                and all(isinstance(x,str) for x in available)),
+                'invalid Markdown observation Trigger list')
+        observation_availability[ident]=(cell(row,'Source','出典'),
+                                         tuple(available) if available is not None else None)
+
+    # A source-bound intrinsic proof has eight independently checkable fields.
+    # A status label in the Rule table is not itself a proof certificate.
+    intrinsic_proofs=[]
+    proof_ids=set()
+    for row in table(text,'Intrinsic rule proofs','内在Rule証明'):
+        proof={
+            'rule_id':cell(row,'Rule ID'),
+            'source_artifact':cell(row,'Source artifact','出典Artifact'),
+            'source_sha256':cell(row,'Source SHA-256','出典SHA-256'),
+            'requirement':cell(row,'Requirement','要求'),
+            'verification_contract':cell(row,'Verification contract','検証契約'),
+            'proof_method':cell(row,'Proof method','証明方法'),
+            'scope':cell(row,'Scope','適用範囲'),
+            'status':cell(row,'Proof status','証明状態'),
+        }
+        require(proof['rule_id'] not in proof_ids,'duplicate Markdown intrinsic Rule proof')
+        proof_ids.add(proof['rule_id'])
+        intrinsic_proofs.append(proof)
+    intrinsic_proofs.sort(key=lambda proof:proof['rule_id'])
 
     interfaces = tuple(sorted(cell(row, 'PI') for row in table(text, 'Process interfaces', 'Process境界')))
 
@@ -369,34 +535,83 @@ def markdown_model(path):
         if len(peers)>1:
             boundary['peers']=peers
 
-    operations = {}
+    require(section(text,'PI boundaries','PI境界一覧') is not None,
+            'missing Markdown PI boundaries')
+    pi_boundaries=[];seen_pi_boundaries=set()
+    for row in table(text,'PI boundaries','PI境界一覧'):
+        ident=cell(row,'Source PI','出典PI')
+        require(ident not in seen_pi_boundaries,'duplicate Markdown PI boundary owner')
+        seen_pi_boundaries.add(ident)
+        direction=cell(row,'Direction','方向')
+        direction=DIRECTION_ALIASES.get(direction,direction)
+        try:peers=decimal_integer.loads(clean_expr(cell(row,'Peers (JSON)','相手Process一覧(JSON)')))
+        except (ValueError,TypeError) as exc:
+            raise Blocked('invalid Markdown PI peer list') from exc
+        require(peers is None or (isinstance(peers,list)
+                and all(isinstance(peer,str) and peer for peer in peers)),
+                'invalid Markdown PI peer list')
+        item={'artifact':ident,'peer':cell(row,'Peer process','相手Process'),
+              'direction':direction}
+        if peers is not None:item['peers']=peers
+        pi_boundaries.append(item)
+
+    operations = {};operation_owners={}
     for row in table(text, 'PI operations', 'PI操作'):
         direction = cell(row, 'Direction', '方向')
         trigger = cell(row, 'Trigger', '起点')
         peer = row.get('Peer process', row.get('相手Process', '—')).strip()
-        operations[cell(row, 'ID')] = (DIRECTION_ALIASES.get(direction, direction),
+        ident=cell(row, 'ID')
+        require(ident not in operations, 'duplicate Markdown PI operation')
+        operations[ident] = (DIRECTION_ALIASES.get(direction, direction),
                                        None if trigger in ('-', '—', '') else trigger,
                                        None if peer in ('-', '—', '') else peer)
+        operation_owners[ident]=cell(row,'Source PI','出典PI')
 
-    triggers = {cell(row, 'ID'): cell(row, 'Origin', '由来')
-                for row in table(text, 'Triggers', '起点')}
+    triggers = {}
+    for row in table(text, 'Triggers', '起点'):
+        ident=cell(row, 'ID')
+        require(ident not in triggers, 'duplicate Markdown Trigger')
+        triggers[ident]=cell(row, 'Origin', '由来')
 
-    fields = {}
+    fields = {};markdown_domains={};presence={};field_owners={}
     for row in table(text, 'Fields', '仕様要素'):
         role = cell(row, 'Role', '役割')
-        fields[cell(row, 'ID')] = ROLE_ALIASES.get(role, role)
+        ident=cell(row,'ID')
+        require(ident not in fields,'duplicate Markdown Field')
+        role=ROLE_ALIASES.get(role, role)
+        fields[ident] = role
+        markdown_domains[ident]=clean_expr(cell(row,'Domain'))
+        base=cell(row,'Presence')
+        owner=cell(row,'Source PI','出典PI')
+        if role in ('input','output'):
+            presence[ident]=base
+            field_owners[ident]=owner
+        else:
+            require(base=='—' and owner=='—',
+                    'Process-owned Markdown field cannot declare PI ownership or Presence')
 
     constraints = tuple(clean_expr(cell(row, 'Expression', '式'))
                         for row in table(text, 'PI constraints', 'PI制約'))
+    constraint_bindings=[]
+    for row in table(text,'PI constraint bindings','PI制約の束縛'):
+        reason=cell(row,'Unproved reason','未証明理由')
+        constraint_bindings.append((cell(row,'Source PI','出典PI'),
+             tuple(split_list(cell(row,'Triggers','起点'))),
+             clean_expr(cell(row,'Expression','式')),
+             None if reason in ('—','-','') else reason))
 
     definitions = {}
     for row in table(text, 'DomainRule definitions', 'DomainRule定義'):
         params = tuple(x.strip() for x in cell(row, 'Parameters', '引数').split(',') if x.strip() and x.strip() != '—')
-        definitions[cell(row, 'ID')] = (params, clean_expr(cell(row, 'Expression', '式')))
+        ident=cell(row, 'ID')
+        require(ident not in definitions, 'duplicate Markdown DomainRule definition')
+        definitions[ident] = (params, clean_expr(cell(row, 'Expression', '式')))
 
     rules = {}
     for row in table(text, 'Rules', '規則'):
-        rules[cell(row, 'ID')] = (cell(row, 'Source TCE', '出典TCE'),
+        ident=cell(row, 'ID')
+        require(ident not in rules, 'duplicate Markdown TCE Rule')
+        rules[ident] = (cell(row, 'Source TCE', '出典TCE'),
                                   cell(row, 'Trigger', '起点'),
                                   clean_expr(cell(row, 'Condition', '条件')))
 
@@ -404,19 +619,38 @@ def markdown_model(path):
     for row in table(text, 'Effects', '効果'):
         target = cell(row, 'Target', '対象')
         expr = cell(row, 'Expression', '式')
-        effects.add((cell(row, 'Rule', '規則'), int(cell(row, 'Outcome', '結果')),
-                     None if target == '—' else target,
-                     None if expr == '—' else clean_expr(expr)))
+        entry=(cell(row, 'Rule', '規則'), int(cell(row, 'Outcome', '結果')),
+               None if target == '—' else target,
+               None if expr == '—' else clean_expr(expr))
+        require(entry not in effects, 'duplicate Markdown Effect')
+        effects.add(entry)
 
     frames = set()
     for row in table(text, 'Derived frame conditions', '導出された不変条件'):
-        frames.add((cell(row, 'Rule', '規則'), int(cell(row, 'Outcome', '結果')),
-                    tuple(sorted(split_list(cell(row, 'Unchanged state', '不変状態')))),
-                    tuple(sorted(split_list(cell(row, 'Absent outputs/actions', '不在の出力・作用'))))))
+        entry=(cell(row, 'Rule', '規則'), int(cell(row, 'Outcome', '結果')),
+               tuple(sorted(split_list(cell(row, 'Unchanged state', '不変状態')))),
+               tuple(sorted(split_list(cell(row, 'Absent outputs/actions', '不在の出力・作用')))))
+        require(entry not in frames, 'duplicate Markdown frame condition')
+        frames.add(entry)
 
-    return {'sources': sources, 'interfaces': interfaces, 'boundary': boundary,
-            'operations': operations, 'triggers': triggers, 'fields': fields,
-            'constraints': constraints, 'definitions': definitions, 'rules': rules,
+    return {'model_schema': front.get('schema'), 'model_process': front.get('process'),
+            'model_status': front.get('status'),
+            'model_authority': front.get('semantic_authority'),
+            'model_language': front.get('language'),
+            'coverage_requirement': (requirement.strip('`').strip()
+                                     if isinstance(requirement, str) else None),
+            'sources': sources, 'normative_rule_inputs':rule_sources,
+            'rule_obligations':rule_obligations, 'intrinsic_rule_proofs':intrinsic_proofs,
+            'named_type_definitions':named_types_data,
+            'operation_presence':operation_presence,
+            'observation_availability':observation_availability,
+            'markdown_domains':markdown_domains,
+            'interfaces': interfaces, 'boundary': boundary, 'pi_boundaries':pi_boundaries,
+            'operations': operations, 'operation_owners':operation_owners,
+            'triggers': triggers, 'fields': fields,
+            'presence':presence, 'field_owners':field_owners,
+            'constraints': constraints, 'constraint_bindings':sorted(constraint_bindings),
+            'definitions': definitions, 'rules': rules,
             'effects': effects, 'frames': frames}
 
 
@@ -497,6 +731,12 @@ def json_model(path):
                   for item in model.get('pi_operations', [])}
     return {
         'process':model.get('process'),
+        'source_semantic_map':model.get('source_semantic_map'),
+        'local_coverage_requirements':model.get('local_coverage_requirements'),
+        'pi_artifacts':model.get('pi_artifacts'),
+        'model_type':model.get('model_type'),
+        'limits':model.get('limits'),
+        'normalized_ir':model.get('normalized_ir'),
         'sources': sources,
         'source_metadata_integrity': source_metadata_integrity,
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
@@ -509,9 +749,9 @@ def json_model(path):
         'triggers': {item['id']: item['origin'] for item in model.get('triggers', [])},
         'fields': fields, 'domains':domains,'presence':presence,'field_owners':field_owners,
         'observation_availability':observation_availability,
-        'normative_rule_inputs':{d['id']:(d['kind'],d['sha256']) for d in model.get('normative_rule_inputs',[])},
+        'normative_rule_inputs':{d['id']:(d['kind'],d.get('process'),d['sha256']) for d in model.get('normative_rule_inputs',[])},
         'named_type_definitions':model.get('named_type_definitions',[]),
-        'rule_obligations':{r['id']:(r['source_artifact'],r['condition'],r['requirement'],r['verification_contract'],r.get('verification_status','unverified'),r.get('source_sha256'),r.get('scope_binding')) for r in model.get('rule_obligations',[])},
+        'rule_obligations':{r['id']:(r['source_artifact'],r.get('source_kind'),r['condition'],r['requirement'],r['verification_contract'],r.get('verification_status','unverified'),r.get('source_sha256'),r.get('scope_binding')) for r in model.get('rule_obligations',[])},
         'intrinsic_rule_proofs':model.get('intrinsic_rule_proofs',[]),
         'unverified_rule_ids':model.get('unverified_rule_ids',[]),
         'effect_checks':model.get('effect_checks'),
@@ -528,6 +768,7 @@ def json_model(path):
         'constraint_scopes':sorted((e['source_pi'],tuple(e['triggers']),
              format_expr(e['expr'],language=model.get('language','en')))
              for e in model.get('pi_constraint_scopes',[])),
+        'unbound_pi_constraints':model.get('unbound_pi_constraints'),
         'definitions': definitions,
         'rules': rules,
         'effects': effects,
@@ -539,19 +780,45 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     expected = source_semantics(process, pi, tce, domain_rule,common_rules,domain_specs,allow_draft)
     actual = json_model(model) if Path(model).suffix.lower() == '.json' else markdown_model(model)
     mismatches = []
+    if expected['unjustified_effect_proofs']:
+        mismatches.append('effect_totality_independent')
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
               'constraints', 'definitions', 'rules', 'effects', 'frames')
+    if Path(model).suffix.lower()!='.json':
+        # Markdown need not carry JSON proof receipts, but it must preserve
+        # the normative PI/Operation Trigger and unresolved result-time scope.
+        checks += ('constraint_bindings','normative_rule_inputs','rule_obligations','intrinsic_rule_proofs',
+                   'named_type_definitions','operation_presence','observation_availability',
+                   'presence','field_owners','operation_owners','pi_boundaries')
     if Path(model).suffix.lower()=='.json':
-        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes')
+        checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
+        checks += ('source_semantic_map','local_coverage_requirements','pi_artifacts')
+    if Path(model).suffix.lower()=='.json':
+        # These are fixed Compiler proof-scope declarations, not product
+        # assumptions a submitting Model can silently strengthen or remove.
+        for key,claim in (
+            ('model_type','symbolic-relation'),
+            ('limits',['finite-guard-closure-only','no-general-reachability-proof',
+                       'no-process-composition']),
+            ('normalized_ir','cat-machine/v2' if expected['source_authority']
+                                  in ('cat-markdown/v1','cat-markdown/v2') else None),
+        ):
+            if actual.get(key)!=claim:
+                mismatches.append(key)
     for key in checks:
         # Python structural == conflates bool with int (True == 1). Domains
         # and named type definitions contain typed literal values and must
         # retain scalar identity throughout their nested inventory.
         same=(semantic_types.same(actual.get(key),expected.get(key))
-              if key in ('domains','named_type_definitions')
+              if key in ('domains','named_type_definitions','unbound_pi_constraints')
               else actual.get(key)==expected.get(key))
         if not same:
             mismatches.append(key)
+    if Path(model).suffix.lower()!='.json':
+        expected_display={ident:format_domain(domain,expected['source_language'])
+                          for ident,domain in expected['domains'].items()}
+        if actual['markdown_domains']!=expected_display:
+            mismatches.append('domains')
     if Path(model).suffix.lower()=='.json':
         if actual.get('source_metadata_integrity') is not True:
             mismatches.append('source_metadata_integrity')
@@ -599,7 +866,8 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
         guard_proved=(bool(source_guard['triggers'])
                       and all(c['result']=='proved' and not c['unreachable_rules']
                               for c in source_guard['triggers'].values())
-                      and source_guard['output_presence_proved'])
+                      and source_guard['output_presence_proved']
+                      and not expected['unbound_pi_constraints'])
         if actual.get('coverage_requirement')=='closed' and not guard_proved:
             if 'source_guard_coverage' not in mismatches:
                 mismatches.append('source_guard_coverage')
@@ -632,17 +900,42 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                 or actual.get('unresolved_domains')!=[]
                 or actual.get('unresolved_interfaces')!=[]):
             mismatches.append('normative_status_unjustified')
+    if Path(model).suffix.lower()!='.json':
+        # A genuine Markdown Model has no JSON proof receipts, but it still
+        # makes explicit claims in YAML and the Coverage requirement section.
+        # Recompute only what Source proves, never derive authority from those
+        # self-asserted labels. More complex obligations remain inconclusive.
+        for key, source_value in (
+            ('model_schema','cat-test-model/v2'),
+            ('model_process',expected['process']),
+            ('model_authority',expected['source_authority']),
+            ('model_language',expected['source_language']),
+        ):
+            if actual.get(key)!=source_value:
+                mismatches.append(key)
+        declared_coverage=actual.get('coverage_requirement')
+        declared_status=actual.get('model_status')
+        guard_audit=expected['source_guard_audit']
+        guard_proved=(bool(guard_audit['triggers'])
+                      and all(c['result']=='proved' and not c['unreachable_rules']
+                              for c in guard_audit['triggers'].values())
+                      and guard_audit['output_presence_proved']
+                      and not expected['unbound_pi_constraints'])
+        if declared_coverage not in ('closed','partial'):
+            mismatches.append('coverage_requirement_invalid')
+        elif declared_coverage=='closed' and (
+                not expected['process_closed_world'] or not guard_proved):
+            mismatches.append('markdown_closed_world_claim_unjustified')
+        if declared_status not in ('draft','confirmed'):
+            mismatches.append('model_status_invalid')
+        elif declared_status=='confirmed' and (
+                declared_coverage!='closed'
+                or not expected['source_all_confirmed']
+                or not expected['process_closed_world'] or not guard_proved
+                or expected['unverified_rule_ids'] or expected['unverified_effect_ids']):
+            mismatches.append('markdown_normative_status_unjustified')
     if Path(model).suffix.lower()!='.json' and expected.get('unverified_effect_ids'):
         mismatches.append('effect_totality: Markdown renderer lacks source-bound Effect proof receipts')
-    if Path(model).suffix.lower()!='.json' and expected.get('intrinsic_rule_proofs'):
-        mismatches.append('intrinsic_rule_proofs: Markdown renderer omits source-bound proof evidence')
-    if Path(model).suffix.lower()!='.json' and expected.get('named_type_definitions'):
-        mismatches.append('named_type_definitions: Markdown renderer omits structural type provenance')
-    if Path(model).suffix.lower()!='.json' and expected.get('operation_presence'):
-        mismatches.append('operation_presence: Markdown renderer omits operation-specific semantics')
-    if Path(model).suffix.lower()!='.json' and any(v[1] is not None
-                                                    for v in expected.get('observation_availability',{}).values()):
-        mismatches.append('observation_availability: Markdown renderer omits trigger binding')
     return {
         'schema': 'cat-model-conformance/v1',
         'status': 'passed' if not mismatches else 'blocked',

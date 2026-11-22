@@ -197,6 +197,24 @@ class InstallTest(unittest.TestCase):
         self.assertFalse(any(x.startswith('.cat-system/tests/') for x in rel))
         self.assertEqual(installer.planned_reference_errors(self.project,rows),[])
 
+    def test_install_plan_excludes_upstream_management_and_private_sources(self):
+        agents,skills,extension=self.selected()
+        rows=installer.plan(self.project,agents,skills,False,extension)
+        self.assertTrue(rows)
+        for source,target,_ in rows:
+            # Installation consumes the reusable package, not the developer's
+            # own Git-tracked Decisions/Candidates or personal Drive workspace.
+            self.assertTrue(source.resolve().is_relative_to(installer.ROOT.resolve()),
+                            source)
+            relative=target.relative_to(self.project).as_posix()
+            self.assertFalse(relative.startswith('Docs/Decisions/'),relative)
+            self.assertFalse(relative.startswith('Lifecycle/CAT/Candidates/'),relative)
+            self.assertFalse(relative.startswith('docs/cat/'),relative)
+            if relative.startswith('.cat-system/docs/') and source.suffix=='.md':
+                contents=source.read_text(encoding='utf-8-sig')
+                self.assertNotIn('forGPT/',contents)
+                self.assertNotIn('XPlayServer',contents)
+
     def test_broken_post_install_reference_blocks_before_write(self):
         agents,skills,ext=self.selected()
         skill=next(x for x in skills if x.parent.name=='cycle-management')

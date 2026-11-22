@@ -23,6 +23,7 @@ import cat_queue_evidence as queue_evidence
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
 import cat_verifier_contracts as verifier_runtime
+import cat_model_conformance as source_model_runtime
 import cat_process_composition as composition_runtime
 import cat_effect_trace_correlation as effect_correlation_runtime
 import cat_external_effect_receipts as effect_receipts_runtime
@@ -492,6 +493,31 @@ def _implementation_repository_fingerprint(wpath, w):
     return sha(json_bytes({'files': state, 'heads': heads}))
 
 
+def conformance_runtime_fingerprint():
+    """Content identity of the installed CAT Gate code and routing policy.
+
+    A Source/Work/implementation HEAD may be unchanged while a new compiler,
+    verifier, inspector, or Gate implementation would reach another result.
+    Pin the complete shipped Python runtime (including Technology Skills) and
+    routing config; the conservative inventory may invalidate evidence after
+    unrelated runtime changes, but cannot silently retain an old Gate result.
+    This is *not* an authenticity attestation or proof of Provider execution.
+    """
+    scripts = ROOT / 'scripts'
+    routing = ROOT / 'config' / 'routing.json'
+    require((scripts / 'cat_flow.py').is_file() and routing.is_file(),
+            'CAT Gate runtime scripts/routing missing')
+    files = [*scripts.rglob('*.py'), *((ROOT / 'skills').rglob('*.py')), routing]
+    inventory = []
+    for path in sorted(files, key=lambda x: x.relative_to(ROOT).as_posix()):
+        require(path.is_file() and not path.is_symlink(),
+                'CAT Gate runtime file must be regular: ' + str(path))
+        inventory.append({'path': path.relative_to(ROOT).as_posix(),
+                          'sha256': sha(path.read_bytes())})
+    return sha(json_bytes({'schema': 'cat-gate-runtime-inventory/v1',
+                           'files': inventory}))
+
+
 def record_conformance_evidence(wpath, w, kind, result):
     runtime = wpath.parent / '.cat-flow' / 'conformance'
     runtime.mkdir(parents=True, exist_ok=True)
@@ -502,10 +528,12 @@ def record_conformance_evidence(wpath, w, kind, result):
         'gate': kind,
         'context_sha256': conformance_context_sha(w),
         'input_sha256': conformance_input_hashes(wpath, w, kind),
+        'runtime_sha256': conformance_runtime_fingerprint(),
         'verdict': result['status'],
         'reason': result.get('reason', ''),
         'supporting_evidence': supporting,
         'verifier_evidence':result.get('verifier_evidence'),
+        'source_model_evidence':result.get('source_model_evidence'),
         'composition_evidence':result.get('composition_evidence'),
         'effect_correlation_evidence':result.get('effect_correlation_evidence'),
     }
@@ -529,6 +557,8 @@ def conformance_evidence_status(wpath, w, kind):
             return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance evidence identity mismatch'}
         if e.get('context_sha256') != conformance_context_sha(w):
             return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance context changed'}
+        if e.get('runtime_sha256') != conformance_runtime_fingerprint():
+            return {'status': 'stale', 'evidence': str(path), 'reason': 'CAT Gate runtime code/routing changed'}
         # A recorded subset is not sufficient: deleting the TCE, verifier
         # runner or fixture entries must not preserve an old 'passed' verdict.
         # Reconstruct the entire dependency set from the current Work and
@@ -631,27 +661,53 @@ def conformance_work(wpath, w, kind):
         argv += ['-o',str(runtime/'process-closure.model.json')]
         p=subprocess.run(argv,cwd=ROOT,text=True,capture_output=True,timeout=60,check=False)
         if p.returncode == 0:
-            model = read_json(runtime/'process-closure.model.json')
+            model_path = runtime/'process-closure.model.json'
+            model = read_json(model_path)
+            # A Compiler's own success is not an independent proof that the
+            # TestModel preserves its normative Source. A formally passed
+            # Closure must also survive a separately derived Source→Model
+            # comparison. The independent validator cannot discharge any
+            # still-unverified free-text Rule or real Provider effect.
+            try:
+                source_check = source_model_runtime.validate(
+                    loc('process'), pis, tces, model_path,
+                    loc('domain_rule') if conf.get('domain_rule') else None,
+                    common_rules=compilation_paths(wpath,w,conf,'common_rules','common_rule',True),
+                    domain_specs=compilation_paths(wpath,w,conf,'domain_specs','domain_spec',True))
+            except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+                return {'gate':kind,'status':'blocked',
+                        'reason':'independent Source-to-Model comparison failed: '+str(exc)}
+            source_receipt = runtime/'process-closure-source-model.json'
+            source_receipt.write_bytes(json_bytes(source_check))
+            if source_check.get('status') != 'passed':
+                return {'gate':kind,'status':'blocked',
+                        'source_model_evidence':str(source_receipt),
+                        'reason':'independent Source-to-Model comparison rejected the generated Model: '
+                                 +', '.join(source_check.get('mismatches', []))[:900]}
             rule_status='passed'
             verifier_evidence=None
-            if model.get('unverified_rule_ids'):
-                if not conf.get('verifier_registry'):
-                    rule_status='inconclusive'
-                else:
-                    try:
-                        registry_path=compilation_path(wpath,w,conf,'verifier_registry',True)
-                        verified=verifier_runtime.evaluate(runtime/'process-closure.model.json',registry_path)
-                        verifier_path=runtime/'process-closure-verifiers.json'
-                        verifier_path.write_bytes(json_bytes(verified))
-                        verifier_evidence=str(verifier_path)
-                        # A failing registered assertion invalidates this Gate's
-                        # verification evidence; it does not refute the free-text
-                        # normative Rule. Passing fixture checks still cannot
-                        # elevate an unproved Rule to normative `passed`.
-                        rule_status=('failed' if verified.get('status')=='failed'
-                                     else verified.get('normative_status','inconclusive'))
-                    except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
-                        return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
+            # An explicitly submitted registry is evidence to validate even
+            # when every Rule already has an intrinsic model proof. Otherwise
+            # malformed or failed submitted evidence is silently bypassed.
+            # Its non-normative fixture status cannot *replace* a valid source-
+            # bound intrinsic proof or upgrade an unverified free-text Rule.
+            if model.get('unverified_rule_ids') and not conf.get('verifier_registry'):
+                rule_status='inconclusive'
+            if conf.get('verifier_registry'):
+                try:
+                    registry_path=compilation_path(wpath,w,conf,'verifier_registry',True)
+                    verified=verifier_runtime.evaluate(runtime/'process-closure.model.json',registry_path)
+                    verifier_path=runtime/'process-closure-verifiers.json'
+                    verifier_path.write_bytes(json_bytes(verified))
+                    verifier_evidence=str(verifier_path)
+                    if verified.get('status')=='failed':
+                        # Failed submitted assertions invalidate the evidence,
+                        # not the underlying normative Rule itself.
+                        rule_status='failed'
+                    elif model.get('unverified_rule_ids'):
+                        rule_status=verified.get('normative_status','inconclusive')
+                except (verifier_runtime.VerifierError,ValueError,OSError,KeyError) as exc:
+                    return {'gate':kind,'status':'blocked','reason':'rule verifier registry invalid: '+str(exc)}
             if rule_status=='failed':
                 return {'gate':kind,'status':'blocked','verifier_evidence':verifier_evidence,
                         'reason':'one or more registered verifier fixture assertions failed; normative meaning remains unproved'}
@@ -667,7 +723,8 @@ def conformance_work(wpath, w, kind):
                         'reason':'closed-world declaration exists but closure proof is incomplete'}
             return {'gate':kind,'status':'passed','evidence':str(runtime/'process-closure.model.json'),
                     'verifier_evidence':verifier_evidence,
-                    'reason':'finite closed-world coverage and all declared normative rules discharged by source-bound intrinsic proofs or executed verifiers'}
+                    'source_model_evidence':str(source_receipt),
+                    'reason':'independent Source-to-Model conformance and finite closed-world coverage passed; all applicable normative Rules have source-bound intrinsic proofs'}
         msg=(p.stderr or p.stdout).strip()
         inconclusive_markers=('currently supports','unproven','non-finite','requires a technology','unsupported')
         status='inconclusive' if any(x in msg for x in inconclusive_markers) else 'blocked'

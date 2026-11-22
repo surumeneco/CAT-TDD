@@ -10,16 +10,15 @@ source:
   - https://www.postgresql.org/docs/current/sql-truncate.html
   - https://www.postgresql.org/docs/18/indexes-multicolumn.html
   - https://www.postgresql.org/docs/current/using-explain.html
-cat_tdd_issue: https://github.com/surumeneco/CAT-TDD/issues/2
 ---
 
 # DB性能設計・検証の実践知
 
 ## 目的・位置付け
 
-2026-10-29の利用者の依頼により、記事「データベースを遅くするための８つの方法」から、DBを用いるアプリケーション開発時に再利用すべき判断基準を抽出した。記事の経験則は**検討すべきリスクの発見**に利用し、DB製品・バージョン・設定・クエリ・データ分布・負荷・整合性要件を確認せずに普遍的ルールへ昇格させない。
+記事「データベースを遅くするための８つの方法」と公式DB資料を踏まえ、DBを用いるアプリケーション開発時に再利用できる検証観点を整理する。記事の経験則は**検討すべきリスクの発見**に利用し、DB製品・バージョン・設定・クエリ・データ分布・負荷・整合性要件を確認せずに普遍的ルールへ昇格させない。
 
-本書は**VS Code上のCAT-TDDにおけるDB技術レビューの参考資料**であり、個別プロジェクトの規範仕様、CATのTestModel/Queue、実測ログの代替ではない。技術Skillへの統合作業はIssue #2で管理し、CAT-TDD本体のStage権限・guardに従う。本書だけでSkillの採用やテスト成功を主張しない。
+本書は**VS Code上のCAT-TDDにおけるDB技術レビューの参考資料**であり、個別プロジェクトの規範仕様、CATのTestModel/Queue、実測ログの代替ではない。技術Skillを適用する場合は現行のStage権限・guardと導入先の技術構成に従う。本書だけでSkillの採用やテスト成功を主張しない。
 
 ## 開発・レビュー時の8観点
 
@@ -87,9 +86,8 @@ cat_tdd_issue: https://github.com/surumeneco/CAT-TDD/issues/2
 - schema/migrationの安全性、既存データ、復旧手順は？
 - ベンチマーク環境と本番条件はどこまで同質で、何が未測定か？
 
-## 更新・追跡
+## 参照資料・保守
 
 - 原文: https://zenn.dev/koduki/articles/d3e8984f420b370681f9 （2020-11-15公開、2022-12-22更新）
-- CAT-TDDへの統合Issue: https://github.com/surumeneco/CAT-TDD/issues/2
 - PostgreSQL参考: https://www.postgresql.org/docs/current/sql-truncate.html 、https://www.postgresql.org/docs/18/indexes-multicolumn.html 、https://www.postgresql.org/docs/current/using-explain.html
 - 今後の改善では、DB各社の公式ドキュメント、対象製品・版・実測値を優先し、本書の記述を無条件にコピーしない。

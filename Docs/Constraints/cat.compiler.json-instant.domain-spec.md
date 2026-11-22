@@ -6,7 +6,7 @@ status: confirmed
 process: cat.compiler
 source_refs:
   - https://github.com/surumeneco/CAT-TDD/pull/86
-decision_ref: Docs/Decisions/CAT31-json-instant-approval-20261118.md
+decision_ref: CORE-CAT31-20261118-01
 refs: []
 semantic_contract: markdown-v2
 language: ja
@@ -42,10 +42,3 @@ CAT-TDD本体の新しい構文/IR/APIだけを対象とする確定技術契約
 
 本Sourceは、利用者の明示承認に基づき正規promoterでConfirmedへ昇格した。承認済み技術仕様の存在と、実装がその全規則を機械的に証明したことは別である。CI成功を正式Gateのpassedとみなさず、必要なGateはこのConfirmed SourceのID・SHAで検証する。
 
-## 由来と変更理由
-
-- CAT31固定候補 `cat.compiler.json-instant` から、CAT-TDD本体に属する意味契約のみを切り出した。旧候補の製品作業パスは本体では存在しないため正本依存にしない。
-- 独立レビューで再現された既存set全体の妥当性検査漏れを `JT.typed-comparison` の前提条件に明文化した。
-- 明示offset codecがASCII数字のみを受理する修正とその負例を `JT.codec` に反映した。
-- 不正Domainから正の包含証明を発行しないW06修正の判定境界を `JT.inclusion` に明記した。
-- 本体候補実装はPR #86（https://github.com/surumeneco/CAT-TDD/pull/86）。規範承認は本書の`decision_ref`で参照する利用者の採用決定に基づく。製品の採用Decisionは本体の技術契約を承認する根拠ではない。

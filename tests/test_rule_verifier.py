@@ -17,6 +17,7 @@ class RuleVerifierTests(unittest.TestCase):
         model={'schema':'cat-test-model/v2',
             'normative_rule_inputs':[{'id':'demo.spec','kind':'domain-spec','sha256':'a'*64}],
             'rule_obligations':[{'id':'demo.rule','source_artifact':'demo.spec',
+                                 'source_sha256':'a'*64,'source_kind':'domain-spec',
                                  'verification_contract':'静的な構造検査' if subject=='static' else 'Discord配送確認'}]}
         model_path=root/'model.json'
         model_path.write_text(json.dumps(model),encoding='utf-8')
@@ -36,6 +37,57 @@ class RuleVerifierTests(unittest.TestCase):
         registry_path=root/'registry.json'
         registry_path.write_text(json.dumps(registry),encoding='utf-8')
         return model_path,registry_path
+
+    def test_unscoped_rule_cannot_lose_or_rebind_source_identity_with_rehashed_registry(self):
+        # The current verifier checks explicit-scope Rule fingerprints, but
+        # free-text Rule obligations must be equally Source-bound before any
+        # fixture result may be reported as matching a particular Rule.
+        for case in ('missing-sha','wrong-sha','missing-kind','wrong-kind'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp)
+                model_path,registry_path=self.prepare(root,runner=True)
+                model=json.loads(model_path.read_text(encoding='utf-8'))
+                rule=model['rule_obligations'][0]
+                if case=='missing-sha':rule.pop('source_sha256')
+                if case=='wrong-sha':rule['source_sha256']='0'*64
+                if case=='missing-kind':rule.pop('source_kind')
+                if case=='wrong-kind':rule['source_kind']='common-rule'
+                model_path.write_text(json.dumps(model),encoding='utf-8')
+                registry=json.loads(registry_path.read_text(encoding='utf-8'))
+                registry['model_sha256']=sha(model_path.read_bytes())
+                registry_path.write_text(json.dumps(registry),encoding='utf-8')
+                with self.assertRaisesRegex(verifier.VerifierError,'normative rule source (SHA|kind) mismatch'):
+                    verifier.evaluate(model_path,registry_path)
+
+    def test_unscoped_rule_receipt_cannot_cross_declared_process_boundary(self):
+        # The Rule has no syntactic Process target list. Its owning Source
+        # still limits which Process may claim its fixture evidence.
+        cases = (
+            ('demo.process', 'demo.process', True),
+            ('demo.process', 'demo.process.child', True),
+            ('demo.process', 'demo.process-other', False),
+            ('demo.process', 'foreign.process', False),
+            ('foreign.process', 'demo.process', False),
+        )
+        for source_process, evaluated_process, allowed in cases:
+            with self.subTest(source=source_process, evaluated=evaluated_process):
+                with tempfile.TemporaryDirectory() as temp:
+                    root=Path(temp)
+                    model_path,registry_path=self.prepare(root,runner=True)
+                    model=json.loads(model_path.read_text(encoding='utf-8'))
+                    model['process']=evaluated_process
+                    model['normative_rule_inputs'][0]['process']=source_process
+                    model['rule_obligations'][0]['condition']='when action completes'
+                    model_path.write_text(json.dumps(model),encoding='utf-8')
+                    registry=json.loads(registry_path.read_text(encoding='utf-8'))
+                    registry['model_sha256']=sha(model_path.read_bytes())
+                    registry_path.write_text(json.dumps(registry),encoding='utf-8')
+                    if allowed:
+                        self.assertEqual(verifier.evaluate(model_path,registry_path)['status'],'passed')
+                    else:
+                        with self.assertRaisesRegex(verifier.VerifierError,
+                                                    'normative rule Process scope mismatch'):
+                            verifier.evaluate(model_path,registry_path)
 
     def test_static_fixture_run_produces_traceable_evidence(self):
         with tempfile.TemporaryDirectory() as temp:

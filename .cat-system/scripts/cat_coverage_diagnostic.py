@@ -72,6 +72,60 @@ def _domain_reasons(domain, path=''):
     return [{'kind':'unsupported-domain','path':path,'domain_kind':kind}]
 
 
+
+def _ordinary_guard_refs(model, trigger):
+    """Find direct ordinary value refs in submitted TCE Guard ASTs only.
+
+    Presence predicates (is-present/is-missing/is-undefined) do not read the
+    field value. Missing or unparseable ASTs provide no positive attribution.
+    """
+    rules=model.get('rules')
+    if not isinstance(rules,list):return set()
+    def scan(expr):
+        if not isinstance(expr,dict):return set()
+        if (expr.get('op') in ('is-present','is-missing','is-undefined')
+                and isinstance(expr.get('args'),list) and len(expr['args'])==1
+                and isinstance(expr['args'][0],dict)
+                and set(expr['args'][0])=={'ref'}):return set()
+        refs={expr['ref']} if isinstance(expr.get('ref'),str) else set()
+        for part in expr.get('args',[]):refs.update(scan(part))
+        return refs
+    result=set()
+    for rule in rules:
+        if isinstance(rule,dict) and rule.get('trigger')==trigger:
+            result.update(scan(rule.get('when')))
+    return result
+
+
+def _operation_context(model,trigger,field):
+    """Read only submitted Operation and Presence binding IDs, not authority."""
+    owner=field.get('source_pi')
+    operations=model.get('pi_operations',[])
+    selected=sorted(op['id'] for op in operations
+                    if isinstance(op,dict) and isinstance(op.get('id'),str)
+                    and op.get('direction')=='accept'
+                    and op.get('trigger')==trigger and op.get('source_pi')==owner)
+    overrides=model.get('operation_presence',[])
+    values=sorted(({'operation':entry['operation'],'presence':entry['presence']}
+                   for entry in overrides if isinstance(entry,dict)
+                   and entry.get('field')==field.get('id')
+                   and entry.get('operation') in selected
+                   and isinstance(entry.get('presence'),str)),
+                  key=lambda item:(item['operation'],item['presence']))
+    return selected,values
+
+
+def _overlap_rule_groups(check):
+    overlaps=check.get('overlaps',[])
+    if not isinstance(overlaps,list):return []
+    groups=set()
+    for entry in overlaps:
+        if not isinstance(entry,dict):continue
+        rules=entry.get('rules')
+        if isinstance(rules,list) and len(rules)>=2 and all(isinstance(x,str) for x in rules):
+            groups.add(tuple(sorted(set(rules))))
+    return [list(group) for group in sorted(groups) if len(group)>=2]
+
 def explain(model,raw):
     require(isinstance(raw,bytes) and isinstance(model,dict),'exact TestModel JSON bytes required')
     require(model.get('schema')=='cat-test-model/v2','unsupported TestModel schema')
@@ -118,10 +172,36 @@ def explain(model,raw):
         reason=check.get('reason','')
         categories=[]
         if verdict=='proved':categories=[{'kind':'finite-local-guard-proved'}]
-        elif verdict=='uncovered':categories=[{'kind':'finite-guard-gap',
-                                               'count':check.get('uncovered_count')}]
+        elif verdict=='uncovered':
+            categories=[{'kind':'finite-guard-gap',
+                         'count':check.get('uncovered_count')}]
+            # A missing local TCE may be a legitimate delegated operation.
+            # This diagnostic cannot prove a requirement for a new TCE.
+            local_rules=model.get('rules')
+            if isinstance(local_rules,list) and not any(
+                    isinstance(rule,dict) and rule.get('trigger')==trigger
+                    for rule in local_rules):
+                categories.append({'kind':'trigger-without-local-tce',
+                                   'evidence_scope':'submitted-TestModel-only'})
         elif verdict=='conflict':categories=[{'kind':'guard-overlap',
                                               'count':check.get('overlap_count')}]
+        elif isinstance(reason,str) and reason.startswith(
+                'ordinary expression reads missing/undefined field '):
+            ref=reason[len('ordinary expression reads missing/undefined field '):].strip()
+            field=registry.get(ref)
+            if field is None:
+                categories=[{'kind':'unbound-ordinary-value-read','field':ref}]
+            else:
+                operations,overrides=_operation_context(model,trigger,field)
+                categories=[{'kind':'ordinary-input-read-without-presence'
+                              if field.get('role')=='input'
+                              else 'ordinary-value-read-presence-unresolved',
+                              'field':ref,'field_role':field.get('role'),
+                              'declared_presence':field.get('presence','required'),
+                              'source_pi':field.get('source_pi'),
+                              'accepted_operations':operations,
+                              'operation_presence_overrides':overrides,
+                              'evidence_scope':'submitted-TestModel-and-Compiler-reason-only'}]
         elif 'Effect reads a non-required PI input' in reason:
             categories=[{'kind':'unsafe-presence-read'}]
         elif 'finite closure exceeds configured' in reason:
@@ -130,11 +210,22 @@ def explain(model,raw):
                          'configured_limit':LIMIT}]
         elif 'guard reads non-finite or too-large domain/Presence' in reason:
             refs=check.get('guard_refs',[])
+            ordinary=_ordinary_guard_refs(model,trigger)
             for ref in refs:
                 field=registry.get(ref)
                 if field is None:
                     categories.append({'kind':'unknown-guard-field','field':ref})
                     continue
+                if (field.get('role')=='input'
+                    and field.get('presence','required')!='required'
+                    and ref in ordinary):
+                    operations,overrides=_operation_context(model,trigger,field)
+                    categories.append({'kind':'nonrequired-ordinary-guard-value-read',
+                                       'field':ref,'declared_presence':field.get('presence'),
+                                       'source_pi':field.get('source_pi'),
+                                       'accepted_operations':operations,
+                                       'operation_presence_overrides':overrides,
+                                       'evidence_scope':'submitted-TestModel-guard-AST-only'})
                 for cause in _domain_reasons(field.get('domain'),ref):
                     categories.append({'field':ref,**cause})
             if not categories:
@@ -145,12 +236,20 @@ def explain(model,raw):
                          'compiler_reason':reason}]
         else:
             categories=[{'kind':'missing-nonproof-reason'}]
+        overlaps=check.get('overlaps',[])
+        uncovered=check.get('uncovered',[])
         outputs.append({'trigger':trigger,'compiler_verdict':verdict,
                         'compiler_reason':reason if reason else None,
                         'reason_categories':categories,
                         'guard_refs':check.get('guard_refs',[]),
                         'uncovered_count':check.get('uncovered_count'),
-                        'unreachable_rules':check.get('unreachable_rules',[])})
+                        'unreachable_rules':check.get('unreachable_rules',[]),
+                        'overlapping_rule_groups':_overlap_rule_groups(check),
+                        'overlap_example':(overlaps[0] if verdict=='conflict'
+                                           and isinstance(overlaps,list) and overlaps else None),
+                        'uncovered_examples':(uncovered[:3] if verdict=='uncovered'
+                                               and isinstance(uncovered,list) else []),
+                        'evidence_scope':'submitted-TestModel-only'})
 
     unverified=model.get('unverified_rule_ids',[])
     require(isinstance(unverified,list) and len(unverified)==len(set(unverified)),

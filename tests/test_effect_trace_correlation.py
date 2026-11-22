@@ -194,7 +194,7 @@ class CorrelationTests(unittest.TestCase):
     def test_effect_event_must_refer_to_same_run_and_declared_target(self):
         with tempfile.TemporaryDirectory() as d:
             raw,t,p=data(Path(d));t['events'][4]['effect_target']='other'
-            with self.assertRaisesRegex(correlation.CorrelationError,'Rule/Outcome/target'):
+            with self.assertRaisesRegex(correlation.CorrelationError,'Effect target not declared'):
                 inspect(d,raw,t,p)
 
     def test_receipt_cannot_take_an_unrelated_event(self):
@@ -214,6 +214,17 @@ class CorrelationTests(unittest.TestCase):
             raw,t,p=data(Path(d));t['events'][5]['rule_id']='unrelated'
             with self.assertRaisesRegex(correlation.CorrelationError,'terminal Rule'):
                 inspect(d,raw,t,p)
+
+    def test_effect_and_terminal_outcome_indices_require_exact_integer_type(self):
+        # JSON booleans and integral floats compare equal to 1 in Python,
+        # but they are not a 1-origin normative Allowed Outcome index.
+        for event_position in (4,5):
+            for invalid in (True,1.0,False,0.0):
+                with self.subTest(position=event_position,invalid=invalid), tempfile.TemporaryDirectory() as d:
+                    raw,trace,packet=data(Path(d))
+                    trace['events'][event_position]['outcome_index']=invalid
+                    with self.assertRaisesRegex(correlation.CorrelationError,'outcome index'):
+                        inspect(d,raw,trace,packet)
 
     def test_result_without_explicit_outcome_binding_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as d:

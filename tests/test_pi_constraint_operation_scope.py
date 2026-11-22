@@ -13,9 +13,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / '.cat-system' / 'scripts'), str(ROOT / 'tests')]
-from cat_compile_v2 import Blocked, expand_cases, load, selection_vectors
+from cat_compile_v2 import Blocked, expand_cases, load, render_model_markdown, selection_vectors
 from cat_model_conformance import validate
 from test_intrinsic_rule_proofs import approve_fixture
+from test_cat_compile_readable import write_v2
 
 
 def artifact(kind, ident, refs, body):
@@ -148,6 +149,45 @@ class OperationScopedPIConstraintsTests(unittest.TestCase):
                                                    'state':{'state.done':False}}]})
             self.assertEqual(cases[0]['source_tce'],'B.done')
 
+    def test_empty_admissible_guard_space_cannot_vacuously_prove_trigger(self):
+        # Contradictory accept-time constraints make A impossible, but an
+        # empty truth table must not be promoted to Process Closure. The
+        # independent checker must derive that limit from the original PIs.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            p, pis, tce = fixture(root)
+            pi = pis[0]
+            source = pi.read_text(encoding='utf-8')
+            self.assertIn('| `input.a == input.b` |', source)
+            pi.write_text(source.replace(
+                '| `input.a == input.b` |',
+                '| `input.a == true` |\\n| `input.a == false` |'.replace('\\n', '\n')),
+                encoding='utf-8')
+            approve_fixture(pi)
+            original = tce.read_text(encoding='utf-8')
+            self.assertIn('| A.done | A | `true` | 1 | `state.done = true` |', original)
+            tce.write_text(original.replace(
+                '| A.done | A | `true` | 1 | `state.done = true` |\\n'.replace('\\n','\n'),
+                ''), encoding='utf-8')
+            approve_fixture(tce)
+            model = load(p, pis, tce, allow_draft=True, allow_partial=True)
+            self.assertEqual(model['coverage_checks']['A']['result'], 'unproven')
+            self.assertIn('no admissible', model['coverage_checks']['A']['reason'])
+            self.assertEqual(model['coverage_claim'], 'partial')
+            self.assertEqual(model['status'], 'draft')
+            output = root / 'Model.json'
+            output.write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(validate(p, pis, tce, output, allow_draft=True)['status'], 'passed')
+            forged = json.loads(output.read_text(encoding='utf-8'))
+            forged['coverage_checks']['A']['result'] = 'proved'
+            forged.update(status='confirmed', coverage_requirement='closed',
+                          coverage_claim='closed')
+            output.write_text(json.dumps(forged, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(validate(p, pis, tce, output, allow_draft=True)['status'],
+                             'blocked')
+            with self.assertRaisesRegex(Blocked, 'closed-world coverage'):
+                load(p, pis, tce)
+
     def test_other_pi_input_cannot_drive_a_trigger_guard(self):
         with tempfile.TemporaryDirectory() as td:
             p, pis, tce = fixture(Path(td))
@@ -245,6 +285,142 @@ class OperationScopedPIConstraintsTests(unittest.TestCase):
             model_path = root / 'Model.json'
             model_path.write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')
             self.assertEqual(validate(p, pis, tce, model_path, allow_draft=True)['status'], 'passed')
+
+    def test_result_only_constraint_cannot_forge_closed_confirmed_model(self):
+        # A future result relation cannot be discharged by acceptance-Guard
+        # coverage. The compiler knows the constraint is unbound, so the
+        # independent Source->Model validator must reject a forged closure.
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=write_v2(root,False)
+            for source in (p,pi,tce):approve_fixture(source)
+            pi.write_text(pi.read_text(encoding='utf-8') +
+                          '\n| `output.accepted == true` |\n',encoding='utf-8')
+            model=load(p,pi,tce,allow_draft=True)
+            self.assertEqual(model['status'],'draft')
+            self.assertEqual(model['coverage_requirement'],'partial')
+            self.assertEqual(len(model['unbound_pi_constraints']),1)
+            self.assertEqual(model['coverage_checks']['submit']['result'],'proved')
+            target=root/'Model.json'
+            target.write_text(json.dumps(model),encoding='utf-8')
+            self.assertEqual(validate(p,pi,tce,target,allow_draft=True)['status'],'passed')
+            model.update(status='confirmed',coverage_requirement='closed',
+                         coverage_claim='closed')
+            target.write_text(json.dumps(model),encoding='utf-8')
+            result=validate(p,pi,tce,target,allow_draft=True)
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('source_guard_coverage',result['mismatches'])
+            self.assertIn('normative_status_unjustified',result['mismatches'])
+
+    def test_input_constraint_without_accept_operation_cannot_claim_closure(self):
+        # A PI can declare an input constraint without a matching accepted
+        # Operation. No new external Trigger or observational time is inferred.
+        with tempfile.TemporaryDirectory() as td:
+            p,pis,tce=fixture(Path(td))
+            owner=pis[0]
+            original=owner.read_text(encoding='utf-8')
+            self.assertIn('| A | accept | A |',original)
+            owner.write_text(original.replace('| A | accept | A |',''),encoding='utf-8')
+            model=load(p,pis,tce,allow_draft=True)
+            self.assertEqual(model['status'],'draft')
+            self.assertEqual(model['unbound_pi_constraints'][0]['reason'],
+                             'no accepted Operation to bind PI constraint')
+            target=Path(td)/'Model.json'
+            target.write_text(json.dumps(model),encoding='utf-8')
+            self.assertEqual(validate(p,pis,tce,target,allow_draft=True)['status'],'passed')
+            model.update(status='confirmed',coverage_requirement='closed',
+                         coverage_claim='closed')
+            target.write_text(json.dumps(model),encoding='utf-8')
+            result=validate(p,pis,tce,target,allow_draft=True)
+            self.assertEqual(result['status'],'blocked',result)
+            self.assertIn('source_guard_coverage',result['mismatches'])
+            self.assertIn('normative_status_unjustified',result['mismatches'])
+
+    def test_markdown_model_retains_exact_pi_operation_constraint_bindings(self):
+        # Human-readable models may not silently lose the explicit Trigger
+        # scope that JSON models preserve for a Process with two PI owners.
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pis,tce=fixture(root)
+            model=load(p,pis,tce)
+            target=root/'TestModel.md'
+            rendered=render_model_markdown(model)
+            self.assertIn('## PI constraint bindings',rendered)
+            self.assertIn('| demo.scope.a.pi | A |',rendered)
+            target.write_text(rendered,encoding='utf-8')
+            self.assertEqual(validate(p,pis,tce,target)['status'],'passed')
+            tampered=rendered.replace('| demo.scope.a.pi | A |',
+                                     '| demo.scope.a.pi | B |',1)
+            self.assertNotEqual(tampered,rendered)
+            target.write_text(tampered,encoding='utf-8')
+            outcome=validate(p,pis,tce,target)
+            self.assertEqual(outcome['status'],'blocked',outcome)
+            self.assertIn('constraint_bindings',outcome['mismatches'])
+            target.write_text(rendered.replace('## PI constraint bindings',
+                                               '## hidden bindings',1),encoding='utf-8')
+            self.assertIn('constraint_bindings',
+                          validate(p,pis,tce,target)['mismatches'])
+
+    def test_markdown_model_retains_result_time_constraint_as_unproved(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=write_v2(root,False)
+            for source in (p,pi,tce):approve_fixture(source)
+            pi.write_text(pi.read_text(encoding='utf-8') +
+                          '\n| `output.accepted == true` |\n',encoding='utf-8')
+            model=load(p,pi,tce,allow_draft=True)
+            self.assertEqual(model['status'],'draft')
+            target=root/'TestModel.md'
+            rendered=render_model_markdown(model)
+            self.assertIn('## PI constraint bindings',rendered)
+            self.assertIn('non-input result relation',rendered)
+            target.write_text(rendered,encoding='utf-8')
+            self.assertEqual(validate(p,pi,tce,target,allow_draft=True)['status'],'passed')
+            target.write_text(rendered.replace('non-input result relation','—',1),
+                              encoding='utf-8')
+            outcome=validate(p,pi,tce,target,allow_draft=True)
+            self.assertEqual(outcome['status'],'blocked',outcome)
+            self.assertIn('constraint_bindings',outcome['mismatches'])
+
+    def test_japanese_markdown_retains_unbound_result_constraint(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=write_v2(root,True)
+            for source in (p,pi,tce):approve_fixture(source)
+            pi.write_text(pi.read_text(encoding='utf-8') +
+                          '\n| `output.accepted == 真` |\n',encoding='utf-8')
+            model=load(p,pi,tce,allow_draft=True)
+            target=root/'TestModel.md'
+            document=render_model_markdown(model)
+            self.assertIn('## PI制約の束縛',document)
+            self.assertIn('(output.accepted == 真)',document)
+            self.assertIn('non-input result relation',document)
+            target.write_text(document,encoding='utf-8')
+            self.assertEqual(validate(p,pi,tce,target,allow_draft=True)['status'],'passed')
+
+    def test_unbound_constraint_receipt_is_source_bound_and_not_erasable(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            p,pi,tce=write_v2(root,False)
+            for source in (p,pi,tce):approve_fixture(source)
+            pi.write_text(pi.read_text(encoding='utf-8') +
+                          '\n| `output.accepted == true` |\n',encoding='utf-8')
+            model=load(p,pi,tce,allow_draft=True)
+            self.assertEqual(len(model['unbound_pi_constraints']),1)
+            target=root/'Model.json'
+            for replacement in ([],None,[{'source_pi':'forged',
+                                          'expr':model['unbound_pi_constraints'][0]['expr'],
+                                          'reason':'non-input result relation'}]):
+                with self.subTest(receipt=replacement):
+                    forged=json.loads(json.dumps(model))
+                    if replacement is None:
+                        del forged['unbound_pi_constraints']
+                    else:
+                        forged['unbound_pi_constraints']=replacement
+                    target.write_text(json.dumps(forged),encoding='utf-8')
+                    result=validate(p,pi,tce,target,allow_draft=True)
+                    self.assertEqual(result['status'],'blocked',result)
+                    self.assertIn('unbound_pi_constraints',result['mismatches'])
 
     def test_constraint_cannot_silently_refer_to_another_pi_field(self):
         with tempfile.TemporaryDirectory() as td:
