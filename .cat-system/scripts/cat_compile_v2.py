@@ -1181,6 +1181,67 @@ def _integer_reference_range_values(fields, names, predicates, input_presence, d
         result[name]=admissible
     return result
 
+def _real_reference_range_values(fields, names, predicates, input_presence, definitions):
+    """Local real weak-order classes for 2..3 direct required references.
+
+    Fix every literal and Domain endpoint, then cover all relative orderings
+    within each open cell by N distinct representable values. Failure to
+    construct such witnesses stays unproved; no arithmetic or typed equality.
+    """
+    from fractions import Fraction
+    import math
+    refs=sorted(name for name in names if name in fields
+                and fields[name]['domain'].get('type')=='real'
+                and (name not in input_presence or input_presence[name]=='required'))
+    if not 2<=len(refs)<=3:return {}
+    group=set(refs);cuts=set();coupled=False
+    def number(x):return type(x) is int or type(x) is float and math.isfinite(x)
+    domains={name:fields[name]['domain'] for name in refs}
+    for domain in domains.values():
+        for value in (domain.get('min'),domain.get('max')):
+            if value is None:continue
+            if not number(value):return {}
+            cuts.add(Fraction(value))
+    def supported(node):
+        nonlocal coupled
+        if not isinstance(node,dict) or node.get('op')=='call':return False
+        if not group.intersection(used_refs(node,definitions)):return True
+        op,args=node.get('op'),node.get('args',[])
+        if op in ('and','or','not'):return all(supported(a) for a in args)
+        if op not in ('lt','le','gt','ge') or len(args)!=2:return False
+        if all(set(a)=={'ref'} and a['ref'] in group for a in args):
+            coupled |= args[0]['ref']!=args[1]['ref']
+            return True
+        for a,b in (args,args[::-1]):
+            if set(a)=={'ref'} and a['ref'] in group and set(b)=={'literal'} and number(b['literal']):
+                cuts.add(Fraction(b['literal']));return True
+        return False
+    if not all(supported(p) for p in predicates) or not coupled:return {}
+    n=len(refs);points=sorted(cuts);values=[]
+    if not points:values=list(range(n))
+    else:
+        if any(d.get('min') is None for d in domains.values()):
+            values.extend(range(math.floor(points[0])-n,math.floor(points[0])))
+        for i,point in enumerate(points):
+            values.append(int(point) if point.denominator==1 else float(point))
+            if i+1==len(points):continue
+            right=points[i+1]
+            if not any((d.get('min') is None or Fraction(d['min'])<=point)
+                       and (d.get('max') is None or Fraction(d['max'])>=right) for d in domains.values()):continue
+            start=math.floor(point)+1
+            if start+n-1<right:cell=list(range(start,start+n))
+            else:
+                try:cell=[float((point*(n+1-k)+right*k)/(n+1)) for k in range(1,n+1)]
+                except OverflowError:return {}
+                if not all(math.isfinite(x) for x in cell):return {}
+                if not point<Fraction(cell[0]) or not Fraction(cell[-1])<right or any(a>=b for a,b in zip(cell,cell[1:])):return {}
+            values.extend(cell)
+        if any(d.get('max') is None for d in domains.values()):
+            start=math.ceil(points[-1])+1;values.extend(range(start,start+n))
+    result={name:[v for v in values if typed.contains(domain,v)] for name,domain in domains.items()}
+    return result if all(result.values()) else {}
+
+
 def _has_pair_order_comparison(node):
     """Ordering labels cannot be confused with equality-only receipts."""
     if not isinstance(node,dict):return False
@@ -1804,12 +1865,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             fields,ordered,predicates,input_presence,definitions)
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,ordered,predicates,input_presence,definitions))
+        real_range=_real_reference_range_values(fields,ordered,predicates,input_presence,definitions)
         for field_id in ordered:
             if projected:
                 domainvalues.append(projected[field_id]);partition_fields.append(field_id);partition_kinds.add('record_member');continue
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
+            if field_id in real_range:
+                values=real_range[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('real_ref_range')
             if field_id in integer_range:
                 # Values for every coupled reference must come from the same
                 # Domain-endpoint/literal cuts. A per-field interval sampler
@@ -1924,6 +1990,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
+                    else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'required-record-member-partition/v1' if partition_kinds=={'record_member'}
                     else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
                     else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
@@ -2236,6 +2303,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             fields,guard_names,predicates,presence,defs)
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,guard_names,predicates,presence,defs))
+        real_range=_real_reference_range_values(fields,guard_names,predicates,presence,defs)
         for field_id in variable_ids:
             if projected:
                 domains.append(projected[field_id]);continue
@@ -2244,6 +2312,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                     if field_id in presence else typed.finite_values(field['domain']))
             if field_id in integer_range:
                 values=integer_range[field_id]
+            if field_id in real_range:
+                values=real_range[field_id]
             if values is None and field_id in presence and presence[field_id]=='optional' and field_id not in observed:
                 # The omission is a valid witness of an unobserved optional
                 # value; it is not a sample used as a finite-domain proof.

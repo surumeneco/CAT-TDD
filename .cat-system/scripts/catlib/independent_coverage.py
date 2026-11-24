@@ -134,6 +134,60 @@ def _independent_real_cells(domain, field, clauses):
     return values if values and len(values)<=LIMIT else None
 
 
+def _independent_real_reference_cells(names, domains, inputs, current_presence, clauses, definitions):
+    """Independently reconstruct exact coupled real-order representatives."""
+    from fractions import Fraction
+    fields=sorted(x for x in names if domains.get(x,{}).get('type')=='real'
+                  and (x not in inputs or current_presence(x)=='required'))
+    if not 2<=len(fields)<=3:return {}
+    group=set(fields);boundaries=set();pairs=set()
+    def numeric(x):return type(x) is int or type(x) is float and math.isfinite(x)
+    def legal(expr):
+        if not isinstance(expr,dict) or expr.get('op')=='call':return False
+        if not (used_refs(expr,definitions)&group):return True
+        op,args=expr.get('op'),expr.get('args',[])
+        if op in ('and','or','not'):return all(legal(child) for child in args)
+        if op not in ('lt','le','gt','ge') or len(args)!=2:return False
+        a,b=args
+        if set(a)==set(b)=={'ref'} and {a['ref'],b['ref']}<=group:
+            if a['ref']!=b['ref']:pairs.add((a['ref'],b['ref']))
+            return True
+        if set(b)=={'ref'}:a,b=b,a
+        if set(a)=={'ref'} and a['ref'] in group and set(b)=={'literal'} and numeric(b['literal']):
+            boundaries.add(Fraction(b['literal']));return True
+        return False
+    if not all(legal(c) for c in clauses) or not pairs:return {}
+    limits={}
+    for field in fields:
+        lo,hi=domains[field].get('min'),domains[field].get('max')
+        if any(v is not None and not numeric(v) for v in (lo,hi)):return {}
+        limits[field]=tuple(Fraction(v) if v is not None else None for v in (lo,hi))
+        boundaries.update(v for v in limits[field] if v is not None)
+    cuts=sorted(boundaries);n=len(fields);representatives=[]
+    if not cuts:representatives=list(range(n))
+    else:
+        if any(lo is None for lo,hi in limits.values()):
+            representatives.extend(cuts[0]//1-i for i in range(n,0,-1))
+        for left,right in zip(cuts,cuts[1:]+[None]):
+            representatives.append(int(left) if left.denominator==1 else float(left))
+            if right is None:break
+            if all((lo is not None and lo>left) or (hi is not None and hi<right)
+                   for lo,hi in limits.values()):continue
+            low_int=left//1+1
+            if low_int+n-1<right:interior=list(range(low_int,low_int+n))
+            else:
+                try:interior=[float(left+(right-left)*Fraction(i,n+1)) for i in range(1,n+1)]
+                except OverflowError:return {}
+                if any(not math.isfinite(v) for v in interior):return {}
+                if any(not left<Fraction(v)<right for v in interior) or len(set(interior))!=n:return {}
+            representatives.extend(interior)
+        if any(hi is None for lo,hi in limits.values()):
+            top=-((-cuts[-1])//1);representatives.extend(top+i for i in range(1,n+1))
+    out={field:[v for v in representatives if (lo is None or Fraction(v)>=lo) and (hi is None or Fraction(v)<=hi)]
+         for field,(lo,hi) in limits.items()}
+    return out if all(out.values()) else {}
+
+
 def _independent_string_cells(domain, field, clauses, allow_presence=False):
     """Independent literal-equality truth cells, without compiler helpers."""
     if domain != {'type': 'string'}:
@@ -463,6 +517,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         integer_pair=_independent_integer_pair_values(names,domains,inputs,current_presence,clauses,definitions)
         integer_range=({} if integer_pair else _independent_integer_range_values(
             names,domains,inputs,current_presence,clauses,definitions))
+        real_range=_independent_real_reference_cells(names,domains,inputs,current_presence,clauses,definitions)
         for field in sorted(names):
             if projected:
                 dimensions.append(projected[field]);partition_fields.append(field);partition_kinds.add('record_member');continue
@@ -476,6 +531,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     values=types.finite_values(domains[field])
                     if values is not None and presence=='optional':values=[types.MISSING,*values]
             else:values=types.finite_values(domains[field])
+            if field in real_range:
+                values=real_range[field]
+                partition_fields.append(field)
+                partition_kinds.add('real_ref_range')
             if field in integer_range:
                 values=integer_range[field]
                 partition_fields.append(field)
@@ -571,6 +630,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
+                    else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'required-record-member-partition/v1' if partition_kinds=={'record_member'}
                     else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
                     else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
