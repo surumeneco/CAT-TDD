@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import sys
+import subprocess
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[3]
@@ -108,6 +109,7 @@ def exports_from(path: Path):
 # in the grammar. A successful parse proves only the absence of additional
 # capability use in these module bodies, not the callers or the build system.
 PURE_CONTRACT = 'primitive-pure-functions/v1'
+TYPED_DATA_CONTRACT = 'typed-data-functions/v1'
 PURE_TOKEN = re.compile(
     r"(?P<trivia>[ \t\r\n\f\v]+|//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/)"
     r"|(?P<word>[A-Za-z_$][A-Za-z0-9_$]*)"
@@ -290,6 +292,35 @@ def primitive_capability_analysis(repo, binding, sources, entrypoints, operation
     return report
 
 
+def typed_data_capability_analysis(repo, binding, sources, entrypoints, operations,
+                                   process, interface_symbols):
+    report = {'contract': TYPED_DATA_CONTRACT, 'status': 'inconclusive',
+              'scope': 'typed data arguments and standard intrinsics; excludes callers and build transforms'}
+    try:
+        if process.get('closed_world') is not True or process.get('observations') or process.get('actions') or binding.get('capabilities'):
+            raise UnsupportedPureSource('requires a closed Process with no additional capabilities')
+        paths = [Path(p).as_posix() for p in binding.get('source_globs', [])]
+        actual = {p.relative_to(repo).as_posix() for p in sources}
+        if len(paths) != len(set(paths)) or set(paths) != actual or {Path(p).as_posix() for p in entrypoints} != actual:
+            raise UnsupportedPureSource('requires exact source files equal to public entrypoints')
+        checker = Path(__file__).resolve().with_name('cat_typed_data_capabilities.mjs')
+        result = subprocess.run(['node', str(checker), str(repo), *map(str, sources)],
+                                cwd=repo, capture_output=True, encoding="utf-8", timeout=45, check=False)
+        payload = json.loads(result.stdout)
+        if result.returncode != 0 or payload.get('status') != 'passed':
+            raise UnsupportedPureSource(payload.get('reason', 'typed data inspector did not pass'))
+        if set(payload.get('public_symbols', [])) != set(interface_symbols) or set(interface_symbols.values()) != operations:
+            raise UnsupportedPureSource('typed data exports do not exactly cover the PI operations')
+        hashes = payload.get('source_sha256', {})
+        if not actual.issubset(hashes) or any((repo / name).resolve().is_relative_to(repo) is False or
+              hashlib.sha256((repo / name).read_bytes()).hexdigest() != digest for name,digest in hashes.items()):
+            raise UnsupportedPureSource('typed data source evidence missing or changed')
+        report.update(payload)
+    except (UnsupportedPureSource, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        report['reason'] = str(exc) or 'typed data inspector unavailable'
+    return report
+
+
 def inspect(repo, binding_path, process_path, pi_path, pi_extras=()):
     repo = Path(repo).resolve()
     binding_path = Path(binding_path).resolve()
@@ -385,12 +416,12 @@ def inspect(repo, binding_path, process_path, pi_path, pi_extras=()):
     status = 'blocked' if violations else ('inconclusive' if incomplete else 'passed')
     analysis = None
     if 'capability_analysis' in binding:
-        require(binding['capability_analysis'] == PURE_CONTRACT, 'unknown capability analysis contract')
+        require(binding['capability_analysis'] in (PURE_CONTRACT, TYPED_DATA_CONTRACT), 'unknown capability analysis contract')
         if status == 'passed':
-            analysis = primitive_capability_analysis(repo, binding, sources, entrypoints, operations,
-                                                     process, interface_symbols)
+            analyzer = primitive_capability_analysis if binding['capability_analysis'] == PURE_CONTRACT else typed_data_capability_analysis
+            analysis = analyzer(repo, binding, sources, entrypoints, operations, process, interface_symbols)
         else:
-            analysis = {'contract': PURE_CONTRACT, 'status': 'inconclusive',
+            analysis = {'contract': binding['capability_analysis'], 'status': 'inconclusive',
                         'reason': 'base inspector is not passing'}
     covered = ({
         'interface.'+x['semantic_ref'] for x in checks
