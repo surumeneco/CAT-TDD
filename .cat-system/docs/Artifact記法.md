@@ -402,11 +402,19 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 | `@cat:declared-outcome-output-presence/v1` | 指定の提供Operation・Triggerの全宣言Outcomeで、指定出力の値域および有効Presenceに反しないこと |
 | `@cat:all-trigger-state-equality-preservation/v1` | 明示された初期状態の等値関係が全宣言Trigger・全許容Outcomeで帰納的に保存されること |
 | `@cat:finite-state-guard-invariant/v1` | 明示された有限State初期関係の非空性と全宣言Outcomeでの帰納的保存に基づく有効Guard領域 |
+| `@cat:finite-transition-relation/v1` | 指定Operation・Trigger・peerにおける全許容Outcomeの有限射影と、明示したbefore/after関係の完全一致 |
 
 - 最初の3述語の `Condition` は **`assembled-process`**、`Verification` は **`cat:intrinsic-model/v1`**、`Requirement` は上表の対応する値と完全一致する必要がある。本文の自然言語要求や他のVerifier契約をこの文字列に置き換えて無断で意味変更してはならない。
 - 出力Presence述語の `Condition` は厳密に `fresh-output <PI ID> <provide Operation ID> <Trigger ID> <output Field ID>` とする。これは当該応答の出力を各Outcome開始時に未生成とする明示的な規範宣言であり、永続状態・以前の応答・外部配信を初期化する意味ではない。提供Operationを一意に解決でき、所有PI・Trigger・Fieldが一致し、Domainが解決済みで、全宣言Outcomeについて代入が高々1回かつ型／値域証明済みである場合だけ証明する。Operation別Presence（なければ基本Presence）が required なら全Outcomeで代入、absent なら全Outcomeで非代入、optional なら両方を許す。undefined、曖昧な提供Operation、宣言Outcomeが空のものは未証明とする。非代入は当該fresh outputの不在に限り、外部送信・到達可能性・Guardの網羅性は別に検査する。
 - 状態等値保存述語の `Condition` は厳密に `initial-state-equality <State ID> <State ID>` とする。これは規範上の初期状態を等値に限定する明示宣言であり、実装が初期化を行った証拠ではない。同一Processの相異なるStateで、同じboolean/integer/string/enum Domainを持つ2項に限定する。全宣言TriggerにOutcomeが存在し、各Outcomeについて型・値域証明済みの直接参照または定数を代入するか、非代入ならFrameでbefore値を維持し、両項のafter値がbefore等値の下で一致することを証明する。Effectの読取りは同時代入前の値であり、Guardによる例外・演算式による等値・未知の初期条件を推測しない。この証明をGuardの有効領域縮小には使用せず、実行相関・到達可能性・実Providerの検証とも分離する。
 - 有効Guard領域述語の `Condition` は `initial-state-relation <CAT boolean expression>`。同一ProcessのConfirmed Domain Specificationから、参照がStateのみで有限直積4096組以下、関係を満たす初期状態が非空、全Outcomeの関連代入が型・値域証明済みで関係内のbefore値のみを参照し、全関係内状態で同時代入後も関係が成立する場合に限り有効領域を制限する。未代入StateはFrameに従う。Guardに依存した例外や未宣言初期条件を推測しない。Compilerと独立Source検査で再計算し、`guard_invariant_rule_ids` をCoverage証拠に記録する。選択・展開するVectorにも関係を適用する。初期化実装、任意の実行経路、外部観測の真正性は証明しない。複数の関係の共通領域が空ならClosureは未証明とする。
+- 有限遷移関係述語の `Condition` は `transition-relation <JSON object>`。必須キーは `trigger`, `pi`, `operation`（accept）, `peer`（固定相手）, `when`（CAT boolean式）, `fields`（after射影対象IDの配列）, `relation`（CAT boolean式）。outputを射影する場合に限り `provide`（同じPI・相手・Triggerの一意なprovide Operation ID）を追加する。`when` はbeforeのState/当該受付のrequired Inputのみ、`relation` はそれらに加えて `after.<field ID>` を参照できる。例：
+
+~~~text
+transition-relation {"trigger":"receive","pi":"example.pi","operation":"accept-request","peer":"example.client","when":"true","fields":["state.request"],"relation":"after.state.request == input.request"}
+~~~
+
+- 同一ProcessのConfirmed Domain Specification、boolean/enum/有限integerの完全なbefore×after領域（最大65536組）、有効PI制約・証明済み有限初期不変条件、型・値域証明済みEffectを前提に、指定 `when` の非空な各状態で一意なTCE Ruleの全Outcomeを同時代入・非代入Frameで計算し、`relation` が許容する全射影結果の集合と両方向に一致することを検査する。許容される値を1つだけ列挙すること、または過大なFrameで独立した作用まで禁止することは集合欠落として未証明となる。複数Triggerの相関は、明示State上の相関IDと順序を各Triggerの関係で保持する。実際の相関ID、実Provider、全実行の進行性・公平性、任意の無界IDや未来観測は証明しない。独立Source検査が同じ関係を全域で再構成し、出典SHAとScopeが一致したときだけ正式Gateが受理する。対象を明示せず自由文や部分fixtureを渡す契約ではない。
 - 正当にConfirmedとなった規範Artifactの出典ID・SHA-256と決定根拠が揃い、モデル条件が実証された場合だけ、Compilerが `intrinsic_rule_proofs` を生成する。独立 `model-conformance` は元Artifactから同じ性質を再検査し、結果・出典を比較する。
 - 未承認Artifact、未知の述語、条件の変更、自由記述、外部通信・DOM・データベース・Discord送信等の実装・複数実行に関するRuleは**未証明**である。登録済みfixtureやrunnerの単なる `passed` を自然言語要求の証明に代用しない。
 - この限定語彙を超える意味は、別の規範上の意味定義・Verifierの責任範囲・正当な承認と結合した機械証明手段が成立するまで `inconclusive/blocked` のまま扱う。

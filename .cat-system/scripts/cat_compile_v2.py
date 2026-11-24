@@ -1960,9 +1960,16 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         operation_presence=operation_presence)
     guard_invariants=_proved_guard_invariants(rule_docs,fields,p['process'],rules,effect_checks,
         all(fm['status']=='confirmed' for _,fm in files))
+    from catlib import semantic_transition_relation
+    transition_proofs={r['id'] for doc in rule_docs for r in doc['rules']
+        if all(fm['status']=='confirmed' for _,fm in files) and doc['process']==p['process']
+        and doc['kind']=='domain-spec' and doc['scope_verified']
+        and r.get('requirement')==semantic_transition_relation.TOKEN
+        and r.get('verification_contract')=='cat:intrinsic-model/v1'
+        and semantic_transition_relation.prove(r['condition'],fields,pi_docs,rules,effect_checks,guard_invariants.values())}
     intrinsic_proofs=semantic_intrinsic_rules.evaluate(
         rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
-        operation_presence,effect_checks,guard_invariants)
+        operation_presence,effect_checks,guard_invariants,transition_proofs)
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
     # operation owns its output and every TCE alternative respects the
