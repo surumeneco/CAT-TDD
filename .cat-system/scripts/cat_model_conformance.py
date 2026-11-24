@@ -354,13 +354,19 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     source_all_confirmed=(all(fm.get('status')=='confirmed'
                               for _,fm in files if fm['kind'] not in ('common-rule','domain-spec'))
                           and all(doc['status']=='confirmed' for doc in rule_docs))
+    from catlib import semantic_observation_relation
+    observation_fields={**effect_fields,**{obs['id']:{**effect_fields[obs['id']],
+                        'available_on':obs.get('available_on',[])} for obs in p.get('observations',[])}}
+    observation_relations=semantic_observation_relation.independent_prove(rule_docs,p['process'],observation_fields,
+        {t['id'] for t in p['triggers']},source_all_confirmed)
+    observation_proof_ids={rid for rels in observation_relations.values() for rid in rels}
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects,
-        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed,effect_fields)
+        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed,effect_fields,observation_proof_ids)
     from cat_compile_v2 import parse_expr_text
     invariants={proof['rule_id']:parse_expr_text(proof['scope'][len('initial-state-relation '):])
                 for proof in intrinsic_proofs if proof['requirement']=='@cat:finite-state-guard-invariant/v1'}
-    source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain,invariants)
+    source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain,invariants,observation_relations)
     intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
     all_rule_ids={rule['id'] for doc in rule_docs for rule in doc['rules']
                   if rule.get('verification_status')!='not-applicable'}
@@ -567,7 +573,7 @@ def _source_finite_invariant(scope, roles, domains, tces, checks, rejected):
 
 
 def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects,
-                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False,source_fields=None):
+                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False,source_fields=None,observation_proof_ids=()):
     def resolved(d):
         if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
         t=d['type']
@@ -602,6 +608,8 @@ def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, ef
             elif token=='@cat:finite-state-guard-invariant/v1':
                 proved=(confirmed and document['process']==process and document['kind']=='domain-spec'
                         and _source_finite_invariant(scope,fields,domains,tces,effect_checks or {},rejected))
+            elif token=='@cat:trigger-observation-relation/v1':
+                proved=rule['id'] in observation_proof_ids
             else:
                 proved=(scope=='assembled-process' and predicates.get(token) is True)
             if proved:
@@ -1055,7 +1063,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                       'excluded_by_pi_constraints')
         symbolic_receipt_keys=('proof_method','partition_fields',
                                'abstract_state_count','proof_scope')
-        optional_receipt_keys=('guard_invariant_rule_ids',)
+        optional_receipt_keys=('guard_invariant_rule_ids','observation_relation_rule_ids')
         if isinstance(actual_guards,dict):
             for trigger,expected_receipt in source_guard['triggers'].items():
                 if expected_receipt['result'] in ('proved','uncovered','conflict'):

@@ -402,12 +402,14 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 | `@cat:declared-outcome-output-presence/v1` | 指定の提供Operation・Triggerの全宣言Outcomeで、指定出力の値域および有効Presenceに反しないこと |
 | `@cat:all-trigger-state-equality-preservation/v1` | 明示された初期状態の等値関係が全宣言Trigger・全許容Outcomeで帰納的に保存されること |
 | `@cat:finite-state-guard-invariant/v1` | 明示された有限State初期関係の非空性と全宣言Outcomeでの帰納的保存に基づく有効Guard領域 |
+| `@cat:trigger-observation-relation/v1` | 明示Triggerで利用可能な有限観測とStateの入力関係の非空性・全Stateへの射影 |
 | `@cat:finite-transition-relation/v1` | 指定Operation・Trigger・peerにおける全許容Outcomeの有限射影と、明示したbefore/after関係の完全一致 |
 
 - 最初の3述語の `Condition` は **`assembled-process`**、`Verification` は **`cat:intrinsic-model/v1`**、`Requirement` は上表の対応する値と完全一致する必要がある。本文の自然言語要求や他のVerifier契約をこの文字列に置き換えて無断で意味変更してはならない。
 - 出力Presence述語の `Condition` は厳密に `fresh-output <PI ID> <provide Operation ID> <Trigger ID> <output Field ID>` とする。これは当該応答の出力を各Outcome開始時に未生成とする明示的な規範宣言であり、永続状態・以前の応答・外部配信を初期化する意味ではない。提供Operationを一意に解決でき、所有PI・Trigger・Fieldが一致し、Domainが解決済みで、全宣言Outcomeについて代入が高々1回かつ型／値域証明済みである場合だけ証明する。Operation別Presence（なければ基本Presence）が required なら全Outcomeで代入、absent なら全Outcomeで非代入、optional なら両方を許す。undefined、曖昧な提供Operation、宣言Outcomeが空のものは未証明とする。非代入は当該fresh outputの不在に限り、外部送信・到達可能性・Guardの網羅性は別に検査する。
 - 状態等値保存述語の `Condition` は厳密に `initial-state-equality <State ID> <State ID>` とする。これは規範上の初期状態を等値に限定する明示宣言であり、実装が初期化を行った証拠ではない。同一Processの相異なるStateで、同じboolean/integer/string/enum Domainを持つ2項に限定する。全宣言TriggerにOutcomeが存在し、各Outcomeについて型・値域証明済みの直接参照または定数を代入するか、非代入ならFrameでbefore値を維持し、両項のafter値がbefore等値の下で一致することを証明する。Effectの読取りは同時代入前の値であり、Guardによる例外・演算式による等値・未知の初期条件を推測しない。この証明をGuardの有効領域縮小には使用せず、実行相関・到達可能性・実Providerの検証とも分離する。
 - 有効Guard領域述語の `Condition` は `initial-state-relation <CAT boolean expression>`。同一ProcessのConfirmed Domain Specificationから、参照がStateのみで有限直積4096組以下、関係を満たす初期状態が非空、全Outcomeの関連代入が型・値域証明済みで関係内のbefore値のみを参照し、全関係内状態で同時代入後も関係が成立する場合に限り有効領域を制限する。未代入StateはFrameに従う。Guardに依存した例外や未宣言初期条件を推測しない。Compilerと独立Source検査で再計算し、`guard_invariant_rule_ids` をCoverage証拠に記録する。選択・展開するVectorにも関係を適用する。初期化実装、任意の実行経路、外部観測の真正性は証明しない。複数の関係の共通領域が空ならClosureは未証明とする。
+- 観測領域述語の `Condition` は `observation-relation <Trigger ID> <CAT boolean expression>`。同一ProcessのConfirmed Domain Specificationが、指定Triggerに明示的に `Available on` を持つ観測とStateのみを参照して有効な観測値領域を定義する。有限直積4096組以下で、同じTriggerの全宣言観測関係を結合しても、全State値組に対して少なくとも1つの観測値組が存在することをCompilerと独立検査で証明する。これにより実到達Stateを観測値の矛盾で勝手に排除しない。成立した関係だけ当該TriggerのGuard領域に適用し `observation_relation_rule_ids` を記録する。将来観測・時点未宣言・未知関係は利用しない。観測値の実Provider真正性や技術別観測Vector/Driverは別責務であり、この証明によるテスト生成の無断補完は禁止する。
 - 有限遷移関係述語の `Condition` は `transition-relation <JSON object>`。必須キーは `trigger`, `pi`, `operation`（accept）, `peer`（固定相手）, `when`（CAT boolean式）, `fields`（after射影対象IDの配列）, `relation`（CAT boolean式）。outputを射影する場合に限り `provide`（同じPI・相手・Triggerの一意なprovide Operation ID）を追加する。`when` はbeforeのState/当該受付のrequired Inputのみ、`relation` はそれらに加えて `after.<field ID>` を参照できる。例：
 
 ~~~text
