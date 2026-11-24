@@ -91,6 +91,49 @@ def _independent_integer_cells(domain, field, clauses, allow_presence=False):
     return reps if reps and len(reps)<=LIMIT else None
 
 
+def _independent_real_cells(domain, field, clauses):
+    """Reconstruct ordered real cells from Source, not compiler receipts."""
+    from fractions import Fraction
+    if domain.get('type')!='real':return None
+    lo,hi=domain.get('min'),domain.get('max')
+    def numeric(v):return type(v) is int or type(v) is float and math.isfinite(v)
+    constants=set()
+    def mentions(n):return isinstance(n,dict) and (n.get('ref')==field or any(mentions(x) for x in n.get('args',[])))
+    def legal(n):
+        if not isinstance(n,dict) or n.get('op')=='call':return False
+        if not mentions(n):return True
+        op=n.get('op');args=n.get('args',[])
+        if op in ('and','or','not'):return all(legal(a) for a in args)
+        if op not in ('lt','le','gt','ge') or len(args)!=2:return False
+        for a,b in (args,args[::-1]):
+            if a=={'ref':field} and set(b)=={'literal'} and numeric(b['literal']):
+                constants.add(Fraction(b['literal']));return True
+        return False
+    if not all(legal(c) for c in clauses) or not constants:return None
+    if any(x is not None and not numeric(x) for x in (lo,hi)):return None
+    lower=Fraction(lo) if lo is not None else None
+    upper=Fraction(hi) if hi is not None else None
+    if lower is not None and upper is not None and lower>upper:return None
+    boundaries=sorted({x for x in constants|{lower,upper} if x is not None
+                      and (lower is None or lower<=x) and (upper is None or x<=upper)})
+    if not boundaries:return None
+    values=[]
+    if lower is None:values.append(boundaries[0]//1-1)
+    for i,boundary in enumerate(boundaries):
+        values.append(int(boundary) if boundary.denominator==1 else float(boundary))
+        if i+1==len(boundaries):break
+        right=boundaries[i+1]
+        whole=boundary//1+1
+        if whole<right:values.append(whole)
+        else:
+            try:rep=float(boundary+(right-boundary)/2)
+            except OverflowError:return None
+            if not math.isfinite(rep) or not boundary<Fraction(rep)<right:return None
+            values.append(rep)
+    if upper is None:values.append(-((-boundaries[-1])//1)+1)
+    return values if values and len(values)<=LIMIT else None
+
+
 def _independent_string_cells(domain, field, clauses, allow_presence=False):
     """Independent literal-equality truth cells, without compiler helpers."""
     if domain != {'type': 'string'}:
@@ -349,6 +392,11 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                 if values is not None:
                     partition_fields.append(field)
                     partition_kinds.add('string')
+            if values is None and (field not in inputs or current_presence(field)=='required'):
+                values=_independent_real_cells(domains[field],field,clauses)
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('real')
             if values is None and field in inputs and current_presence(field)=='optional':
                 representatives=_independent_integer_cells(domains[field],field,clauses,allow_presence=True)
                 kind='optional_integer'
@@ -418,6 +466,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
                     else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}

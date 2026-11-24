@@ -82,3 +82,59 @@ def integer_partition_values(domain,field,predicates,allow_unused=False,allow_pr
     values=sorted(x for x in witnesses if (low is None or x>=low)
                   and (high is None or x<=high))
     return values if values and len(values)<=MAX_PARTITION_VALUES else None
+
+
+def real_partition_values(domain,field,predicates,allow_unused=False):
+    """Exact order cells for direct real-vs-numeric-literal comparisons.
+
+    Equality is excluded: CAT equality distinguishes integer and float values.
+    Require a representable in-domain witness for each mathematical cell.
+    """
+    import math
+    from fractions import Fraction
+    if not isinstance(domain,dict) or domain.get('type')!='real':return None
+    low,high=domain.get('min'),domain.get('max')
+    def number(x):return type(x) is int or type(x) is float and math.isfinite(x)
+    if any(x is not None and not number(x) for x in (low,high)):return None
+    if low is not None and high is not None and low>high:return None
+    def cuts_of(node):
+        if not isinstance(node,dict) or node.get('op')=='call':return None
+        if not _reads(node,field):return []
+        op,args=node.get('op'),node.get('args',[])
+        if op in BOOLEANS:
+            out=[]
+            for arg in args:
+                part=cuts_of(arg)
+                if part is None:return None
+                out.extend(part)
+            return out
+        if op in ('lt','le','gt','ge') and len(args)==2:
+            for a,b in ((args[0],args[1]),(args[1],args[0])):
+                if a=={'ref':field} and set(b)=={'literal'} and number(b['literal']):
+                    return [b['literal']]
+        return None
+    cuts=[]
+    for clause in predicates:
+        part=cuts_of(clause)
+        if part is None:return None
+        cuts.extend(part)
+    if not cuts:
+        if not allow_unused:return None
+        return [low if low is not None else high if high is not None else 0]
+    def in_range(x):return (low is None or low<=x) and (high is None or x<=high)
+    points=sorted({Fraction(x) for x in [*cuts,low,high] if x is not None and in_range(x)})
+    if not points:return None
+    result=[]
+    if low is None:result.append(math.floor(points[0])-1)
+    for i,point in enumerate(points):
+        result.append(int(point) if point.denominator==1 else float(point))
+        if i+1<len(points):
+            other=points[i+1]
+            integer=math.floor(point)+1
+            if integer<other:result.append(integer);continue
+            try:mid=float((point+other)/2)
+            except OverflowError:return None
+            if not math.isfinite(mid) or not point<Fraction(mid)<other:return None
+            result.append(mid)
+    if high is None:result.append(math.ceil(points[-1])+1)
+    return result if result and len(result)<=MAX_PARTITION_VALUES else None

@@ -1658,6 +1658,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 if values is not None:
                     partition_fields.append(field_id)
                     partition_kinds.add('string')
+            if values is None and (field_id not in input_presence
+                                   or input_presence[field_id]=='required'):
+                values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('real')
             if values is None and input_presence.get(field_id)=='optional':
                 present=semantic_interval_partition.integer_partition_values(
                     field['domain'],field_id,predicates,allow_presence=True)
@@ -1738,6 +1744,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
                     else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
@@ -2065,6 +2072,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                                    or presence[field_id]=='required'):
                 values=semantic_string_partition.string_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and (field_id not in presence or presence[field_id]=='required'):
+                values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates,allow_unused=True)
             if values is None and presence.get(field_id)=='optional':
                 present=semantic_interval_partition.integer_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True,allow_presence=True)
