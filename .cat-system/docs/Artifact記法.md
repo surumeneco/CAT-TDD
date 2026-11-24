@@ -416,7 +416,7 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 transition-relation {"trigger":"receive","pi":"example.pi","operation":"accept-request","peer":"example.client","when":"true","fields":["state.request"],"relation":"after.state.request == input.request"}
 ~~~
 
-- 同一ProcessのConfirmed Domain Specification、boolean/enum/有限integerの完全なbefore×after領域（最大65536組）、有効PI制約・証明済み有限初期不変条件、型・値域証明済みEffectを前提に、指定 `when` の非空な各状態で一意なTCE Ruleの全Outcomeを同時代入・非代入Frameで計算し、`relation` が許容する全射影結果の集合と両方向に一致することを検査する。許容される値を1つだけ列挙すること、または過大なFrameで独立した作用まで禁止することは集合欠落として未証明となる。複数Triggerの相関は、明示State上の相関IDと順序を各Triggerの関係で保持する。実際の相関ID、実Provider、全実行の進行性・公平性、任意の無界IDや未来観測は証明しない。独立Source検査が同じ関係を全域で再構成し、出典SHAとScopeが一致したときだけ正式Gateが受理する。対象を明示せず自由文や部分fixtureを渡す契約ではない。
+- 同一ProcessのConfirmed Domain Specification、boolean/enum/有限integerの完全なbefore×after領域、または制約なしstringのbefore/after最大5参照の厳密な等値類（直接等値・不等値、文字列定数、コピー代入に限定、全体で最大65536組）、有効PI制約・証明済み有限初期不変条件、型・値域証明済みEffectを前提に、指定 `when` の非空な各状態で一意なTCE Ruleの全Outcomeを同時代入・非代入Frameで計算し、`relation` が許容する全射影結果の集合と両方向に一致することを検査する。許容される値を1つだけ列挙すること、または過大なFrameで独立した作用まで禁止することは集合欠落として未証明となる。複数Triggerの相関は、明示State上の相関IDと順序を各Triggerの関係で保持する。実際の相関ID、実Provider、全実行の進行性・公平性、限定等値類以外の無界ID関係や未来観測は証明しない。独立Source検査が同じ関係を全域で再構成し、出典SHAとScopeが一致したときだけ正式Gateが受理する。対象を明示せず自由文や部分fixtureを渡す契約ではない。
 - 正当にConfirmedとなった規範Artifactの出典ID・SHA-256と決定根拠が揃い、モデル条件が実証された場合だけ、Compilerが `intrinsic_rule_proofs` を生成する。独立 `model-conformance` は元Artifactから同じ性質を再検査し、結果・出典を比較する。
 - 未承認Artifact、未知の述語、条件の変更、自由記述、外部通信・DOM・データベース・Discord送信等の実装・複数実行に関するRuleは**未証明**である。登録済みfixtureやrunnerの単なる `passed` を自然言語要求の証明に代用しない。
 - この限定語彙を超える意味は、別の規範上の意味定義・Verifierの責任範囲・正当な承認と結合した機械証明手段が成立するまで `inconclusive/blocked` のまま扱う。

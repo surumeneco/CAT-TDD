@@ -188,6 +188,41 @@ def _independent_real_reference_cells(names, domains, inputs, current_presence, 
     return out if all(out.values()) else {}
 
 
+def independent_reference_palette(names,clauses,extra_literals=(),require_pair=True):
+    """Derive literal-fixed equality classes independently of Compiler cells."""
+    group=set(names)
+    if not 1<=len(group)<=5:return None
+    fixed=set(extra_literals);pairs=set()
+    def atoms(n):
+        op=n.get('op');args=n.get('args',[])
+        if op=='call':raise ValueError('opaque call')
+        if op in ('and','or','not'):
+            for child in args:yield from atoms(child)
+        else:yield n
+    def has_call(n):return n.get('op')=='call' or any(has_call(a) for a in n.get('args',[]))
+    try:
+        for clause in clauses:
+            if has_call(clause):return None
+            for atom in atoms(clause):
+                if not used_refs(atom,{})&group:continue
+                args=atom.get('args',[])
+                if atom.get('op') not in ('eq','ne') or len(args)!=2:return None
+                terms=[]
+                for term in args:
+                    if set(term)=={'ref'} and term['ref'] in group:terms.append(('ref',term['ref']))
+                    elif set(term)=={'literal'} and type(term['literal']) is str:terms.append(('literal',term['literal']))
+                    else:return None
+                if terms[0][0]==terms[1][0]=='ref' and terms[0][1]!=terms[1][1]:pairs.add(tuple(terms))
+                fixed.update(v for kind,v in terms if kind=='literal')
+        if require_pair and not pairs:return None
+        fresh=[];index=0
+        while len(fresh)<len(group):
+            candidate='\x00'*index;index+=1
+            if candidate not in fixed:fresh.append(candidate)
+        return sorted(fixed)+fresh
+    except (ValueError,KeyError,TypeError):return None
+
+
 def _independent_string_cells(domain, field, clauses, allow_presence=False):
     """Independent literal-equality truth cells, without compiler helpers."""
     if domain != {'type': 'string'}:
@@ -598,6 +633,9 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                 if vals is not None:raw_count*=len(vals)+(1 if pr=='optional' else 0)
         real_range=_independent_real_reference_cells(names,domains,inputs,current_presence,clauses,definitions)
         linear_range=_independent_linear_cells(names,domains,inputs,current_presence,clauses,definitions)
+        string_group={k for k in names if domains.get(k)=={'type':'string'}
+                      and (k not in inputs or current_presence(k)=='required')}
+        string_palette=independent_reference_palette(string_group,clauses) if len(string_group)>=2 else None
         for field in sorted(names):
             if projected:
                 dimensions.append(projected[field]);partition_fields.append(field);partition_kinds.add('record_member');continue
@@ -611,6 +649,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                     values=types.finite_values(domains[field])
                     if values is not None and presence=='optional':values=[types.MISSING,*values]
             else:values=types.finite_values(domains[field])
+            if string_palette is not None and field in string_group:
+                values=string_palette;partition_fields.append(field);partition_kinds.add('string_ref')
             if field in linear_range:
                 values=linear_range[field]
                 partition_fields.append(field)
@@ -715,6 +755,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}

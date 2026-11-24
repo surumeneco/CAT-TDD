@@ -1161,6 +1161,14 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
     return checks
 
 
+def _string_reference_values(fields,names,predicates,presence):
+    group={n for n in names if fields.get(n,{}).get('domain')=={'type':'string'}
+           and presence.get(n,'required')=='required'}
+    if len(group)<2:return {}
+    palette=semantic_string_partition.reference_palette(group,predicates)
+    return {n:palette for n in group} if palette is not None else {}
+
+
 def _integer_reference_equality_values(fields, names, predicates, input_presence, definitions):
     """Exact weak-order Guard classes for 2..5 same-Domain integer references.
 
@@ -2035,12 +2043,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
              else typed.finite_values(fields[k]['domain']) for k in ordered)) if integer_pair else 0
         real_range=_real_reference_range_values(fields,ordered,predicates,input_presence,definitions)
         linear_range=_linear_order_values(fields,ordered,predicates,input_presence,definitions)
+        string_pair=_string_reference_values(fields,ordered,predicates,input_presence)
         for field_id in ordered:
             if projected:
                 domainvalues.append(projected[field_id]);partition_fields.append(field_id);partition_kinds.add('record_member');continue
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
+            if field_id in string_pair:
+                values=string_pair[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('string_ref')
             if field_id in linear_range:
                 values=linear_range[field_id]
                 partition_fields.append(field_id)
@@ -2164,6 +2177,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
@@ -2482,12 +2496,14 @@ def selection_vectors(model, strategy='rule-witness/v1'):
              else typed.finite_values(fields[k]['domain']) for k in variable_ids)) if integer_pair else 0
         real_range=_real_reference_range_values(fields,guard_names,predicates,presence,defs)
         linear_range=_linear_order_values(fields,guard_names,predicates,presence,defs)
+        string_pair=_string_reference_values(fields,guard_names,predicates,presence)
         for field_id in variable_ids:
             if projected:
                 domains.append(projected[field_id]);continue
             field=fields[field_id]
             values=(_presence_cases(field['domain'],presence[field_id])
                     if field_id in presence else typed.finite_values(field['domain']))
+            if field_id in string_pair:values=string_pair[field_id]
             if field_id in integer_range:
                 values=integer_range[field_id]
             if field_id in real_range:
