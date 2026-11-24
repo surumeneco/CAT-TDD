@@ -22,6 +22,7 @@ TECHNOLOGIES=('Node','NestJS','PostgreSQL')
 
 def file(repo, rel):
     require(isinstance(rel,str) and rel,'runtime constraint path required')
+    repo=Path(repo).resolve()
     p=(repo/rel).resolve()
     require(p.is_relative_to(repo) and p.is_file(),'runtime constraint file missing or outside repository: '+rel)
     return p
