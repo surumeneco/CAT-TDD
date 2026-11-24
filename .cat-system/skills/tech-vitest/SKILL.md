@@ -18,3 +18,5 @@ description: "Generate, run and review Vitest unit or integration tests from app
 ## JUnit evidence adapter
 
 Workの`checks`に、現行Vitestの対象テストを実行し`{report}`へJUnit XMLを書き出す**実際に検証したargv配列**を定義する。`cat_flow.py run --id <check-id> --execute`はテスト名を一意照合し、欠損・skip・error・対象外失敗を区別する。Redにおける失敗理由の同一性は機械だけでは確定しない。実WebAppで実行する場合はDocker/DB fixture・本番データ非破壊を正本文書とTESTING.mdで確認する。
+
+実装適合の採用技術制約は `cat_test_technology.py` が全current-itemの独立Queue証拠と、再生成したテスト、Driver/Binding、宣言入力、実runner/HEAD・named JUnitの一致を確認する場合に限り充足できる。単なる成功終了やQueue doneを証明として扱わない。

@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import fnmatch
 import hashlib
+import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -20,6 +21,7 @@ from catlib.common import Blocked, json_bytes, read_json, require, sha
 from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
 import cat_queue
 import cat_project_typecheck as project_typecheck
+import cat_test_technology as test_technology
 import cat_queue_evidence as queue_evidence
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
@@ -808,6 +810,13 @@ def conformance_work(wpath, w, kind):
             except (Blocked,ValueError,KeyError,OSError,TypeError) as exc:
                 return {'gate':kind,'status':'blocked',
                         'reason':'Queue Green evidence invalid: '+str(exc)}
+    if queue and any(x in w.get('technologies',[]) for x in ('Vitest','Playwright')) and conf.get('binding') and conf.get('tests_output') and len(w['repositories'])==1:
+        evidence=test_technology.inspect(wpath,w,resolve_dir(wpath,w,'@repo:'+w['repositories'][0]['name']),
+            read_json(compilation_path(wpath,w,conf,'model',True)),read_json(compilation_path(wpath,w,conf,'vectors',True)),queue,
+            Path(compilation_path(wpath,w,conf,'binding',True)).resolve(),Path(compilation_path(wpath,w,conf,'tests_output',True)).resolve())
+        for result in evidence:
+            tech['results']=[x for x in tech['results'] if x['technology']!=result['technology']]+[result]
+        tech['status']='passed' if all(x['status']=='passed' for x in tech['results']) else 'inconclusive'
     model_gate=conformance_evidence_status(wpath,w,'model-conformance')
     rule_verification=None
     if any(x.get('method')=='normative-rule-verifier' for x in skeleton['items']):
@@ -1266,12 +1275,18 @@ def command_work(wpath, w, key, execute=False):
         source = (cwd / name).resolve()
         require(under(source, cwd) and source.is_file(), f'check input not found under cwd: {name}')
         inputs[name] = sha(source.read_bytes())
+    runner_identity=test_technology.identity(cwd,argv,w.get('technologies',[]))
+    env=os.environ.copy()
+    if runner_identity and 'playwright' in runner_identity:
+        env['DEBUG']='pw:browser'
+    runner_observation=None
     started = dt.datetime.now(dt.timezone.utc).isoformat()
     outcome = 'inconclusive'
     reason = ''
     try:
         p = subprocess.run(argv, cwd=cwd, text=True, errors='replace', capture_output=True,
-                           timeout=check.get('timeout_seconds', 120), check=False)
+                           timeout=check.get('timeout_seconds', 120), check=False, env=env)
+        runner_observation=test_technology.observation(runner_identity,test_technology.identity(cwd,argv,w.get('technologies',[])),p.stdout,p.stderr,report)
         code = p.returncode
         stdout_hash, stderr_hash = sha(p.stdout.encode()), sha(p.stderr.encode())
         if check['runner'] == 'exit-zero':
@@ -1321,7 +1336,8 @@ def command_work(wpath, w, key, execute=False):
                 'input_sha256': inputs, 'output_sha256': outputs, 'context_sha256': context_sha,
                 'junit_sha256': sha(report.read_bytes()) if check['runner'] == 'junit' and report.exists() else None,
                 'observed_targets': named, 'verdict': outcome, 'reason': reason,
-                'queue_context': queue_context, 'semantics_approved': False}
+                'queue_context': queue_context, 'semantics_approved': False,
+                'test_technology':runner_observation}
     evpath = runtime / 'evidence' / (key + '.json')
     evpath.parent.mkdir(parents=True, exist_ok=True)
     evpath.write_bytes(json_bytes(evidence))
