@@ -253,15 +253,136 @@ def _unverified_external_action_effects(model):
     return sorted(result)
 
 
+def composition_source_inputs(binding_path):
+    """Resolve and hash an optional exact Source assembly for each linked model.
+
+    The manifest and every referenced file must stay within its directory.
+    Return paths for independent validation and for formal receipt freshness.
+    """
+    path=Path(binding_path).resolve(strict=True)
+    binding=_load(path)
+    assemblies=binding.get('source_assemblies')
+    if assemblies is None:return {},{}
+    if not isinstance(assemblies,dict) or not assemblies:
+        raise CompositionError('source_assemblies must be a nonempty Process map')
+    resolved={};hashes={}
+    for process,assembly in assemblies.items():
+        if not isinstance(assembly,dict) or not {'process','pis','tces'}<=set(assembly)<= {'process','pis','tces','domain_rule','common_rules','domain_specs'}:
+            raise CompositionError('invalid composition Source assembly')
+        resolved[process]={};hashes[process]={}
+        for key,entries in assembly.items():
+            singular=key in ('process','domain_rule')
+            if singular:entries=[entries]
+            if not isinstance(entries,list) or (key in ('pis','tces') and not entries):
+                raise CompositionError('invalid composition Source inventory')
+            paths=[]
+            for i,entry in enumerate(entries):
+                if not isinstance(entry,dict) or set(entry)!={'path','sha256'} or not isinstance(entry['path'],str) or Path(entry['path']).is_absolute():
+                    raise CompositionError('invalid composition Source path/hash')
+                local=path.parent/entry['path'];source=local.resolve(strict=True)
+                if not source.is_relative_to(path.parent) or local.is_symlink() or not source.is_file():
+                    raise CompositionError('composition Source escapes manifest root')
+                observed=digest(source.read_bytes())
+                if observed!=entry['sha256']:raise CompositionError('composition Source hash mismatch: '+entry['path'])
+                paths.append(source)
+                hashes[process][key+':'+str(i)]={'path':str(source),'sha256':observed}
+            resolved[process][key]=paths[0] if singular else paths
+    return resolved,hashes
+
+
+def _conform_sources(models,model_files,assemblies,model_hashes):
+    from cat_model_conformance import validate
+    from cat_compile_v2 import Blocked
+    if set(models)!=set(assemblies):raise CompositionError('Source assembly Process inventory mismatch')
+    result={}
+    for process,entry in assemblies.items():
+        try:
+            proof=validate(entry['process'],entry['pis'],entry['tces'],model_files[process],
+                           entry.get('domain_rule'),entry.get('common_rules',[]),entry.get('domain_specs',[]))
+        except (Blocked,ValueError,KeyError,TypeError) as exc:
+            raise CompositionError('Source-to-Model conformance failed: '+process) from exc
+        if proof['status']!='passed' or proof['model_sha256']!=model_hashes[process] or not _local_claim_consistent(models[process]):
+            raise CompositionError('Source-to-Model conformance failed: '+process)
+        result[process]=proof
+    return result
+
+
+def _check_finite_connection(link,models):
+    """Preserve the full correlated output tuple, not independent field ranges.
+
+    Only after independently conformed Sources. Check all producer's declared
+    finite local outcomes against the receiving Operation's PI constraints.
+    No delivery, scheduling, or external Effect claim is made.
+    """
+    from itertools import product
+    from math import prod
+    from cat_compile_v2 import (Blocked,eval_expr,used_refs,_active_pi_constraints,
+        _guard_invariant_exprs,_presence_accepted_operation)
+    from catlib import semantic_types as typed
+    def pending(reason):return {'relation_status':'inconclusive','relation_reason':reason}
+    if link['status']!='structurally-matched':return pending('connection is not statically and structurally matched')
+    source=models[link['source_process']];target=models[link['target_process']]
+    sf={f['id']:f for f in source['fields']};tf={f['id']:f for f in target['fields']}
+    pairs=[(x['source_field'],x['target_field']) for x in link['field_links']]
+    so=next(op for op in source['pi_operations'] if op['id']==link['source_operation'] and op['source_pi']==link['source_pi'])
+    to=next(op for op in target['pi_operations'] if op['id']==link['target_operation'] and op['source_pi']==link['target_pi'])
+    trigger=so.get('trigger')
+    if not trigger or not to.get('trigger'):return pending('connection lacks explicit Trigger')
+    providers=[op for op in source['pi_operations'] if op['direction']=='provide' and op.get('trigger')==trigger]
+    if len(providers)!=1:return pending('producer Trigger lacks a unique provided Operation')
+    if any(_effective_presence(source,so['id'],sf[a])!='required' or _effective_presence(target,to['id'],tf[b])!='required' for a,b in pairs):
+        return pending('finite relation v1 requires required linked values')
+    output_fields={a for a,b in pairs};input_fields={b for a,b in pairs}
+    rows=[r for r in source['rules'] if r['trigger']==trigger]
+    try:
+        source_constraints=[*_active_pi_constraints(source,trigger),*_guard_invariant_exprs(source.get('intrinsic_rule_proofs',[])).values()]
+        receiving=_active_pi_constraints(target,to['trigger'])
+        if any(not used_refs(c,{})<=input_fields for c in receiving):return pending('receiving constraint reads unbound field')
+        refs=set().union(*(used_refs(e,{}) for e in [*source_constraints,*(r['when'] for r in rows)]))
+        for r in rows:
+            for outcome in r['allowed']:
+                for w in outcome['write']:
+                    if w['target'] in output_fields:refs.update(used_refs(w['expr'],{}))
+        accepted,ambiguous=_presence_accepted_operation(source['pi_operations'],trigger)
+        if ambiguous:return pending('producer has ambiguous accepted Operation')
+        names=sorted(refs);dims=[]
+        for k in names:
+            field=sf[k]
+            if field['role']!='state' and not (field['role']=='input' and accepted and field.get('source_pi')==accepted['source_pi'] and _effective_presence(source,accepted['id'],field)=='required'):
+                return pending('producer depends on unavailable or nonrequired value')
+            if field['domain']['type'] not in ('boolean','enum','integer'):return pending('non-finite scalar relation')
+            dims.append(typed.finite_values(field['domain']))
+        if any(not d for d in dims) or prod(map(len,dims))>65536:return pending('finite relation capacity exceeded')
+        count=0
+        for values in product(*dims):
+            env=dict(zip(names,values))
+            if not all(eval_expr(c,env,{}) is True for c in source_constraints):continue
+            selected=[r for r in rows if eval_expr(r['when'],env,{}) is True]
+            if len(selected)!=1:return pending('producer Guard is not uniquely covered')
+            for outcome in selected[0]['allowed']:
+                outputs={w['target']:eval_expr(w['expr'],env,{}) for w in outcome['write'] if w['target'] in output_fields}
+                if set(outputs)!=output_fields:return pending('producer did not emit the entire linked tuple')
+                received={b:outputs[a] for a,b in pairs}
+                if any(not typed.contains(tf[k]['domain'],v) for k,v in received.items()) or any(eval_expr(c,received,{}) is not True for c in receiving):
+                    return {'relation_status':'refuted','relation_counterexample':received,
+                            'relation_source_rule':selected[0]['id'],
+                            'relation_reason':'producer allowed tuple violates receiving Operation relation'}
+                count+=1
+        if not count:return pending('no nonempty producer relation')
+        return {'relation_status':'proved','relation_scope':'source-bound-local-output-to-input-constraint-inclusion',
+                'relation_outcomes_checked':count}
+    except (Blocked,ValueError,KeyError,TypeError,ArithmeticError):return pending('unsupported finite relation expression')
+
+
 def compose(model_paths,binding_path=None):
     if len(model_paths)<2:raise CompositionError('composition requires >=2 Processes')
-    models={};hashes={}
+    models={};hashes={};model_files={}
     for path in model_paths:
         raw=Path(path).read_bytes();model=json.loads(raw)
         pid=model.get('process')
         if not isinstance(pid,str) or not pid or pid in models:
             raise CompositionError('duplicate or missing Process ID')
-        models[pid]=model;hashes[pid]=digest(raw)
+        models[pid]=model;hashes[pid]=digest(raw);model_files[pid]=path
     binding={'schema':'cat-process-bindings/v1','links':[]}
     binding_hash=None
     if binding_path is not None:
@@ -271,6 +392,14 @@ def compose(model_paths,binding_path=None):
         raise CompositionError('invalid composition binding schema')
     if binding.get('model_sha256',hashes)!=hashes:
         raise CompositionError('composition model hash mismatch')
+    source_conformance={};source_hashes={}
+    if binding.get('source_assemblies') is not None:
+        assemblies,source_hashes=composition_source_inputs(binding_path)
+        if binding.get('model_sha256')!=hashes:
+            raise CompositionError('Source-bound composition requires exact model hash inventory')
+        source_conformance=_conform_sources(models,model_files,assemblies,hashes)
+        if composition_source_inputs(binding_path)[1]!=source_hashes:
+            raise CompositionError('composition Source changed during conformance')
     edges=[]
     for model in models.values():edges.extend(_bounds(model))
     unresolved=[];proven=[];seen=set()
@@ -281,7 +410,9 @@ def compose(model_paths,binding_path=None):
              link.get('target_pi'),link.get('source_operation'),link.get('target_operation'))
         if key in seen:raise CompositionError('duplicate connection link')
         seen.add(key)
-        proven.append(_link(link,models))
+        verified=_link(link,models)
+        if source_conformance:verified.update(_check_finite_connection(verified,models))
+        proven.append(verified)
     # Each validated link discharges both the sender's outgoing declaration
     # and the receiver's incoming declaration; neither proves external effects.
     bound_pairs=set()
@@ -354,6 +485,8 @@ def compose(model_paths,binding_path=None):
                                 or any(not x['external_effects_verified'] for x in proven)) else 'passed'
     reason=('typed connections match where bound; cross-Process effect/interleaving proof still required'
             if statuses=='inconclusive' else 'all declared boundaries and external effects proved')
+    if any(x.get('relation_status')=='refuted' for x in proven):
+        statuses='blocked';reason='declared output tuple violates receiving PI relation'
     if unverified_external_effects:
         reason+='; external Action writes have no independent execution receipt'
     return {'schema':'cat-process-composition/v1','status':statuses,
@@ -361,6 +494,7 @@ def compose(model_paths,binding_path=None):
             'bindings':proven,'unresolved_connections':unresolved,
             'unproved_local_processes':unproved_local,
             'unverified_external_effects':unverified_external_effects,
+            **({'source_conformance':source_conformance,'source_sha256':source_hashes} if source_conformance else {}),
             'reason':reason}
 
 def main(argv=None):
