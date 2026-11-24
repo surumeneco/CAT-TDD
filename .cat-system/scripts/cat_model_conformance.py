@@ -356,7 +356,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                           and all(doc['status']=='confirmed' for doc in rule_docs))
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects,
-        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed)
+        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed,effect_fields)
     from cat_compile_v2 import parse_expr_text
     invariants={proof['rule_id']:parse_expr_text(proof['scope'][len('initial-state-relation '):])
                 for proof in intrinsic_proofs if proof['requirement']=='@cat:finite-state-guard-invariant/v1'}
@@ -567,7 +567,7 @@ def _source_finite_invariant(scope, roles, domains, tces, checks, rejected):
 
 
 def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects,
-                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False):
+                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False,source_fields=None):
     def resolved(d):
         if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
         t=d['type']
@@ -612,6 +612,20 @@ def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, ef
                     'proof_method':'cat:intrinsic-model/v1',
                     'scope':scope,'status':'passed',
                 })
+    if confirmed and source_fields is not None:
+        from cat_compile_v2 import parse_expr_text
+        from catlib import independent_transition_relation
+        invariants=[parse_expr_text(proof['scope'][len('initial-state-relation '):])
+                    for proof in proofs if proof['requirement']=='@cat:finite-state-guard-invariant/v1']
+        for document in rule_docs:
+            if document['process']!=process or document['kind']!='domain-spec' or not document['scope_verified']:continue
+            for rule in document['rules']:
+                if rule.get('requirement')!='@cat:finite-transition-relation/v1' or rule.get('verification_contract')!='cat:intrinsic-model/v1':continue
+                if independent_transition_relation.verify(rule['condition'],source_fields,pi_docs,tces,effect_checks or {},rejected,invariants):
+                    proofs.append({'rule_id':rule['id'],'source_artifact':document['id'],
+                        'source_sha256':document['sha256'],'requirement':rule['requirement'],
+                        'verification_contract':'cat:intrinsic-model/v1','proof_method':'cat:intrinsic-model/v1',
+                        'scope':rule['condition'],'status':'passed'})
     return sorted(proofs,key=lambda item:item['rule_id'])
 
 
