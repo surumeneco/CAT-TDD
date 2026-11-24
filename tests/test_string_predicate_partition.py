@@ -64,7 +64,7 @@ class ExactStringLiteralPartitionTests(unittest.TestCase):
                 allow_draft=True, allow_partial=True)
             self.assertEqual(model['coverage_checks']['submit']['result'], 'conflict')
 
-    def test_dynamic_ref_comparison_is_not_falsely_proved(self):
+    def test_direct_ref_equality_has_exact_partition(self):
         with tempfile.TemporaryDirectory() as td:
             p, pi, tce = fixture(Path(td),
                 first='input.enabled == input.other',
@@ -74,7 +74,11 @@ class ExactStringLiteralPartitionTests(unittest.TestCase):
                 '| input.enabled | receive | string | required |\n'
                 '| input.other | receive | string | required |'), encoding='utf-8')
             model = load(p, pi, tce, allow_draft=True, allow_partial=True)
-            self.assertEqual(model['coverage_checks']['submit']['result'], 'unproven')
+            check = model['coverage_checks']['submit']
+            self.assertEqual(check['result'], 'proved')
+            self.assertEqual(check['proof_method'], 'string-reference-equality-partition/v1')
+            self.assertEqual(check['partition_fields'], ['input.enabled', 'input.other'])
+            self.assertEqual(check['abstract_state_count'], 4)
 
     def test_transform_before_equality_cannot_claim_exact_partition(self):
         with tempfile.TemporaryDirectory() as td:
