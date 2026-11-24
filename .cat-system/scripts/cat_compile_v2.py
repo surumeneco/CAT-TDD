@@ -1445,6 +1445,50 @@ def _presence_cases(domain,presence):
     return ([typed.MISSING,*values] if presence=='optional' else values)
 
 
+def _guard_invariant_exprs(proofs):
+    """Only opt-in certificates may restrict the finite Guard universe."""
+    return {p['rule_id']:parse_expr_text(p['scope'][len('initial-state-relation '):])
+            for p in proofs if p.get('requirement')=='@cat:finite-state-guard-invariant/v1'
+            and p.get('status')=='passed' and p.get('scope','').startswith('initial-state-relation ')}
+
+
+def _proved_guard_invariants(documents, fields, process, rules, checks, confirmed):
+    if not confirmed:return {}
+    proved={}
+    for doc in documents:
+        if doc['process']!=process or doc['kind']!='domain-spec' or not doc['scope_verified']:continue
+        for rule in doc['rules']:
+            scope=rule.get('condition','')
+            if (rule.get('requirement')!='@cat:finite-state-guard-invariant/v1'
+                    or rule.get('verification_contract')!='cat:intrinsic-model/v1'
+                    or not scope.startswith('initial-state-relation ')):continue
+            try:
+                expr=parse_expr_text(scope[len('initial-state-relation '):])
+                refs=sorted(used_refs(expr,{}))
+                if not refs or any(fields.get(r,{}).get('role')!='state' for r in refs):continue
+                if inspect_expr(expr,fields,{})!='boolean':continue
+                dims=[typed.finite_values(fields[r]['domain']) for r in refs]
+                if any(not d for d in dims) or __import__('math').prod(map(len,dims))>4096:continue
+                states=[dict(zip(refs,v)) for v in itertools.product(*dims)]
+                valid=[env for env in states if eval_expr(expr,env,{}) is True]
+                if not valid:continue
+                preserves=True
+                for row in rules:
+                    for n,out in enumerate(row['allowed'],1):
+                        writes=[(i,w) for i,w in enumerate(out['write'],1) if w['target'] in refs]
+                        if any(used_refs(w['expr'],{})-set(refs) or checks.get(
+                            f"{row['source_artifact']}#{row['id']}:{n}:{i}:{w['target']}",{}).get('result')!='proved'
+                            for i,w in writes):preserves=False;break
+                        for env in valid:
+                            after={**env,**{w['target']:eval_expr(w['expr'],env,{}) for _,w in writes}}
+                            if eval_expr(expr,after,{}) is not True:preserves=False;break
+                        if not preserves:break
+                    if not preserves:break
+                if preserves:proved[rule['id']]=expr
+            except (Blocked,KeyError,TypeError,ValueError,ArithmeticError):continue
+    return proved
+
+
 def _active_pi_constraints(model, trigger):
     """Constraints on a PI are obligations only at that PI's accepted operation.
 
@@ -1911,6 +1955,14 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             require(not unavailable,
                     f'TCE {rule["id"]} reads Observation unavailable at Trigger {rule["trigger"]}: {unavailable}')
 
+    effect_checks=_effect_totality_checks(
+        rules,fields,definitions,pi_operations=pi_operations,
+        operation_presence=operation_presence)
+    guard_invariants=_proved_guard_invariants(rule_docs,fields,p['process'],rules,effect_checks,
+        all(fm['status']=='confirmed' for _,fm in files))
+    intrinsic_proofs=semantic_intrinsic_rules.evaluate(
+        rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
+        operation_presence,effect_checks,guard_invariants)
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
     # operation owns its output and every TCE alternative respects the
@@ -1934,6 +1986,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         scoped_constraints = ([x['expr'] for x in pi_constraint_scopes
                                if trigger in x['triggers']]
                               if contract=='markdown-v2' else constraints)
+        has_pi_constraints=bool(scoped_constraints)
+        scoped_constraints=[*scoped_constraints,*guard_invariants.values()]
         relevant=set().union(
             *(used_refs(r['when'],definitions) for r in rr),
             *(used_refs(c,definitions) for c in scoped_constraints)) if rr or scoped_constraints else set()
@@ -2080,7 +2134,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                   'reason':'no admissible Source-constrained Guard state',
                                   'guard_refs':ordered,
                                   'unreachable_rules':sorted(unreachable),
-                                  'excluded_by_pi_constraints':bool(scoped_constraints)}
+                                  'excluded_by_pi_constraints':has_pi_constraints}
             presence_unproven.update(special & relevant)
             continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
@@ -2089,7 +2143,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                'overlaps':overlaps[:16],'uncovered':gaps[:64],
                'uncovered_count':len(gaps) if not partition_fields else None,
                'unreachable_rules':sorted(unreachable),
-               'excluded_by_pi_constraints':bool(scoped_constraints)}
+               'excluded_by_pi_constraints':has_pi_constraints}
+        if guard_invariants:check['guard_invariant_rule_ids']=sorted(guard_invariants)
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
@@ -2133,12 +2188,6 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     # declares one of the exact, fully decidable model predicates.
     # Runtime fixtures and free-text Rule verification do not qualify.
     # Establish selected Effect value totality before certifying a fresh output.
-    effect_checks=_effect_totality_checks(
-        rules,fields,definitions,pi_operations=pi_operations,
-        operation_presence=operation_presence)
-    intrinsic_proofs=semantic_intrinsic_rules.evaluate(
-        rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
-        operation_presence,effect_checks)
     proven_rule_ids={proof['rule_id'] for proof in intrinsic_proofs}
     for rule in rule_obligations:
         if rule['id'] in proven_rule_ids:
@@ -2314,6 +2363,8 @@ def expand_cases(model, vectors):
         # ordinary read still fails inside eval_expr and cannot become an oracle.
         require(all(eval_expr(c,env,defs) for c in _active_pi_constraints(model,test['trigger'])),
                 f'{test["id"]}: violates PI combination constraint')
+        require(all(eval_expr(c,env,defs) for c in _guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()),
+                f'{test["id"]}: violates proved state invariant')
         rule=match_rules(model,test['trigger'],env)
         defs={d['id']:d for d in model['definitions']}
         allowed=[]
@@ -2395,7 +2446,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                        or fields[name].get('source_pi') in bindings])
         domains=[]
         rules_here=[r for r in model['rules'] if r['trigger']==trigger]
-        predicates=[*_active_pi_constraints(model,trigger),*(r['when'] for r in rules_here)]
+        predicates=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values(),*(r['when'] for r in rules_here)]
         observed=set().union(*(used_refs(expr,defs) for expr in predicates)) if predicates else set()
         for rule in rules_here:
             for outcome in rule['allowed']:
@@ -2453,7 +2504,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 'test-selection exceeds configured 65536 combinations')
         for values in itertools.product(*domains):
             env=dict(zip(variable_ids,values))
-            if not all(eval_expr(c,env,defs) for c in _active_pi_constraints(model,trigger)):
+            if not all(eval_expr(c,env,defs) for c in [*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()]):
                 continue
             hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
             require(len(hit)==1,f'confirmed TestModel selection found {len(hit)} rules at {trigger}')
