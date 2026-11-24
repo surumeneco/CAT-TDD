@@ -42,7 +42,7 @@ INT = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')
 SAFE_INT = 9007199254740991
 OPS = {'eq','ne','lt','le','gt','ge','and','or','not','add','sub','mul',
        'div','floor','abs','length','concat','to-int','set-add','set-remove','call',
-       'is-missing','is-undefined','is-present'}
+       'is-missing','is-undefined','is-present','member'}
 
 _PRESENT_GUARD_VALUE=object()
 
@@ -629,6 +629,48 @@ def literal_type(v):
     if isinstance(v,list):return 'sequence'
     return 'null'
 
+def _record_shape(domain):
+    while domain.get('type')=='reference' and domain.get('resolved'):
+        domain=domain['of']
+    return domain if domain.get('type')=='record' and domain.get('resolved') else None
+
+
+def _member_domain(expr,fields):
+    if expr.get('op')!='member':return None
+    args=expr.get('args',[])
+    require(set(expr)=={'op','args'} and len(args)==2 and set(args[0])=={'ref'}
+            and set(args[1])=={'literal'} and isinstance(args[1]['literal'],str),'invalid member projection')
+    parent=fields.get(args[0]['ref'])
+    require(parent and parent['role']=='input' and parent.get('presence','required')=='required',
+            'member projection requires declared required PI input record')
+    record=_record_shape(parent['domain'])
+    require(record is not None,'member projection requires resolved record')
+    member=next((f for f in record['fields'] if f['id']==args[1]['literal']),None)
+    require(member and member['presence']=='required','member projection requires declared required member')
+    domain=member['domain']
+    while domain.get('type')=='reference' and domain.get('resolved'):domain=domain['of']
+    require(domain.get('type') in ('boolean','integer','real','string','enum'),
+            'member projection supports only nonnullable scalar Domain')
+    return domain
+
+
+def _bind_member_refs(expr,fields):
+    # Existing exact field IDs have precedence. A projection is one member
+    # level, explicitly bound to the parent field, not another wire field.
+    if set(expr)=={'ref'} and expr['ref'] not in fields and not expr['ref'].startswith('param.'):
+        parent,sep,member=expr['ref'].rpartition('.')
+        if sep and parent in fields and _record_shape(fields[parent]['domain']) is not None:
+            bound={'op':'member','args':[{'ref':parent},{'literal':member}]}
+            _member_domain(bound,fields)
+            expr.clear();expr.update(bound);return
+    for arg in expr.get('args',[]):_bind_member_refs(arg,fields)
+
+
+def _member_parents(expr):
+    if expr.get('op')=='member':return {expr['args'][0]['ref']}
+    return set().union(*(_member_parents(a) for a in expr.get('args',[]))) if expr.get('args') else set()
+
+
 def inspect_expr(expr, fields, definitions, params=(), stack=()):
     """Conservative AST type checker; unsupported conversions fail, never coerce."""
     require(isinstance(expr,dict),'expression must be AST object')
@@ -648,6 +690,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     check_keys(expr,['op','args'],['name'],where='operator expression')
     op=expr['op']; require(op in OPS,'unsupported operator '+str(op))
     args=expr['args']; require(isinstance(args,list),'operator args must be array')
+    if op=='member':return _member_domain(expr,fields)['type']
     if op in ('is-missing','is-undefined','is-present'):
         require(len(args)==1 and isinstance(args[0],dict) and set(args[0])=={'ref'},
                 op+' requires exactly one direct PI field reference')
@@ -675,11 +718,23 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
         require(all(t in permitted or t=='parameter' for t in types),
                 f'{op}: invalid operand types {types}; expected {sorted(permitted)}')
     if op in ('eq','ne'):
+        if any(_member_parents(a) for a in args):
+            def comparable(a,t):
+                d=_member_domain(a,fields) if a.get('op')=='member' else fields.get(a.get('ref'),{}).get('domain',{})
+                if d and d.get('type')=='enum':
+                    kinds={literal_type(x) for x in d['values']}
+                    require(len(kinds)==1,'heterogeneous enum member comparison unsupported')
+                    return next(iter(kinds))
+                return t
+            require(comparable(args[0],types[0])==comparable(args[1],types[1]),'member comparison type mismatch')
         require(not any(ref in fields and typed.has_semantic_domain(fields[ref]['domain'])
                         for ref in used_refs(expr,definitions)),
                 'typed JSON/instant expression requires explicit domain binding')
         return 'boolean'
-    if op in ('lt','le','gt','ge'):types_are({'integer','real'});return 'boolean'
+    if op in ('lt','le','gt','ge'):
+        types_are({'integer','real'})
+        if any(_member_parents(a) for a in args):require(types[0]==types[1],'member comparison type mismatch')
+        return 'boolean'
     if op in ('and','or','not'):types_are({'boolean'});return 'boolean'
     if op in ('add','sub','mul'):
         types_are({'integer','real'});return 'real' if 'real' in types else 'integer'
@@ -730,6 +785,11 @@ def eval_expr(expr, env, definitions, params=None):
             if op=='or' and value:return True
         return op=='and'
     xs=[eval_expr(x,env,definitions,params) for x in expr['args']]
+    if op=='member':
+        require(len(xs)==2 and isinstance(xs[0],dict) and isinstance(xs[1],str) and xs[1] in xs[0]
+                and xs[0][xs[1]] is not typed.MISSING and xs[0][xs[1]] is not typed.UNDEFINED,
+                'required record member absent')
+        return deepcopy(xs[0][xs[1]])
     if op=='call':
         f=definitions[expr['name']];return eval_expr(f['body'],env,definitions,dict(zip(f['params'],xs)))
     try:
@@ -836,6 +896,9 @@ def _symbolic_effect_containment(expr, target_domain, fields):
     """
     op=expr.get('op')
     args=expr.get('args',[])
+    if op=='member':
+        try:return semantic_subtyping.subset(_member_domain(expr,fields),target_domain) is True
+        except Blocked:return None
     if op=='add' and len(args)>=2:
         domains=[]
         for arg in args:
@@ -1123,6 +1186,93 @@ def _has_pair_order_comparison(node):
     if not isinstance(node,dict):return False
     return (node.get('op') in ('lt','le','gt','ge')
             or any(_has_pair_order_comparison(x) for x in node.get('args',[])))
+
+
+def _record_projection_values(fields,names,predicates,presence,definitions,member_exprs=()):
+    """Exact Cartesian cells of projected scalar members; reassemble wire record.
+
+    Temporary analysis IDs never escape into the Model or vector payload.
+    A whole-record read or unknown relation disables this proof fragment.
+    """
+    parents=set().union(*(_member_parents(p) for p in [*predicates,*member_exprs]))
+    if not parents:return {}
+    if not parents<=set(names):return {}
+    flat={name:fields[name] for name in names if name not in parents}
+    flat_presence={n:presence[n] for n in flat if n in presence}
+    groups={};keys={}
+    for parent in sorted(parents):
+        if presence.get(parent)!='required':return {}
+        shape=_record_shape(fields[parent]['domain'])
+        if shape is None:return {}
+        groups[parent]=[]
+        for member in shape['fields']:
+            mid=member['id'];key='@member:'+parent+':'+mid
+            if key in flat or key in fields:return {}
+            if member['presence'] in ('optional','absent'):
+                continue
+            if member['presence']!='required':return {}
+            d=member['domain']
+            while d.get('type')=='reference' and d.get('resolved'):d=d['of']
+            if d.get('type') not in ('boolean','integer','real','string','enum'):return {}
+            keys[parent,mid]=key;groups[parent].append((mid,key))
+            flat[key]={'id':key,'domain':d,'role':'input','presence':'required'}
+            flat_presence[key]='required'
+    def rewrite(node):
+        if node.get('op')=='member':
+            parent,mid=node['args'][0]['ref'],node['args'][1]['literal']
+            if (parent,mid) not in keys:raise Blocked('projection not in required member scope')
+            return {'ref':keys[parent,mid]}
+        if node.get('ref') in parents or node.get('op')=='call':raise Blocked('whole record or opaque call in projection partition')
+        return ({**node,'args':[rewrite(a) for a in node['args']]} if 'args' in node else node)
+    try:clauses=[rewrite(p) for p in predicates]
+    except Blocked:return {}
+    used=set().union(*(used_refs(p,definitions) for p in clauses)) if clauses else set()
+    if not used<=set(flat):return {}
+    integer_pair=_integer_reference_equality_values(flat,used,clauses,flat_presence,definitions)
+    integer_range={} if integer_pair else _integer_reference_range_values(flat,used,clauses,flat_presence,definitions)
+    strings={n for n in used if flat[n]['domain']=={'type':'string'} and flat_presence.get(n,'required')=='required'}
+    string_values={}
+    if 2<=len(strings)<=5:
+        constants=set();pair=False
+        def string_clause(n):
+            nonlocal pair
+            if not strings.intersection(used_refs(n,definitions)):return True
+            args=n.get('args',[])
+            if n.get('op') in ('and','or','not'):return all(string_clause(a) for a in args)
+            if n.get('op') not in ('eq','ne') or len(args)!=2:return False
+            if all(set(a)=={'ref'} and a['ref'] in strings for a in args):pair=True;return True
+            for a,b in (args,args[::-1]):
+                if set(a)=={'ref'} and a['ref'] in strings and set(b)=={'literal'} and type(b['literal']) is str:
+                    constants.add(b['literal']);return True
+            return False
+        if all(string_clause(c) for c in clauses) and pair:
+            fresh=[];candidate=''
+            while len(fresh)<len(strings):
+                if candidate not in constants:fresh.append(candidate)
+                candidate+='\x00'
+            string_values={n:[*sorted(constants),*fresh] for n in strings}
+    values={}
+    for name,field in flat.items():
+        domain=field['domain'];pr=flat_presence.get(name,'required')
+        candidates=integer_range.get(name) or integer_pair.get(name) or string_values.get(name)
+        if candidates is None:
+            candidates=_presence_cases(domain,pr) if name in flat_presence else typed.finite_values(domain)
+        if candidates is None and name not in used and pr=='optional':candidates=[typed.MISSING]
+        if candidates is None and pr=='required':
+            for solver in (semantic_interval_partition.integer_partition_values,semantic_string_partition.string_partition_values,semantic_interval_partition.real_partition_values):
+                candidates=solver(domain,name,clauses,allow_unused=name not in used)
+                if candidates is not None:break
+        if candidates is None or not candidates:return {}
+        # All unobserved variables are irrelevant to this Guard relation;
+        # choose one valid witness, not a sampled truth cell.
+        values[name]=candidates if name in used else candidates[:1]
+    result={n:values[n] for n in names if n not in parents}
+    for parent,members in groups.items():
+        dims=[values[key] for _,key in members]
+        if __import__('math').prod(map(len,dims))>65536:return {}
+        result[parent]=[dict(zip((mid for mid,_ in members),cell)) for cell in itertools.product(*dims)]
+        if not all(typed.contains(fields[parent]['domain'],value) for value in result[parent]):return {}
+    return result
 
 
 def _presence_cases(domain,presence):
@@ -1447,8 +1597,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             for param in d['params']:
                 (semantic_ident(param,'DomainRule param',False) if contract=='markdown-v2' else ident(param,'DomainRule param'))
             unique(d['params'],'DomainRule params');definitions[d['id']]=d
-        for d in definitions.values():inspect_expr(d['body'],fields,definitions,d['params'])
+        for d in definitions.values():
+            require(not _member_parents(d['body']),'record member projections must be bound directly in PI/TCE, not hidden in DomainRule')
+            inspect_expr(d['body'],fields,definitions,d['params'])
     for predicate in constraints:
+        if contract=='markdown-v2':_bind_member_refs(predicate,pi_fields)
+        else:require(not _member_parents(predicate),'record projection requires markdown-v2 Source')
         require(inspect_expr(predicate,pi_fields,definitions)=='boolean','PI constraint must be boolean')
 
     # A flattened inventory is retained for old source/model readers, but
@@ -1467,6 +1621,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         accepted=sorted({op['trigger'] for op in pi_operations
                          if op['source_pi']==pi_id and op['direction']=='accept'})
         active=accepted if input_only else []
+        for trigger in active:
+            for parent in _member_parents(predicate):
+                require(_trigger_input_presence(fields[parent],_input_operation_bindings(pi_operations,trigger),operation_presence)=='required',
+                        'record projection parent is not required on accepted Operation')
         pi_constraint_scopes.append({'source_pi':pi_id,'expr':predicate,
                                      'triggers':active})
         if not active and contract=='markdown-v2':
@@ -1485,6 +1643,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             check_keys(r,['id','trigger','when','allowed'],where='TCE behavior')
             (semantic_ident(r['id'],'TCE behavior id') if contract=='markdown-v2' else ident(r['id'],'TCE rule id'))
             require(r['trigger'] in {t['id'] for t in p['triggers']},'undeclared trigger '+str(r['trigger']))
+            if contract=='markdown-v2':_bind_member_refs(r['when'],fields)
+            else:require(not _member_parents(r['when']),'record projection requires markdown-v2 Source')
             require(inspect_expr(r['when'],fields,definitions)=='boolean','TCE condition must be boolean')
             require(not any(fields[x]['role'] in ('output','action') for x in used_refs(r['when'],definitions)),'Condition reads non-observable output/action')
             require(isinstance(r['allowed'],list) and r['allowed'],'allowed results must be nonempty')
@@ -1495,6 +1655,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 for e in outcome['write']:
                     check_keys(e,['target','expr'],where='Effect')
                     require(e['target'] in fields and fields[e['target']]['role'] in ('state','output','action'),'Effect target not declared/actuable '+str(e['target']))
+                    if contract=='markdown-v2':_bind_member_refs(e['expr'],fields)
+                    else:require(not _member_parents(e['expr']),'record projection requires markdown-v2 Source')
                     produced=inspect_expr(e['expr'],fields,definitions)
                     expected=fields[e['target']]['domain']['type']
                     # Direct references preserve their full declared Domain, not only
@@ -1516,6 +1678,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                     typed.same(source_domain,target_domain['of'])))
                         require(inclusion is True,
                                 f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    elif expression.get('op')=='member':
+                        require(semantic_subtyping.subset(_member_domain(expression,fields),target_domain) is True,
+                                f'Effect {e["target"]}: projected member Domain mismatch')
                     elif 'literal' in expression:
                         # A literal that has the right broad kind may still fall
                         # outside a range, format, collection, or enum Domain.
@@ -1534,6 +1699,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                         expr=e['expr']
                         if 'literal' in expr:
                             require(in_domain(fields[e['target']]['domain'],expr['literal']),'enum literal not in Effect target domain')
+                        elif expr.get('op')=='member':
+                            require(semantic_subtyping.subset(_member_domain(expr,fields),fields[e['target']]['domain']) is True,
+                                    'member enum not subset of effect enum')
                         elif 'ref' in expr and expr['ref'] in fields and fields[expr['ref']]['domain']['type']=='enum':
                             require(all(in_domain(fields[e['target']]['domain'],x) for x in fields[expr['ref']]['domain']['values']),'source enum not subset of effect enum')
                         else:
@@ -1556,9 +1724,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         for rule in rules:
             accepted=[op for op in pi_operations if op['direction']=='accept'
                       and op.get('trigger')==rule['trigger']]
+            member_parents=_member_parents(rule['when'])
+            for outcome in rule['allowed']:
+                for write in outcome['write']:member_parents.update(_member_parents(write['expr']))
             if len(accepted)>1:
+                require(not member_parents,'member projection requires unambiguous accepted Operation')
                 continue  # The existing ambiguous-Operation audit fails closed.
             input_owners=_input_operation_bindings(pi_operations,rule['trigger'])
+            for parent in member_parents:
+                require(len(accepted)==1 and accepted[0]['source_pi']==fields[parent].get('source_pi') and
+                        _trigger_input_presence(fields[parent],input_owners,operation_presence)=='required',
+                        'member projection parent unavailable or nonrequired on this Operation')
             refs=used_refs(rule['when'],definitions)
             for outcome in rule['allowed']:
                 for write in outcome['write']:
@@ -1623,11 +1799,14 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         partition_fields=[]
         partition_kinds=set()
         predicates=[*scoped_constraints,*(r['when'] for r in rr)]
+        projected=_record_projection_values(fields,ordered,predicates,input_presence,definitions)
         integer_pair=_integer_reference_equality_values(
             fields,ordered,predicates,input_presence,definitions)
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,ordered,predicates,input_presence,definitions))
         for field_id in ordered:
+            if projected:
+                domainvalues.append(projected[field_id]);partition_fields.append(field_id);partition_kinds.add('record_member');continue
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
@@ -1745,6 +1924,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
+                    else 'required-record-member-partition/v1' if partition_kinds=={'record_member'}
                     else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
                     else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
@@ -2050,11 +2230,15 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 for write in outcome['write']:
                     observed.update(used_refs(write['expr'],defs))
         guard_names=set().union(*(used_refs(predicate,defs) for predicate in predicates)) if predicates else set()
+        projected=_record_projection_values(fields,variable_ids,predicates,presence,defs,
+            [w['expr'] for r in rules_here for outcome in r['allowed'] for w in outcome['write']])
         integer_pair=_integer_reference_equality_values(
             fields,guard_names,predicates,presence,defs)
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,guard_names,predicates,presence,defs))
         for field_id in variable_ids:
+            if projected:
+                domains.append(projected[field_id]);continue
             field=fields[field_id]
             values=(_presence_cases(field['domain'],presence[field_id])
                     if field_id in presence else typed.finite_values(field['domain']))
@@ -2339,6 +2523,10 @@ def format_expr(expr, params=(), language='en'):
         ref=expr['ref']
         return ref[6:] if ref.startswith('param.') and ref[6:] in params else ref
     op=expr['op'];args=[format_expr(x,params,language) for x in expr['args']]
+    if op=='member':
+        require(set(expr)=={'op','args'} and len(args)==2 and set(expr['args'][0])=={'ref'}
+                and set(expr['args'][1])=={'literal'} and isinstance(expr['args'][1]['literal'],str),'invalid projected Model expression')
+        return 'member['+args[0]+', '+args[1]+']'
     symbols={'eq':'==','ne':'!=','lt':'<','le':'<=','gt':'>','ge':'>=','add':'+','sub':'-','mul':'*','div':'/'}
     if op in symbols:return '('+(' '+symbols[op]+' ').join(args)+')'
     if op in ('and','or'):

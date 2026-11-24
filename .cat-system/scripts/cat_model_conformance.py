@@ -97,6 +97,46 @@ def split_list(value):
     return [x.strip() for x in value.split(',') if x.strip()]
 
 
+def _source_bind_member_refs(expr,roles,domains,presences):
+    """Re-derive exact parent/member bindings from parsed Source declarations."""
+    if set(expr)=={'ref'} and expr['ref'] not in roles:
+        text=expr['ref'];prefix,dot,name=text.rpartition('.')
+        if dot and prefix in domains:
+            shape=domains[prefix]
+            while shape.get('type')=='reference' and shape.get('resolved'):shape=shape['of']
+            if shape.get('type')=='record':
+                require(roles[prefix]=='input' and presences.get(prefix)=='required' and shape.get('resolved'),
+                        'Source member parent is not a required resolved PI input')
+                selected=[m for m in shape['fields'] if m['id']==name]
+                require(len(selected)==1 and selected[0]['presence']=='required','Source member not declared required')
+                d=selected[0]['domain']
+                while d.get('type')=='reference' and d.get('resolved'):d=d['of']
+                require(d.get('type') in ('boolean','integer','real','string','enum'),'Source member is not a supported scalar')
+                expr.clear();expr.update(op='member',args=[{'ref':prefix},{'literal':name}]);return {prefix}
+    if expr.get('op')=='member':
+        raise Blocked('Source member notation must be a declared dotted reference')
+    result=set()
+    for arg in expr.get('args',[]):result.update(_source_bind_member_refs(arg,roles,domains,presences))
+    return result
+
+
+def _projection_inventory(rules,constraints,scopes=()):
+    # Text rendering is not an AST proof: a forged raw ref string could
+    # spell the projected expression. Compare the exact typed expression
+    # structure at each Source location for the new contract.
+    def projected(n):return n.get('op')=='member' or any(projected(a) for a in n.get('args',[]))
+    result={}
+    def add(key,expr):
+        if projected(expr):result[key]=expr
+    for i,expr in enumerate(constraints):add('constraint:'+str(i),expr)
+    for i,scope in enumerate(scopes):add('constraint-scope:'+str(i),scope['expr'])
+    for rule in rules:
+        add('guard:'+rule['id'],rule['when'])
+        for i,outcome in enumerate(rule['allowed']):
+            for j,write in enumerate(outcome['write']):add(f"effect:{rule['id']}:{i}:{j}",write['expr'])
+    return result
+
+
 def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_rules=(), domain_specs=(), allow_draft=False):
     pf, p = read_artifact(process_path, 'process', allow_draft)
     pi_paths=list(pi_path) if isinstance(pi_path,(list,tuple)) else [pi_path]
@@ -153,6 +193,41 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
     observation_availability={item['id']:(item['source'],tuple(item.get('available_on',[]))
                                             if 'available_on' in item else None)
                               for item in p.get('observations',[])}
+
+    if pf.get('semantic_contract')=='markdown-v2':
+        # Resolve from Source, not Model fields or the Compiler binding helper.
+        from cat_compile_v2 import inspect_expr
+        source_fields={name:{'id':name,'role':role,'domain':domains[name],
+                             'presence':presence.get(name,'required')} for name,role in fields.items()}
+        defs={d['id']:d for d in domain['definitions']} if domain else {}
+        def bound(expr):
+            parents=_source_bind_member_refs(expr,fields,domains,presence)
+            if parents:inspect_expr(expr,source_fields,defs)
+            return parents
+        def require_active(parents,trigger):
+            accepts=[(fm['id'],op) for _,fm,pi in pi_docs for op in pi.get('operations',[])
+                     if op['direction']=='accept' and op.get('trigger')==trigger]
+            require(not parents or len(accepts)<=1,'ambiguous Source record input Operation')
+            for parent in parents:
+                owner=field_owners[parent]
+                selected=[op for o,op in accepts if o==owner]
+                require(len(selected)==1,'Source record input not active at Trigger')
+                overrides=[ov['presence'] for _,fm,pi in pi_docs if fm['id']==owner for ov in pi.get('operation_presence',[])
+                           if ov['operation']==selected[0]['id'] and ov['field']==parent]
+                require(len(overrides)<=1 and (overrides or [presence[parent]])==['required'],
+                        'Source record input not required on Operation')
+        for _,fm,pi in pi_docs:
+            for expr in pi.get('constraints',[]):
+                parents=bound(expr)
+                require(all(field_owners[p]==fm['id'] for p in parents),'Source record constraint crosses PI owner')
+                for op in pi.get('operations',[]):
+                    if op['direction']=='accept':require_active(parents,op['trigger'])
+        for _,_,tce in tces:
+            for rule in tce['rules']:
+                parents=bound(rule['when'])
+                for outcome in rule['allowed']:
+                    for effect in outcome['write']:parents.update(bound(effect['expr']))
+                require_active(parents,rule['trigger'])
 
     # Derive the PI-input availability constraint directly from Source. A
     # submitted Model with a forged `confirmed` flag must not bypass the
@@ -366,6 +441,10 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                                      r.get('verification_status','unverified')),
                                     r.get('source_sha256'),r.get('scope_binding'))
                              for d in rule_docs for r in d['rules']},
+        'projection_inventory': _projection_inventory(
+            [r for _,_,tce in tces for r in tce['rules']],
+            [expr for _,_,a in pi_docs for expr in a.get('constraints',[])],
+            [{'expr':expr} for _,_,a in pi_docs for expr in a.get('constraints',[])]),
         'constraints': tuple(format_expr(expr, language=tf.get('language', 'en')) for _,_,a in pi_docs for expr in a.get('constraints', [])),
         'definitions': definitions,
         'rules': rules,
@@ -810,6 +889,7 @@ def json_model(path):
         'presence_unproven':model.get('presence_unproven'),
         'unresolved_domains':model.get('unresolved_domains'),
         'unresolved_interfaces':model.get('unresolved_interfaces'),
+        'projection_inventory':_projection_inventory(model.get('rules',[]),model.get('pi_constraints',[]),model.get('pi_constraint_scopes',[])),
         'constraints': tuple(format_expr(expr, language=model.get('language', 'en'))
                              for expr in model.get('pi_constraints', [])),
         'constraint_scopes':sorted((e['source_pi'],tuple(e['triggers']),
@@ -839,7 +919,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                    'presence','field_owners','operation_owners','pi_boundaries')
     if Path(model).suffix.lower()=='.json':
         checks += ('process','pi_boundaries','operation_owners','field_owners','operation_presence','observation_availability','normative_rule_inputs','rule_obligations','domains','presence','named_type_definitions','intrinsic_rule_proofs','unverified_rule_ids','effect_checks','unverified_effect_ids','constraint_scopes','unbound_pi_constraints')
-        checks += ('source_semantic_map','local_coverage_requirements','pi_artifacts')
+        checks += ('source_semantic_map','local_coverage_requirements','pi_artifacts','projection_inventory')
     if Path(model).suffix.lower()=='.json':
         # These are fixed Compiler proof-scope declarations, not product
         # assumptions a submitting Model can silently strengthen or remove.
@@ -857,7 +937,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
         # and named type definitions contain typed literal values and must
         # retain scalar identity throughout their nested inventory.
         same=(semantic_types.same(actual.get(key),expected.get(key))
-              if key in ('domains','named_type_definitions','unbound_pi_constraints')
+              if key in ('domains','named_type_definitions','unbound_pi_constraints','projection_inventory')
               else actual.get(key)==expected.get(key))
         if not same:
             mismatches.append(key)
