@@ -18,7 +18,7 @@ def _reads(node, field):
         _reads(child, field) for child in node.get('args', []))
 
 
-def _constants(node, field):
+def _constants(node, field, allow_presence=False):
     if not isinstance(node, dict):
         return None
     if node.get('op') == 'call':
@@ -27,6 +27,8 @@ def _constants(node, field):
     if not _reads(node, field):
         return []
     op, args = node.get('op'), node.get('args')
+    if allow_presence and op in ('is-present','is-missing','is-undefined') and args==[{'ref':field}]:
+        return []
     if op in ('eq', 'ne') and isinstance(args, list) and len(args) == 2:
         for left, right in ((args[0], args[1]), (args[1], args[0])):
             if (isinstance(left, dict) and set(left) == {'ref'}
@@ -40,7 +42,7 @@ def _constants(node, field):
             return None
         found = []
         for arg in args:
-            nested = _constants(arg, field)
+            nested = _constants(arg, field, allow_presence)
             if nested is None:
                 return None
             found.extend(nested)
@@ -48,7 +50,7 @@ def _constants(node, field):
     return None
 
 
-def string_partition_values(domain, field, predicates, allow_unused=False):
+def string_partition_values(domain, field, predicates, allow_unused=False, allow_presence=False):
     """Give concrete representatives of exact eq/ne truth classes, or None.
 
     Only the unrestricted string Domain is eligible. Aliases, formatted
@@ -59,7 +61,7 @@ def string_partition_values(domain, field, predicates, allow_unused=False):
         return None
     found = []
     for predicate in predicates:
-        literals = _constants(predicate, field)
+        literals = _constants(predicate, field, allow_presence)
         if literals is None:
             return None
         found.extend(literals)

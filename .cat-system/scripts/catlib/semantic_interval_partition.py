@@ -19,7 +19,7 @@ def _reads(expr, field):
     return any(_reads(arg,field) for arg in expr.get('args',[]))
 
 
-def _thresholds(expr,field):
+def _thresholds(expr,field,allow_presence=False):
     if isinstance(expr,dict) and expr.get('op')=='call':
         # DomainRule bodies may read this field without an explicit call arg.
         return None
@@ -28,6 +28,8 @@ def _thresholds(expr,field):
     if not isinstance(expr,dict):
         return None
     op,args=expr.get('op'),expr.get('args')
+    if allow_presence and op in ('is-present','is-missing','is-undefined') and args==[{'ref':field}]:
+        return []
     if op in COMPARATORS and isinstance(args,list) and len(args)==2:
         for a,b in ((args[0],args[1]),(args[1],args[0])):
             if (isinstance(a,dict) and set(a)=={'ref'} and a['ref']==field
@@ -40,7 +42,7 @@ def _thresholds(expr,field):
             return None
         cuts=[]
         for arg in args:
-            sub=_thresholds(arg,field)
+            sub=_thresholds(arg,field,allow_presence)
             if sub is None:
                 return None
             cuts.extend(sub)
@@ -48,7 +50,7 @@ def _thresholds(expr,field):
     return None
 
 
-def integer_partition_values(domain,field,predicates,allow_unused=False):
+def integer_partition_values(domain,field,predicates,allow_unused=False,allow_presence=False):
     """Return exact predicate-class witnesses, or None if not soundly decidable.
 
     The returned witness count is not a finite cardinality of the Domain.
@@ -63,7 +65,7 @@ def integer_partition_values(domain,field,predicates,allow_unused=False):
     if low is not None and high is not None and low>high:return None
     cuts=[]
     for predicate in predicates:
-        sub=_thresholds(predicate,field)
+        sub=_thresholds(predicate,field,allow_presence)
         if sub is None:return None
         cuts.extend(sub)
     if not cuts:

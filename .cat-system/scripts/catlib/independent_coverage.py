@@ -50,7 +50,7 @@ def _presence_exclusive(node, name):
     return all(_presence_exclusive(item,name) for item in node.get('args',[]))
 
 
-def _independent_integer_cells(domain, field, clauses):
+def _independent_integer_cells(domain, field, clauses, allow_presence=False):
     # Independent from compiler's partition helper. Accept ONLY literal
     # comparisons of this integer field under Boolean composition.
     if not isinstance(domain,dict) or domain.get('type')!='integer':return None
@@ -68,6 +68,8 @@ def _independent_integer_cells(domain, field, clauses):
         if not reads(node):return True
         op=node.get('op')
         args=node.get('args',[])
+        if allow_presence and op in ('is-present','is-missing','is-undefined') and args==[{'ref':field}]:
+            return True
         if op in ('and','or','not') and isinstance(args,list):
             if (op=='not' and len(args)!=1) or (op!='not' and len(args)<2):return False
             return all(walk(part) for part in args)
@@ -89,7 +91,7 @@ def _independent_integer_cells(domain, field, clauses):
     return reps if reps and len(reps)<=LIMIT else None
 
 
-def _independent_string_cells(domain, field, clauses):
+def _independent_string_cells(domain, field, clauses, allow_presence=False):
     """Independent literal-equality truth cells, without compiler helpers."""
     if domain != {'type': 'string'}:
         return None
@@ -104,6 +106,8 @@ def _independent_string_cells(domain, field, clauses):
         if not mentions(node):
             return True
         op=node.get('op');args=node.get('args',[])
+        if allow_presence and op in ('is-present','is-missing','is-undefined') and args==[{'ref':field}]:
+            return True
         if op in ('and','or','not'):
             if (op=='not' and len(args)!=1) or (op!='not' and len(args)<2):
                 return False
@@ -345,6 +349,16 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                 if values is not None:
                     partition_fields.append(field)
                     partition_kinds.add('string')
+            if values is None and field in inputs and current_presence(field)=='optional':
+                representatives=_independent_integer_cells(domains[field],field,clauses,allow_presence=True)
+                kind='optional_integer'
+                if representatives is None:
+                    representatives=_independent_string_cells(domains[field],field,clauses,allow_presence=True)
+                    kind='optional_string'
+                if representatives is not None:
+                    values=[types.MISSING,*representatives]
+                    partition_fields.append(field)
+                    partition_kinds.add(kind)
             if values is None and field in integer_pair:
                 values=integer_pair[field]
                 partition_fields.append(field)
@@ -404,6 +418,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
+                    else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
                     else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
                     else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}

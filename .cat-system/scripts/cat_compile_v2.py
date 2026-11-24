@@ -1658,6 +1658,18 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 if values is not None:
                     partition_fields.append(field_id)
                     partition_kinds.add('string')
+            if values is None and input_presence.get(field_id)=='optional':
+                present=semantic_interval_partition.integer_partition_values(
+                    field['domain'],field_id,predicates,allow_presence=True)
+                kind='optional_integer'
+                if present is None:
+                    present=semantic_string_partition.string_partition_values(
+                        field['domain'],field_id,predicates,allow_presence=True)
+                    kind='optional_string'
+                if present is not None:
+                    values=[typed.MISSING,*present]
+                    partition_fields.append(field_id)
+                    partition_kinds.add(kind)
             if values is None and field_id in integer_pair:
                 values=integer_pair[field_id]
                 partition_fields.append(field_id)
@@ -1726,6 +1738,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
+                    else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
                     else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
                     else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}
@@ -2049,6 +2063,13 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                                    or presence[field_id]=='required'):
                 values=semantic_string_partition.string_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and presence.get(field_id)=='optional':
+                present=semantic_interval_partition.integer_partition_values(
+                    field['domain'],field_id,predicates,allow_unused=True,allow_presence=True)
+                if present is None:
+                    present=semantic_string_partition.string_partition_values(
+                        field['domain'],field_id,predicates,allow_unused=True,allow_presence=True)
+                if present is not None:values=[typed.MISSING,*present]
             if values is None and field_id in integer_pair:
                 values=integer_pair[field_id]
             require(values is not None,
