@@ -2,6 +2,8 @@
   "schema": "cat-routing/v2",
   "technology_skills": {
     "TypeScript": "tech-typescript",
+    "Node": "tech-node",
+    "NestJS": "tech-nestjs",
     "Vue": "tech-vue",
     "Vitest": "tech-vitest",
     "Playwright": "tech-playwright",

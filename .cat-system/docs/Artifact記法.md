@@ -553,7 +553,7 @@ Gate statusの日本語aliasは `成功 / 対象外 / 未実行 / 停止 / 不�
 
 ### Compilation
 
-決定論的コンパイルを使用するWorkだけ `Compilation / 変換` を追加する。TCEセルは`;`区切りで同一Processの複数confirmed TCEを列挙でき、closure/model生成ではassembled specificationとして扱う。`Conformance binding / 適合接続`は技術固有Inspectorが実装境界を仕様IDへ結び付ける機械設定であり、仕様そのものではない。 `Technology constraints / 技術制約接続` は採用済みのコンパイラ等の実装制約の検査設定への参照であり、PI適合証明とは独立する。
+決定論的コンパイルを使用するWorkだけ `Compilation / 変換` を追加する。TCEセルは`;`区切りで同一Processの複数confirmed TCEを列挙でき、closure/model生成ではassembled specificationとして扱う。`Conformance binding / 適合接続`は技術固有Inspectorが実装境界を仕様IDへ結び付ける機械設定であり、仕様そのものではない。 `Technology constraints / 技術制約接続` は採用済みのコンパイラ等の実装制約の検査設定への参照であり、PI適合証明とは独立する。 `Runtime constraints / 実行基盤制約接続` は採用済みNode/NestJS/PostgreSQLの限定された実runtime検査Bindingを参照する。
 
 ~~~md
 ## 変換

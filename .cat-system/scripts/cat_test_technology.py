@@ -59,7 +59,7 @@ def identity(cwd, argv, technologies):
     kind, test = command_kind(argv)
     if kind is None:
         return None
-    if not (('Vitest' in technologies and kind == 'vitest') or 'Playwright' in technologies):
+    if not (('Vitest' in technologies and kind == 'vitest') or 'Playwright' in technologies or (kind=='node-test' and any(t in technologies for t in ('Node','NestJS','PostgreSQL')))):
         return None
     try:
         node = subprocess.run(['node','--version'],cwd=cwd,capture_output=True,text=True,timeout=10,check=True).stdout.strip()

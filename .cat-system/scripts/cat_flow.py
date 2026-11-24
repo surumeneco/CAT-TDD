@@ -22,6 +22,7 @@ from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES
 import cat_queue
 import cat_project_typecheck as project_typecheck
 import cat_test_technology as test_technology
+import cat_node_service_technology as node_service_technology
 import cat_queue_evidence as queue_evidence
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
@@ -378,6 +379,9 @@ def technology_conformance(wpath, w, conf):
             if not isinstance(payload, dict):
                 payload = {'status': 'inconclusive', 'error': 'technology inspector produced no structured result'}
             results.append({'technology': 'TypeScript', **payload})
+    if conf.get('runtime_constraints') and len(w['repositories'])==1:
+        runtime_binding=Path(compilation_path(wpath,w,conf,'runtime_constraints',True)).resolve()
+        results.extend(node_service_technology.inspect(wpath,w,resolve_dir(wpath,w,'@repo:'+w['repositories'][0]['name']),runtime_binding))
     # A passing Inspector for one technology does not cover other declared
     # technologies. In particular, JUnit runs tests but is not itself an
     # implementation Inspector; a successful TypeScript check cannot cover it.
@@ -420,6 +424,8 @@ def conformance_input_hashes(wpath, w, kind):
             keys.append('conformance_binding')
         if conf.get('technology_constraints'):
             keys.append('technology_constraints')
+        if conf.get('runtime_constraints'):
+            keys.append('runtime_constraints')
         keys.extend(key for key in ('effect_trace','effect_packet','effect_driver')
                     if conf.get(key))
     # Runtime rule verification must be invalidated when its registered
