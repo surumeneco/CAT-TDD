@@ -215,6 +215,12 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。単一Triggerに対して提供操作が1件であり、`## Operation presence`で出力の操作が明示され、出力がrequiredである範囲のみ、決定論的Vectorsの`output_operation`を導出する。非required出力の意味的証明は依然として未対応。
 
+### 必須input recordの型付きmember参照
+
+`markdown-v2`のPI制約／TCE Condition・Effectでは、例えばPIが`input.request : record<id:string,expected_version:integer[1..]>`をrequiredで宣言した場合、`input.request.expected_version == state.version`や`input.request.id == state.target_id`と記述できる。既存の完全なField IDが一致する場合はそのFieldを優先する。そうでなければ、末尾の1要素を親recordの宣言済みrequired memberに束縛し、IRの`{"op":"member","args":[{"ref":"input.request"},{"literal":"expected_version"}]}`として保持する。Markdown TestModelでは`member[input.request, "expected_version"]`と表示する。親record自体とmemberのDomain・Presence、所有PI・当該受付Operationを元Sourceから独立に検査し、親の実値から読み取る。新しいPI Fieldやwire項目を追加する意味はない。
+
+初期契約は一段のrequired・非nullable scalar member（boolean/integer/real/string/enum）と一意の受付Operationに限定する。未宣言member、非required親／member、Operation別の非required上書き、他PI入力、曖昧な操作、未解決型、型違いの比較、hidden DomainRule、複数段や提供応答の射影は拒否する。Effectの直接member参照は宣言Domain包含を独立検査する。比較式を許すことと全域証明・Effect全域証明は別であり、判定不能な式は閉包を証明しない。旧whole-recordの参照・型・wire表現は変更しない。
+
 ### 複数peerに対するOperationの明示対応
 
 同一PIの`## 境界 / ## Boundary`に複数の相手Processを宣言する場合は、各`## 操作 / ## Operations`に`相手Process / Peer process`列を追加し、**固定Process IDまたは動的な`実行元Process`を明示**する。単一peerのPIでは従来どおり列を省略できる。`実行元Process`の機械表現は`@execution-origin`であり、特定のProcess IDではない。
