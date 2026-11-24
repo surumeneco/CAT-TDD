@@ -24,7 +24,7 @@ def _unique_object(pairs):
     return result
 
 
-def prepare(scope,fields,pi_docs,rules,checks,rejected=(),invariants=()):
+def prepare(scope,fields,pi_docs,rules,checks,rejected=(),invariants=(),independent=False):
     """Decode syntax and resolve exact owner, operation, peer and finite domains.
 
     Shared syntax/type resolution only: no preservation or equivalence verdict.
@@ -68,7 +68,9 @@ def prepare(scope,fields,pi_docs,rules,checks,rejected=(),invariants=()):
         constraints=[*pi.get('constraints',[]),*invariants]
         applicable=[r for r in rules if r['trigger']==trigger]
         if not applicable:return None
-        refs=set().union(*(used_refs(e,{}) for e in [when,relation,*constraints,*(r['when'] for r in applicable)]))-post.keys()
+        predicates=[when,relation,*constraints,*(r['when'] for r in applicable)]
+        refs=set().union(*(used_refs(e,{}) for e in predicates))-post.keys()
+        string_writes=[]
         refs.update(k for k in subjects if fields[k]['role']=='state')
         for row in applicable:
             for n,out in enumerate(row['allowed'],1):
@@ -81,6 +83,8 @@ def prepare(scope,fields,pi_docs,rules,checks,rejected=(),invariants=()):
                     key=f"{row['source_artifact']}#{row['id']}:{n}:{i}:{k}"
                     if key in rejected or checks.get(key,{}).get('result')!='proved':return None
                     refs.update(used_refs(w['expr'],{}))
+                    if fields[k]['domain']=={'type':'string'}:string_writes.append(w['expr'])
+                    else:predicates.append(w['expr'])
                 if not set(outputs)<=targets:return None
         for r in refs:
             if r not in fields:return None
@@ -88,10 +92,28 @@ def prepare(scope,fields,pi_docs,rules,checks,rejected=(),invariants=()):
             if field['role']=='state':continue
             if field['role']!='input' or field.get('source_pi')!=owner or presence(op['id'],r)!='required':return None
         before=sorted(refs)
+        # Unrestricted strings have a complete finite *equality quotient*
+        # for these expressions. Include every before and after variable and
+        # every literal assignment, not just one sampled request identifier.
+        string_group={k for k in before if fields[k]['domain']=={'type':'string'}} | {
+            'after.'+k for k in subjects if fields[k]['domain']=={'type':'string'}}
+        palette=None
+        if string_group:
+            constants=[]
+            for expr in string_writes:
+                if set(expr)=={'literal'} and type(expr['literal']) is str:constants.append(expr['literal'])
+                elif set(expr)=={'ref'} and expr['ref'] in string_group and not expr['ref'].startswith('after.'):pass
+                else:return None
+            if independent:
+                from catlib.independent_coverage import independent_reference_palette as make_palette
+            else:
+                from catlib.semantic_string_partition import reference_palette as make_palette
+            palette=make_palette(string_group,predicates,constants,require_pair=False)
+            if palette is None:return None
         def dimensions(keys):
-            # A deliberately narrow finite scalar vocabulary; no coercion,
-            # missing value, opaque function, observation or unbounded domain.
-            return [typed.finite_values(fields[k]['domain'],max_values=LIMIT) if fields[k]['domain']['type'] in ('boolean','enum','integer') else None for k in keys]
+            return [palette if fields[k]['domain']=={'type':'string'} else
+                    typed.finite_values(fields[k]['domain'],max_values=LIMIT)
+                    if fields[k]['domain']['type'] in ('boolean','enum','integer') else None for k in keys]
         before_dims=dimensions(before);after_dims=dimensions(subjects)
         if any(not d for d in before_dims+after_dims) or math.prod(map(len,before_dims+after_dims))>LIMIT:return None
         return before,before_dims,subjects,after_dims,when,relation,constraints,applicable

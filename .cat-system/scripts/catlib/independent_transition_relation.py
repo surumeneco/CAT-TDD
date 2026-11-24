@@ -8,7 +8,7 @@ from catlib.semantic_transition_relation import prepare
 def verify(scope,fields,pi_docs,tces,checks,rejected,invariants=()):
     from cat_compile_v2 import eval_expr, Blocked
     rules=[{**r,'source_artifact':fm['id']} for _,fm,tce in tces for r in tce['rules']]
-    resolved=prepare(scope,fields,pi_docs,rules,checks,rejected,invariants)
+    resolved=prepare(scope,fields,pi_docs,rules,checks,rejected,invariants,independent=True)
     if resolved is None:return False
     names,dimensions,subjects,target_domains,condition,relation,constraints,rows=resolved
     seen=False

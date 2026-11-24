@@ -74,3 +74,35 @@ def string_partition_values(domain, field, predicates, allow_unused=False, allow
     while other in constants:
         other += '\x00'
     return [*sorted(constants), other]
+
+
+def reference_palette(names,predicates,extra_literals=(),require_pair=True):
+    """Complete equality classes of up to five unrestricted string variables.
+
+    All mentioned constants are fixed. N fresh distinct strings suffice for
+    every equality pattern of N variables; no transform or hidden call allowed.
+    This may also cover before/after variables and explicit copy/literal writes.
+    """
+    group=set(names)
+    if not 1<=len(group)<=5:return None
+    constants=set(extra_literals);paired=False
+    def has_call(node):return node.get('op')=='call' or any(has_call(a) for a in node.get('args',[]))
+    def inspect(node):
+        nonlocal paired
+        if not any(_reads(node,k) for k in group):return True
+        args=node.get('args',[])
+        if node.get('op') in ('and','or','not'):return all(inspect(a) for a in args)
+        if node.get('op') not in ('eq','ne') or len(args)!=2:return False
+        a,b=args
+        if set(a)==set(b)=={'ref'} and {a['ref'],b['ref']}<=group:
+            paired |= a['ref']!=b['ref'];return True
+        for ref,lit in ((a,b),(b,a)):
+            if set(ref)=={'ref'} and ref['ref'] in group and set(lit)=={'literal'} and type(lit['literal']) is str:
+                constants.add(lit['literal']);return True
+        return False
+    if any(has_call(p) or not inspect(p) for p in predicates) or require_pair and not paired:return None
+    fresh=[];value=''
+    while len(fresh)<len(group):
+        if value not in constants:fresh.append(value)
+        value+='\x00'
+    return [*sorted(constants),*fresh]
