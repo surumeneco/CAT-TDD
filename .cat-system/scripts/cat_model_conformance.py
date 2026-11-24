@@ -495,6 +495,40 @@ def _source_fresh_output(scope, triggers, pi_docs, tces, effect_checks, rejected
     return seen
 
 
+def _source_state_equality(scope, fields, domains, triggers, tces, checks, rejected):
+    # Independent Source reconstruction: derive frame from omitted writes,
+    # and compare the two post-state expressions under pre-state equality.
+    parts=scope.split(' ') if isinstance(scope,str) else []
+    if len(parts)!=3 or parts[0]!='initial-state-equality' or not all(parts):return False
+    _,a,b=parts
+    if a==b or fields.get(a)!='state' or fields.get(b)!='state':return False
+    da,db=domains.get(a,{}),domains.get(b,{})
+    if da.get('type') not in ('boolean','integer','string','enum') or not semantic_types.same(da,db):return False
+    seen=set()
+    for _,fm,tce in tces:
+        for rule in tce['rules']:
+            seen.add(rule['trigger'])
+            if not rule['allowed']:return False
+            for n,outcome in enumerate(rule['allowed'],1):
+                post={a:{'ref':a},b:{'ref':b}}
+                assigned=set()
+                for i,w in enumerate(outcome['write'],1):
+                    target=w['target']
+                    if target not in post:continue
+                    if target in assigned:return False
+                    assigned.add(target)
+                    key=f"{fm['id']}#{rule['id']}:{n}:{i}:{target}"
+                    if key in rejected or checks.get(key,{}).get('result')!='proved':return False
+                    post[target]=w['expr']
+                x,y=post[a],post[b]
+                if set(x)=={'ref'} and set(y)=={'ref'}:
+                    if x['ref']!=y['ref'] and {x['ref'],y['ref']}!={a,b}:return False
+                elif set(x)=={'literal'} and set(y)=={'literal'}:
+                    if not semantic_types.same(x['literal'],y['literal']):return False
+                else:return False
+    return bool(seen) and seen==set(triggers)
+
+
 def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects,
                             pi_docs=(),tces=(),effect_checks=None,rejected=()):
     def resolved(d):
@@ -526,6 +560,8 @@ def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, ef
                 target=scope.split(' ')[-1] if isinstance(scope,str) else None
                 proved=(resolved(domains.get(target)) and
                         _source_fresh_output(scope,triggers,pi_docs,tces,effect_checks or {},rejected))
+            elif token=='@cat:all-trigger-state-equality-preservation/v1':
+                proved=_source_state_equality(scope,fields,domains,triggers,tces,effect_checks or {},rejected)
             else:
                 proved=(scope=='assembled-process' and predicates.get(token) is True)
             if proved:

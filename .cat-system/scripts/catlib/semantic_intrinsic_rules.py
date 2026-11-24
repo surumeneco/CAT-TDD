@@ -7,9 +7,12 @@ general claim about a product's external implementation.
 """
 from __future__ import annotations
 
+from catlib import semantic_types as typed
+
 CONTRACT='cat:intrinsic-model/v1'
 SCOPE='assembled-process'
 OUTCOME_PRESENCE='@cat:declared-outcome-output-presence/v1'
+STATE_EQUALITY='@cat:all-trigger-state-equality-preservation/v1'
 PREDICATES=frozenset({
     '@cat:effect-targets-declared/v1',
     '@cat:tce-triggers-declared/v1',
@@ -82,6 +85,45 @@ def _fresh_output_scope(scope, fields, triggers, rules, operations, overrides, e
     return checked>0
 
 
+def _state_equality_scope(scope, fields, triggers, rules, effect_checks):
+    """Inductive preservation given an explicitly declared initial equality.
+
+    Prove all declared outcomes, irrespective of Guard, using simultaneous
+    before-state reads and frame identities. No reachability inference.
+    """
+    parts=scope.split(' ') if isinstance(scope,str) else []
+    if len(parts)!=3 or parts[0]!='initial-state-equality' or not all(parts):return False
+    _,left,right=parts
+    by_id={f['id']:f for f in fields}
+    a,b=by_id.get(left),by_id.get(right)
+    if left==right or not a or not b or a['role']!='state' or b['role']!='state':return False
+    domain=a.get('domain',{})
+    if domain.get('type') not in ('boolean','integer','string','enum') or not typed.same(domain,b.get('domain')):return False
+    trigger_ids={t['id'] for t in triggers}
+    if not trigger_ids or {r['trigger'] for r in rules}!=trigger_ids:return False
+    for rule in rules:
+        if not rule['allowed']:return False
+        for number,outcome in enumerate(rule['allowed'],1):
+            expressions=[]
+            for target in (left,right):
+                writes=[(i,w) for i,w in enumerate(outcome['write'],1) if w['target']==target]
+                if len(writes)>1:return False
+                if writes:
+                    i,w=writes[0]
+                    key=f"{rule['source_artifact']}#{rule['id']}:{number}:{i}:{target}"
+                    if effect_checks.get(key,{}).get('result')!='proved' or target in outcome['unchanged']:return False
+                    expr=w['expr']
+                else:
+                    if target not in outcome['unchanged']:return False
+                    expr={'ref':target}
+                if set(expr)=={'ref'}:
+                    expressions.append({'ref':left if expr['ref']==right else expr['ref']})
+                elif set(expr)=={'literal'}:expressions.append(expr)
+                else:return False
+            if not typed.same(*expressions):return False
+    return True
+
+
 def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=(),effect_checks=None):
     """Return verified proofs; each certificate is bound to exact source bytes."""
     proofs=[]
@@ -94,6 +136,8 @@ def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=()
             scope=rule.get('condition')
             if requirement==OUTCOME_PRESENCE:
                 proved=_fresh_output_scope(scope,fields,triggers,tce_rules,operations,overrides,effect_checks or {})
+            elif requirement==STATE_EQUALITY:
+                proved=_state_equality_scope(scope,fields,triggers,tce_rules,effect_checks or {})
             else:
                 proved=(scope==SCOPE and requirement in PREDICATES and
                         _property(requirement,fields,triggers,tce_rules))
