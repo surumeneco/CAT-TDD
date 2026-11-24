@@ -760,6 +760,89 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
         return 'integer'
     raise Blocked('operator missing return type '+op)
 
+def _linear_order_atom(expr):
+    """Recognize only direct order comparison of two distinct numeric refs
+    added/subtracted against an integer literal. Never reinterpret equality.
+    """
+    if expr.get('op') not in ('lt','le','gt','ge') or len(expr.get('args',[]))!=2:return None
+    for index in (0,1):
+        term,limit=expr['args'][index],expr['args'][1-index]
+        if (term.get('op') not in ('add','sub') or len(term.get('args',[]))!=2
+                or set(limit)!={'literal'} or type(limit['literal']) is not int):continue
+        a,b=term['args']
+        if set(a)==set(b)=={'ref'} and a['ref']!=b['ref']:
+            return term,limit['literal'],index
+    return None
+
+
+def _linear_order_values(fields,names,predicates,presence,definitions):
+    """Order-cell witnesses for one scalar sum/difference over two intervals.
+
+    Every observed atom of the pair must depend on the same exact term.
+    Its image is an interval (integer lattice or real interval); we only
+    certify when a legal, exactly representable preimage of every cell exists.
+    """
+    from fractions import Fraction
+    terms=[]
+    def collect(node):
+        if node.get('op') in ('and','or','not'):
+            for arg in node['args']:collect(arg)
+        else:
+            atom=_linear_order_atom(node)
+            if atom:terms.append(atom)
+    for pred in predicates:collect(pred)
+    if not terms:return {}
+    term=terms[0][0];a,b=(x['ref'] for x in term['args']);group={a,b}
+    if not group<=set(names):return {}
+    def legal(node):
+        if node.get('op')=='call':return False
+        if not group.intersection(used_refs(node,definitions)):return True
+        if node.get('op') in ('and','or','not'):return all(legal(x) for x in node['args'])
+        atom=_linear_order_atom(node)
+        return atom is not None and atom[0]==term
+    if not all(legal(p) for p in predicates):return {}
+    domains=[fields[n]['domain'] for n in (a,b)]
+    kind=domains[0].get('type')
+    if kind not in ('integer','real') or domains[1].get('type')!=kind:return {}
+    if any(n in presence and presence[n]!='required' for n in group):return {}
+    bounds=[(d.get('min'),d.get('max')) for d in domains]
+    if any(v is not None and type(v) is not int for pair in bounds for v in pair):return {}
+    (al,ah),(bl,bh)=bounds
+    negative=term['op']=='sub'
+    if negative:bl,bh=(-bh if bh is not None else None),(-bl if bl is not None else None)
+    lower=al+bl if al is not None and bl is not None else None
+    upper=ah+bh if ah is not None and bh is not None else None
+    cuts=sorted({x for x in [*(t[1] for t in terms if t[0]==term),lower,upper]
+                 if x is not None and (lower is None or x>=lower) and (upper is None or x<=upper)})
+    targets=[]
+    if not cuts:targets=[0]
+    else:
+        if lower is None:targets.append(cuts[0]-1)
+        for i,cut in enumerate(cuts):
+            targets.append(cut)
+            if i+1<len(cuts):
+                right=cuts[i+1]
+                if cut+1<right:targets.append(cut+1)
+                elif kind=='real':targets.append(Fraction(cut+right,2))
+        if upper is None:targets.append(cuts[-1]+1)
+    values={a:set(),b:set()}
+    for z in targets:
+        lows=[x for x in (al,z-bh if bh is not None else None) if x is not None]
+        highs=[x for x in (ah,z-bl if bl is not None else None) if x is not None]
+        lo=max(lows) if lows else None;hi=min(highs) if highs else None
+        if lo is not None and hi is not None and lo>hi:return {}
+        x=lo if lo is not None else min(0,hi) if hi is not None else 0
+        y=z-x
+        if negative:y=-y
+        for name,value,domain in zip((a,b),(x,y),domains):
+            f=Fraction(value)
+            try:concrete=int(f) if f.denominator==1 else float(f)
+            except OverflowError:return {}
+            if Fraction(concrete)!=f or not typed.contains(domain,concrete):return {}
+            values[name].add(concrete)
+    return {n:sorted(v) for n,v in values.items()} if all(values.values()) else {}
+
+
 def eval_expr(expr, env, definitions, params=None):
     if 'literal' in expr:return deepcopy(expr['literal'])
     if 'ref' in expr:
@@ -784,6 +867,22 @@ def eval_expr(expr, env, definitions, params=None):
             if op=='and' and not value:return False
             if op=='or' and value:return True
         return op=='and'
+    # This exact order fragment compares mathematical numeric values, not a
+    # rounded intermediate binary64 sum. Integer/float inputs retain their
+    # represented values; general arithmetic and Effect values are unchanged.
+    atom=_linear_order_atom(expr)
+    if atom is not None:
+        from fractions import Fraction
+        import math
+        term,limit,index=atom
+        operands=[eval_expr(x,env,definitions,params) for x in term['args']]
+        require(all(type(x) is int or type(x) is float and math.isfinite(x) for x in operands),
+                'linear order requires finite numeric operands')
+        a,b=map(Fraction,operands)
+        value=a+b if term['op']=='add' else a-b
+        left,right=(value,limit) if index==0 else (limit,value)
+        return {'lt':lambda:left<right,'le':lambda:left<=right,
+                'gt':lambda:left>right,'ge':lambda:left>=right}[op]()
     xs=[eval_expr(x,env,definitions,params) for x in expr['args']]
     if op=='member':
         require(len(xs)==2 and isinstance(xs[0],dict) and isinstance(xs[1],str) and xs[1] in xs[0]
@@ -1866,12 +1965,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,ordered,predicates,input_presence,definitions))
         real_range=_real_reference_range_values(fields,ordered,predicates,input_presence,definitions)
+        linear_range=_linear_order_values(fields,ordered,predicates,input_presence,definitions)
         for field_id in ordered:
             if projected:
                 domainvalues.append(projected[field_id]);partition_fields.append(field_id);partition_kinds.add('record_member');continue
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
+            if field_id in linear_range:
+                values=linear_range[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('linear_order')
             if field_id in real_range:
                 values=real_range[field_id]
                 partition_fields.append(field_id)
@@ -1991,6 +2095,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
+                    else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
                     else 'required-record-member-partition/v1' if partition_kinds=={'record_member'}
                     else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
                     else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
@@ -2304,6 +2409,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,guard_names,predicates,presence,defs))
         real_range=_real_reference_range_values(fields,guard_names,predicates,presence,defs)
+        linear_range=_linear_order_values(fields,guard_names,predicates,presence,defs)
         for field_id in variable_ids:
             if projected:
                 domains.append(projected[field_id]);continue
@@ -2314,6 +2420,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 values=integer_range[field_id]
             if field_id in real_range:
                 values=real_range[field_id]
+            if field_id in linear_range:
+                values=linear_range[field_id]
             if values is None and field_id in presence and presence[field_id]=='optional' and field_id not in observed:
                 # The omission is a valid witness of an unobserved optional
                 # value; it is not a sample used as a finite-domain proof.

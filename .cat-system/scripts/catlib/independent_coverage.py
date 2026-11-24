@@ -455,6 +455,72 @@ def _independent_record_cells(names,domains,roles,inputs,current_presence,clause
     return result
 
 
+def _independent_linear_cells(names,domains,inputs,current_presence,clauses,definitions):
+    """Derive the complete scalar image and legal preimages from Source.
+
+    Deliberately does not invoke the Compiler partition helper or read its
+    receipts. Only the canonical numeric evaluation semantics are shared.
+    """
+    from fractions import Fraction
+    atoms=[]
+    def read(node):
+        if node.get('op') in ('and','or','not'):
+            for arg in node['args']:read(arg)
+            return
+        if node.get('op') not in ('lt','le','gt','ge'):return
+        for term,limit in (node['args'],node['args'][::-1]):
+            if (set(limit)=={'literal'} and type(limit['literal']) is int and term.get('op') in ('add','sub')
+                    and len(term.get('args',[]))==2 and all(set(v)=={'ref'} for v in term['args'])):
+                left,right=(v['ref'] for v in term['args'])
+                if left!=right:atoms.append((node,(term['op'],left,right),limit['literal']))
+    for c in clauses:read(c)
+    if not atoms:return {}
+    op,a,b=atoms[0][1];group={a,b}
+    if not group<=set(names):return {}
+    recognized=[n for n,key,_ in atoms if key==(op,a,b)]
+    def allowed(node):
+        if node.get('op')=='call':return False
+        if not (used_refs(node,definitions)&group):return True
+        if node.get('op') in ('and','or','not'):return all(allowed(arg) for arg in node['args'])
+        return node in recognized
+    if not all(allowed(c) for c in clauses):return {}
+    da,db=domains[a],domains[b];kind=da.get('type')
+    if kind not in ('real','integer') or db.get('type')!=kind:return {}
+    if any(x in inputs and current_presence(x)!='required' for x in group):return {}
+    a0,a1=da.get('min'),da.get('max');b0,b1=db.get('min'),db.get('max')
+    if any(v is not None and type(v) is not int for v in (a0,a1,b0,b1)):return {}
+    if op=='sub':b0,b1=((-b1 if b1 is not None else None),(-b0 if b0 is not None else None))
+    low=None if None in (a0,b0) else a0+b0;high=None if None in (a1,b1) else a1+b1
+    boundaries={value for _,key,value in atoms if key==(op,a,b)}|{low,high}
+    points=sorted(v for v in boundaries if v is not None and (low is None or v>=low) and (high is None or v<=high))
+    if points:
+        representatives=list(points)
+        for l,r in zip(points,points[1:]):
+            if r-l>=2:representatives.append(l+1)
+            elif kind=='real':representatives.append(Fraction(l+r,2))
+        if low is None:representatives.append(points[0]-1)
+        if high is None:representatives.append(points[-1]+1)
+    else:representatives=[0]
+    out={a:set(),b:set()}
+    for value in representatives:
+        # Intersect x's original interval with the reflected y interval
+        # at the selected total. Choose its lower endpoint when it exists.
+        x=a0
+        if b1 is not None and (x is None or value-b1>x):x=value-b1
+        ceiling=a1
+        if b0 is not None and (ceiling is None or value-b0<ceiling):ceiling=value-b0
+        if x is None:x=0 if ceiling is None or ceiling>=0 else ceiling
+        if ceiling is not None and x>ceiling:return {}
+        y=value-x if op=='add' else x-value
+        for field,v in ((a,x),(b,y)):
+            exact=Fraction(v)
+            try:representative=int(exact) if exact.denominator==1 else float(exact)
+            except OverflowError:return {}
+            if Fraction(representative)!=exact or not types.contains(domains[field],representative):return {}
+            out[field].add(representative)
+    return {field:sorted(vals) for field,vals in out.items()} if all(out.values()) else {}
+
+
 def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
     rules=[r for _,_,tce in tces for r in tce['rules']]
     # Acceptance Guard-space may use only constraints whose every reference
@@ -518,6 +584,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
         integer_range=({} if integer_pair else _independent_integer_range_values(
             names,domains,inputs,current_presence,clauses,definitions))
         real_range=_independent_real_reference_cells(names,domains,inputs,current_presence,clauses,definitions)
+        linear_range=_independent_linear_cells(names,domains,inputs,current_presence,clauses,definitions)
         for field in sorted(names):
             if projected:
                 dimensions.append(projected[field]);partition_fields.append(field);partition_kinds.add('record_member');continue
@@ -531,6 +598,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     values=types.finite_values(domains[field])
                     if values is not None and presence=='optional':values=[types.MISSING,*values]
             else:values=types.finite_values(domains[field])
+            if field in linear_range:
+                values=linear_range[field]
+                partition_fields.append(field)
+                partition_kinds.add('linear_order')
             if field in real_range:
                 values=real_range[field]
                 partition_fields.append(field)
@@ -631,6 +702,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
+                    else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
                     else 'required-record-member-partition/v1' if partition_kinds=={'record_member'}
                     else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
                     else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}

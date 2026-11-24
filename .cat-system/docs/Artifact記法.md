@@ -346,6 +346,8 @@ Effectの `target = expression` は命令ではない。左辺が最終的に成
 | 集合追加 | `set_add(s, x)` | `集合追加(s, x)` |
 | 集合削除 | `set_remove(s, x)` | `集合削除(s, x)` |
 
+相異なる2個の直接数値参照の和・差を整数定数と大小比較する限定断片では、受け取った有限の数値の正確な値を比較し、中間結果を浮動小数点に丸めない。一般の算術式や数値Effect値の評価とは区別し、型区別付き等値を大小比較の等値に読み替えない。閉包証明の適用範囲は機械的変換の `two-reference-linear-order-partition/v1` を参照する。
+
 文字列literal内の日本語をkeyword変換しない。式はPython風の外観を利用してもPythonコードとして実行しない。
 
 ## 9. Domain Rule
