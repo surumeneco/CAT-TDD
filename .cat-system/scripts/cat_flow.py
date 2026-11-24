@@ -19,6 +19,7 @@ from pathlib import Path, PurePath
 from catlib.common import Blocked, json_bytes, read_json, require, sha
 from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
 import cat_queue
+import cat_project_typecheck as project_typecheck
 import cat_queue_evidence as queue_evidence
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
@@ -332,10 +333,23 @@ def technology_conformance(wpath, w, conf):
     if 'Java' in technologies:
         results.append({'technology': 'Java', 'status': 'inconclusive',
                         'reason': 'no source-bound Java implementation inspector available'})
+    if conf.get('technology_constraints'):
+        binding_path = Path(compilation_path(wpath, w, conf, 'technology_constraints', True))
+        binding = read_json(binding_path)
+        repo_name = binding.get('repository')
+        declared_repo = next((r for r in w['repositories'] if r['name'] == repo_name), None)
+        require(declared_repo is not None, 'project typecheck binding repository not declared')
+        # v1 deliberately covers a single production repository; it cannot
+        # silently claim another repository's source files were checked.
+        require(not any(r.get('production_paths') for r in w['repositories'] if r is not declared_repo),
+                'project typecheck v1 requires all production scope in the bound repository')
+        results.extend(project_typecheck.inspect(resolve_dir(wpath, w, '@repo:' + repo_name),
+                        binding_path, declared_repo.get('production_paths', []), technologies))
     if 'TypeScript' in technologies:
         if not conf.get('conformance_binding'):
-            results.append({'technology': 'TypeScript', 'status': 'inconclusive',
-                            'reason': 'Compilation Conformance binding missing'})
+            if not conf.get('technology_constraints'):
+                results.append({'technology': 'TypeScript', 'status': 'inconclusive',
+                                'reason': 'Compilation Conformance binding missing'})
         else:
             binding_path = Path(compilation_path(wpath, w, conf, 'conformance_binding', True))
             binding = read_json(binding_path)
@@ -386,6 +400,7 @@ def conformance_context_sha(w):
         'flow': infer_flow(w),
         'specification': w['specification'],
         'scope': w['scope'],
+        'technologies': w.get('technologies', []),
         'compilation': w.get('compilation'),
         'repositories': w.get('repositories', []),
     }
@@ -401,6 +416,8 @@ def conformance_input_hashes(wpath, w, kind):
         keys.extend(['model','vectors','queue','obligations'])
         if conf.get('conformance_binding'):
             keys.append('conformance_binding')
+        if conf.get('technology_constraints'):
+            keys.append('technology_constraints')
         keys.extend(key for key in ('effect_trace','effect_packet','effect_driver')
                     if conf.get(key))
     # Runtime rule verification must be invalidated when its registered
@@ -547,6 +564,7 @@ def record_conformance_evidence(wpath, w, kind, result):
     }
     if kind == 'implementation-conformance':
         payload['repo_state_sha256'] = _implementation_repository_fingerprint(wpath, w)
+        payload['technology_results'] = result.get('technology_results', [])
     path = runtime / (kind + '.json')
     path.write_bytes(json_bytes(payload))
     output = dict(result)

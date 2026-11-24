@@ -33,3 +33,5 @@ Workの`Compilation / Conformance binding`は`cat-typescript-conformance-binding
 限定構文は公開関数宣言、primitive型または文字列literal unionの引数、単一return、引数とliteral、否定・短絡論理・厳密等値・条件式、静的キーのobject literal（`as const`可）に限る。全tokenを認識する。未解釈のimport・呼出し・property access・外部変数・初期化・その他の構文は`inconclusive`とし、未検出を閉包と扱わない。`capability_analysis`の証拠には検査scopeと各source SHAを含める。
 
 この証明は指定されたsource module本体の能力使用に限る。呼出元、loader、build transform、任意のTypeScript型検査、PIの型意味の同値、他Processへの伝達や外部Providerは証明しない。既知能力の規範外使用は引き続き`blocked`。この限定検査の未証明は、既存の個別Interface検査結果と分離して報告する。
+
+採用済みstrict型検査は、`Compilation.technology_constraints` の `cat-project-typecheck/v1` を使って独立の実装制約として実行できる。実際のnpm lockfileとコンパイラ、対象ソース包含を検査する。型検査成功はPI・観測/作用能力・実行時挙動の証明ではない。詳細は `docs/機械的変換.md`。

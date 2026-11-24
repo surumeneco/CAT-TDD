@@ -176,6 +176,7 @@ def read_work_markdown(path):
                    ('Model','モデル'):'model',('Vectors','具体値'):'vectors',('Queue','キュー'):'queue',
                    ('Binding','接続'):'binding',('Tests','テスト'):'tests_output',
                    ('Obligations','適合義務'):'obligations',('Conformance binding','適合接続'):'conformance_binding',
+                   ('Technology constraints','技術制約接続'):'technology_constraints',
                    ('Rule verifier registry','規則検証登録'):'verifier_registry',
                    ('Effect trace','作用トレース'):'effect_trace',
                    ('Effect packet','作用証拠パケット'):'effect_packet',
@@ -298,8 +299,8 @@ External/semantic gates are reported evidence. `passed` or `not-applicable` requ
 
 Remove this section when deterministic compilation is not used. Multiple TCE paths in the `TCE` cell are separated by `;` and are assembled before closure/model validation.
 
-| Process | PI | TCE | Domain rule | Common rules | Domain specs | Model | Vectors | Queue | Binding | Tests | Obligations | Conformance binding | Allow draft |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Process | PI | TCE | Domain rule | Common rules | Domain specs | Model | Vectors | Queue | Binding | Tests | Obligations | Conformance binding | Technology constraints | Allow draft |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 """
 
 
@@ -461,7 +462,7 @@ def validate(w):
                 vals=compilation['composition_models']
                 if not isinstance(vals,list) or len(vals)<2 or not all(isinstance(x,str) and x for x in vals):
                     errs.append('compilation.composition_models requires >=2 paths')
-            for extra_key in ('verifier_registry','composition_binding'):
+            for extra_key in ('verifier_registry','composition_binding','technology_constraints'):
                 if compilation.get(extra_key) is not None and (not isinstance(compilation[extra_key],str) or not compilation[extra_key]):
                     errs.append('compilation.'+extra_key+' invalid')
             if compilation.get('conformance_binding') is not None and (not isinstance(compilation.get('conformance_binding'), str) or not compilation['conformance_binding']):
