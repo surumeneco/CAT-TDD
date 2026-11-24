@@ -213,7 +213,10 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
                              and p['scope'].startswith('initial-state-relation '))
                          or (p.get('requirement')=='@cat:finite-transition-relation/v1'
                              and isinstance(p.get('scope'),str)
-                             and p['scope'].startswith('transition-relation ')))
+                             and p['scope'].startswith('transition-relation '))
+                         or (p.get('requirement')=='@cat:trigger-observation-relation/v1'
+                             and isinstance(p.get('scope'),str)
+                             and p['scope'].startswith('observation-relation ')))
                     and p.get('status')=='passed']
             observed=next((r for r in (rule_verification or {}).get('results',[])
                            if r.get('rule_id')==rid and r.get('source_artifact')==source_artifact),None)

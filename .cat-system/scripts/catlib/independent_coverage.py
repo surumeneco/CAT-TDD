@@ -521,8 +521,9 @@ def _independent_linear_cells(names,domains,inputs,current_presence,clauses,defi
     return {field:sorted(vals) for field,vals in out.items()} if all(out.values()) else {}
 
 
-def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=None):
+def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=None,observation_relations=None):
     state_invariants=state_invariants or {}
+    observation_relations=observation_relations or {}
     rules=[r for _,_,tce in tces for r in tce['rules']]
     # Acceptance Guard-space may use only constraints whose every reference
     # is an input owned by that PI. Output/result constraints belong to a
@@ -565,6 +566,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                              for ref in used_refs(expr,definitions))]
         has_pi_constraints=bool(constraints)
         constraints.extend(state_invariants.values())
+        trigger_observations=observation_relations.get(ident,{})
+        constraints.extend(trigger_observations.values())
         def current_presence(field):
             info=inputs[field]
             selected=[ov for ov in overrides if chosen and ov['operation']==chosen['id']
@@ -586,6 +589,13 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
         integer_pair=_independent_integer_pair_values(names,domains,inputs,current_presence,clauses,definitions)
         integer_range=({} if integer_pair else _independent_integer_range_values(
             names,domains,inputs,current_presence,clauses,definitions))
+        raw_count=1
+        if integer_pair:
+            for field in names:
+                pr=current_presence(field) if field in inputs else 'required'
+                if pr in ('absent','undefined'):continue
+                vals=types.finite_values(domains[field])
+                if vals is not None:raw_count*=len(vals)+(1 if pr=='optional' else 0)
         real_range=_independent_real_reference_cells(names,domains,inputs,current_presence,clauses,definitions)
         linear_range=_independent_linear_cells(names,domains,inputs,current_presence,clauses,definitions)
         for field in sorted(names):
@@ -644,7 +654,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                     values=[types.MISSING,*representatives]
                     partition_fields.append(field)
                     partition_kinds.add(kind)
-            if values is None and field in integer_pair:
+            if field in integer_pair and (values is None or raw_count>LIMIT):
                 values=integer_pair[field]
                 partition_fields.append(field)
                 partition_kinds.add((
@@ -701,6 +711,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                  'uncovered':uncovered_examples,'overlaps':overlap_examples,
                  'excluded_by_pi_constraints':has_pi_constraints}
         if state_invariants:receipt['guard_invariant_rule_ids']=sorted(state_invariants)
+        if trigger_observations:receipt['observation_relation_rule_ids']=sorted(trigger_observations)
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}

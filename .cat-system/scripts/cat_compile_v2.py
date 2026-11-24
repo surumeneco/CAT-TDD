@@ -1960,6 +1960,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         operation_presence=operation_presence)
     guard_invariants=_proved_guard_invariants(rule_docs,fields,p['process'],rules,effect_checks,
         all(fm['status']=='confirmed' for _,fm in files))
+    from catlib import semantic_observation_relation
+    observation_relations=semantic_observation_relation.prove(rule_docs,p['process'],fields,
+        {t['id'] for t in p['triggers']},all(fm['status']=='confirmed' for _,fm in files))
+    observation_proof_ids={rid for rels in observation_relations.values() for rid in rels}
     from catlib import semantic_transition_relation
     transition_proofs={r['id'] for doc in rule_docs for r in doc['rules']
         if all(fm['status']=='confirmed' for _,fm in files) and doc['process']==p['process']
@@ -1969,7 +1973,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         and semantic_transition_relation.prove(r['condition'],fields,pi_docs,rules,effect_checks,guard_invariants.values())}
     intrinsic_proofs=semantic_intrinsic_rules.evaluate(
         rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
-        operation_presence,effect_checks,guard_invariants,transition_proofs)
+        operation_presence,effect_checks,guard_invariants,transition_proofs,observation_proof_ids)
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
     # operation owns its output and every TCE alternative respects the
@@ -1994,7 +1998,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                if trigger in x['triggers']]
                               if contract=='markdown-v2' else constraints)
         has_pi_constraints=bool(scoped_constraints)
-        scoped_constraints=[*scoped_constraints,*guard_invariants.values()]
+        trigger_observations=observation_relations.get(trigger,{})
+        scoped_constraints=[*scoped_constraints,*guard_invariants.values(),*trigger_observations.values()]
         relevant=set().union(
             *(used_refs(r['when'],definitions) for r in rr),
             *(used_refs(c,definitions) for c in scoped_constraints)) if rr or scoped_constraints else set()
@@ -2025,6 +2030,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             fields,ordered,predicates,input_presence,definitions)
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,ordered,predicates,input_presence,definitions))
+        raw_count=__import__('math').prod(len(v) if v is not None else 1 for v in
+            (_presence_cases(fields[k]['domain'],input_presence[k]) if k in input_presence
+             else typed.finite_values(fields[k]['domain']) for k in ordered)) if integer_pair else 0
         real_range=_real_reference_range_values(fields,ordered,predicates,input_presence,definitions)
         linear_range=_linear_order_values(fields,ordered,predicates,input_presence,definitions)
         for field_id in ordered:
@@ -2086,7 +2094,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     values=[typed.MISSING,*present]
                     partition_fields.append(field_id)
                     partition_kinds.add(kind)
-            if values is None and field_id in integer_pair:
+            if field_id in integer_pair and (values is None or raw_count>65536):
                 values=integer_pair[field_id]
                 partition_fields.append(field_id)
                 partition_kinds.add((
@@ -2152,6 +2160,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                'unreachable_rules':sorted(unreachable),
                'excluded_by_pi_constraints':has_pi_constraints}
         if guard_invariants:check['guard_invariant_rule_ids']=sorted(guard_invariants)
+        if trigger_observations:check['observation_relation_rule_ids']=sorted(trigger_observations)
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
@@ -2408,6 +2417,8 @@ def expand_cases(model, vectors):
 def selection_vectors(model, strategy='rule-witness/v1'):
     require(strategy == 'rule-witness/v1','unsupported test-selection rule: '+str(strategy))
     require(model.get('status')=='confirmed','normative vector selection requires confirmed TestModel')
+    require(not any(p.get('requirement')=='@cat:trigger-observation-relation/v1' for p in model.get('intrinsic_rule_proofs',[])),
+            'observation relation requires explicit technology observation binding for vectors')
     fields={f['id']:f for f in model['fields']}
     presence_inputs=[f['id'] for f in fields.values() if f['role']=='input'
                      and f.get('presence','required')!='required']
@@ -2466,6 +2477,9 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             fields,guard_names,predicates,presence,defs)
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,guard_names,predicates,presence,defs))
+        raw_count=__import__('math').prod(len(v) if v is not None else 1 for v in
+            (_presence_cases(fields[k]['domain'],presence[k]) if k in presence
+             else typed.finite_values(fields[k]['domain']) for k in variable_ids)) if integer_pair else 0
         real_range=_real_reference_range_values(fields,guard_names,predicates,presence,defs)
         linear_range=_linear_order_values(fields,guard_names,predicates,presence,defs)
         for field_id in variable_ids:
@@ -2501,7 +2515,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                     present=semantic_string_partition.string_partition_values(
                         field['domain'],field_id,predicates,allow_unused=True,allow_presence=True)
                 if present is not None:values=[typed.MISSING,*present]
-            if values is None and field_id in integer_pair:
+            if field_id in integer_pair and (values is None or raw_count>65536):
                 values=integer_pair[field_id]
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
