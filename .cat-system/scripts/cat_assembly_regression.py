@@ -57,7 +57,8 @@ def _explicitly_unassembled_domains(root,data):
             continue
         path=entry.get('path')
         file=safe(root,path)
-        if path in excluded or not isinstance(entry.get('sha256'),str) or sha(file.read_bytes())!=entry['sha256']:
+        canonical=file.relative_to(root).as_posix()
+        if canonical in excluded or not isinstance(entry.get('sha256'),str) or sha(file.read_bytes())!=entry['sha256']:
             raise Blocked('unassembled DomainRule SHA mismatch or duplicate')
         fm=parse_frontmatter(file)
         if fm.get('kind')!='domain-rule' or fm.get('id')!=entry.get('id'):
@@ -66,7 +67,7 @@ def _explicitly_unassembled_domains(root,data):
         if selected is not None:
             if not isinstance(selected,list) or len([s for s in selected if isinstance(s,dict) and s.get('path')==path and s.get('id')==entry['id'] and s.get('sha256')==entry['sha256']])!=1:
                 raise Blocked('unassembled DomainRule must match exact selected Source')
-        excluded[path]=entry
+        excluded[canonical]=entry
     return excluded
 
 
@@ -97,7 +98,7 @@ def review(root,assembly,allow_draft=False):
             domain=inputs['domain_rules'][0] if inputs['domain_rules'] else None
             unassembled=[]
             if domain is not None:
-                rel=str(domain.relative_to(root))
+                rel=domain.relative_to(root).as_posix()
                 if rel in excluded:
                     domain_id=excluded[rel]['id']
                     for tce in inputs['tces']:
@@ -107,7 +108,7 @@ def review(root,assembly,allow_draft=False):
                     unassembled.append(rel)
                     domain=None
             all_paths=[inputs['process'],*inputs['pis'],*inputs['tces'],*inputs['domain_specs'],*inputs['common_rules'],*inputs['domain_rules']]
-            local_shas={str(p.relative_to(root)):sha(p.read_bytes()) for p in all_paths}
+            local_shas={p.relative_to(root).as_posix():sha(p.read_bytes()) for p in all_paths}
             try:
                 model=load(inputs['process'],inputs['pis'],inputs['tces'],domain,
                            allow_draft=allow_draft,common_rules=inputs['common_rules'],
@@ -142,7 +143,7 @@ def review(root,assembly,allow_draft=False):
                             None,inputs['common_rules'],inputs['domain_specs'],True)
                         row['diagnostic_subset']={
                             'status':check['status'],
-                            'excluded_input_sha256':{str(x.relative_to(root)):sha(x.read_bytes()) for x in inputs['domain_rules']},
+                            'excluded_input_sha256':{x.relative_to(root).as_posix():sha(x.read_bytes()) for x in inputs['domain_rules']},
                             'model_status':subset['status'],
                             'source_count':len(subset['source_records']),
                             'model_conformance_mismatches':check['mismatches'],

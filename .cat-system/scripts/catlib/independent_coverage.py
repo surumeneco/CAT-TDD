@@ -50,7 +50,7 @@ def _presence_exclusive(node, name):
     return all(_presence_exclusive(item,name) for item in node.get('args',[]))
 
 
-def _independent_integer_cells(domain, field, clauses):
+def _independent_integer_cells(domain, field, clauses, allow_presence=False):
     # Independent from compiler's partition helper. Accept ONLY literal
     # comparisons of this integer field under Boolean composition.
     if not isinstance(domain,dict) or domain.get('type')!='integer':return None
@@ -68,6 +68,8 @@ def _independent_integer_cells(domain, field, clauses):
         if not reads(node):return True
         op=node.get('op')
         args=node.get('args',[])
+        if allow_presence and op in ('is-present','is-missing','is-undefined') and args==[{'ref':field}]:
+            return True
         if op in ('and','or','not') and isinstance(args,list):
             if (op=='not' and len(args)!=1) or (op!='not' and len(args)<2):return False
             return all(walk(part) for part in args)
@@ -89,7 +91,139 @@ def _independent_integer_cells(domain, field, clauses):
     return reps if reps and len(reps)<=LIMIT else None
 
 
-def _independent_string_cells(domain, field, clauses):
+def _independent_real_cells(domain, field, clauses):
+    """Reconstruct ordered real cells from Source, not compiler receipts."""
+    from fractions import Fraction
+    if domain.get('type')!='real':return None
+    lo,hi=domain.get('min'),domain.get('max')
+    def numeric(v):return type(v) is int or type(v) is float and math.isfinite(v)
+    constants=set()
+    def mentions(n):return isinstance(n,dict) and (n.get('ref')==field or any(mentions(x) for x in n.get('args',[])))
+    def legal(n):
+        if not isinstance(n,dict) or n.get('op')=='call':return False
+        if not mentions(n):return True
+        op=n.get('op');args=n.get('args',[])
+        if op in ('and','or','not'):return all(legal(a) for a in args)
+        if op not in ('lt','le','gt','ge') or len(args)!=2:return False
+        for a,b in (args,args[::-1]):
+            if a=={'ref':field} and set(b)=={'literal'} and numeric(b['literal']):
+                constants.add(Fraction(b['literal']));return True
+        return False
+    if not all(legal(c) for c in clauses) or not constants:return None
+    if any(x is not None and not numeric(x) for x in (lo,hi)):return None
+    lower=Fraction(lo) if lo is not None else None
+    upper=Fraction(hi) if hi is not None else None
+    if lower is not None and upper is not None and lower>upper:return None
+    boundaries=sorted({x for x in constants|{lower,upper} if x is not None
+                      and (lower is None or lower<=x) and (upper is None or x<=upper)})
+    if not boundaries:return None
+    values=[]
+    if lower is None:values.append(boundaries[0]//1-1)
+    for i,boundary in enumerate(boundaries):
+        values.append(int(boundary) if boundary.denominator==1 else float(boundary))
+        if i+1==len(boundaries):break
+        right=boundaries[i+1]
+        whole=boundary//1+1
+        if whole<right:values.append(whole)
+        else:
+            try:rep=float(boundary+(right-boundary)/2)
+            except OverflowError:return None
+            if not math.isfinite(rep) or not boundary<Fraction(rep)<right:return None
+            values.append(rep)
+    if upper is None:values.append(-((-boundaries[-1])//1)+1)
+    return values if values and len(values)<=LIMIT else None
+
+
+def _independent_real_reference_cells(names, domains, inputs, current_presence, clauses, definitions):
+    """Independently reconstruct exact coupled real-order representatives."""
+    from fractions import Fraction
+    fields=sorted(x for x in names if domains.get(x,{}).get('type')=='real'
+                  and (x not in inputs or current_presence(x)=='required'))
+    if not 2<=len(fields)<=3:return {}
+    group=set(fields);boundaries=set();pairs=set()
+    def numeric(x):return type(x) is int or type(x) is float and math.isfinite(x)
+    def legal(expr):
+        if not isinstance(expr,dict) or expr.get('op')=='call':return False
+        if not (used_refs(expr,definitions)&group):return True
+        op,args=expr.get('op'),expr.get('args',[])
+        if op in ('and','or','not'):return all(legal(child) for child in args)
+        if op not in ('lt','le','gt','ge') or len(args)!=2:return False
+        a,b=args
+        if set(a)==set(b)=={'ref'} and {a['ref'],b['ref']}<=group:
+            if a['ref']!=b['ref']:pairs.add((a['ref'],b['ref']))
+            return True
+        if set(b)=={'ref'}:a,b=b,a
+        if set(a)=={'ref'} and a['ref'] in group and set(b)=={'literal'} and numeric(b['literal']):
+            boundaries.add(Fraction(b['literal']));return True
+        return False
+    if not all(legal(c) for c in clauses) or not pairs:return {}
+    limits={}
+    for field in fields:
+        lo,hi=domains[field].get('min'),domains[field].get('max')
+        if any(v is not None and not numeric(v) for v in (lo,hi)):return {}
+        limits[field]=tuple(Fraction(v) if v is not None else None for v in (lo,hi))
+        boundaries.update(v for v in limits[field] if v is not None)
+    cuts=sorted(boundaries);n=len(fields);representatives=[]
+    if not cuts:representatives=list(range(n))
+    else:
+        if any(lo is None for lo,hi in limits.values()):
+            representatives.extend(cuts[0]//1-i for i in range(n,0,-1))
+        for left,right in zip(cuts,cuts[1:]+[None]):
+            representatives.append(int(left) if left.denominator==1 else float(left))
+            if right is None:break
+            if all((lo is not None and lo>left) or (hi is not None and hi<right)
+                   for lo,hi in limits.values()):continue
+            low_int=left//1+1
+            if low_int+n-1<right:interior=list(range(low_int,low_int+n))
+            else:
+                try:interior=[float(left+(right-left)*Fraction(i,n+1)) for i in range(1,n+1)]
+                except OverflowError:return {}
+                if any(not math.isfinite(v) for v in interior):return {}
+                if any(not left<Fraction(v)<right for v in interior) or len(set(interior))!=n:return {}
+            representatives.extend(interior)
+        if any(hi is None for lo,hi in limits.values()):
+            top=-((-cuts[-1])//1);representatives.extend(top+i for i in range(1,n+1))
+    out={field:[v for v in representatives if (lo is None or Fraction(v)>=lo) and (hi is None or Fraction(v)<=hi)]
+         for field,(lo,hi) in limits.items()}
+    return out if all(out.values()) else {}
+
+
+def independent_reference_palette(names,clauses,extra_literals=(),require_pair=True):
+    """Derive literal-fixed equality classes independently of Compiler cells."""
+    group=set(names)
+    if not 1<=len(group)<=5:return None
+    fixed=set(extra_literals);pairs=set()
+    def atoms(n):
+        op=n.get('op');args=n.get('args',[])
+        if op=='call':raise ValueError('opaque call')
+        if op in ('and','or','not'):
+            for child in args:yield from atoms(child)
+        else:yield n
+    def has_call(n):return n.get('op')=='call' or any(has_call(a) for a in n.get('args',[]))
+    try:
+        for clause in clauses:
+            if has_call(clause):return None
+            for atom in atoms(clause):
+                if not used_refs(atom,{})&group:continue
+                args=atom.get('args',[])
+                if atom.get('op') not in ('eq','ne') or len(args)!=2:return None
+                terms=[]
+                for term in args:
+                    if set(term)=={'ref'} and term['ref'] in group:terms.append(('ref',term['ref']))
+                    elif set(term)=={'literal'} and type(term['literal']) is str:terms.append(('literal',term['literal']))
+                    else:return None
+                if terms[0][0]==terms[1][0]=='ref' and terms[0][1]!=terms[1][1]:pairs.add(tuple(terms))
+                fixed.update(v for kind,v in terms if kind=='literal')
+        if require_pair and not pairs:return None
+        fresh=[];index=0
+        while len(fresh)<len(group):
+            candidate='\x00'*index;index+=1
+            if candidate not in fixed:fresh.append(candidate)
+        return sorted(fixed)+fresh
+    except (ValueError,KeyError,TypeError):return None
+
+
+def _independent_string_cells(domain, field, clauses, allow_presence=False):
     """Independent literal-equality truth cells, without compiler helpers."""
     if domain != {'type': 'string'}:
         return None
@@ -104,6 +238,8 @@ def _independent_string_cells(domain, field, clauses):
         if not mentions(node):
             return True
         op=node.get('op');args=node.get('args',[])
+        if allow_presence and op in ('is-present','is-missing','is-undefined') and args==[{'ref':field}]:
+            return True
         if op in ('and','or','not'):
             if (op=='not' and len(args)!=1) or (op!='not' and len(args)<2):
                 return False
@@ -253,7 +389,176 @@ def _independent_has_order_comparison(expr):
     return any(_independent_has_order_comparison(x) for x in expr.get('args',[]))
 
 
-def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
+def _independent_record_cells(names,domains,roles,inputs,current_presence,clauses,definitions):
+    """Independent exact scalar relation projection from normative ASTs."""
+    pairs=set()
+    def collect(node):
+        if node.get('op')=='member':
+            pairs.add((node['args'][0]['ref'],node['args'][1]['literal']))
+        else:
+            for child in node.get('args',[]):collect(child)
+    for clause in clauses:collect(clause)
+    if not pairs:return {}
+    parents={p for p,_ in pairs}
+    if not parents<=names:return {}
+    scalar_domains={n:domains[n] for n in names-parents}
+    scalar_inputs={n:inputs[n] for n in scalar_domains if n in inputs}
+    statuses={n:current_presence(n) for n in scalar_inputs}
+    mapping={};records={}
+    for p in sorted(parents):
+        if roles.get(p)!='input' or current_presence(p)!='required':return {}
+        shape=domains[p]
+        while shape.get('type')=='reference' and shape.get('resolved'):shape=shape['of']
+        if shape.get('type')!='record' or not shape.get('resolved'):return {}
+        record=[]
+        for m in shape['fields']:
+            member=m['id']
+            if m['presence'] in ('absent','optional'):
+                if (p,member) in pairs:return {}
+                continue
+            if m['presence']!='required':return {}
+            domain=m['domain']
+            while domain.get('type')=='reference' and domain.get('resolved'):domain=domain['of']
+            if domain.get('type') not in ('boolean','integer','real','string','enum'):return {}
+            ident='@member:'+p+':'+member
+            if ident in domains or ident in scalar_domains:return {}
+            mapping[p,member]=ident;record.append((member,ident));scalar_domains[ident]=domain
+            scalar_inputs[ident]={};statuses[ident]='required'
+        records[p]=record
+    if not pairs<=mapping.keys():return {}
+    def normalize(node):
+        if node.get('op')=='member':return {'ref':mapping[node['args'][0]['ref'],node['args'][1]['literal']]}
+        if node.get('ref') in parents or node.get('op')=='call':raise ValueError('opaque record relation')
+        if 'args' in node:return dict(node,args=[normalize(x) for x in node['args']])
+        return node
+    try:predicates=[normalize(c) for c in clauses]
+    except (ValueError,KeyError):return {}
+    referenced=set().union(*(used_refs(c,definitions) for c in predicates))
+    if not referenced<=scalar_domains.keys():return {}
+    status=lambda n:statuses[n]
+    pair=_independent_integer_pair_values(referenced,scalar_domains,scalar_inputs,status,predicates,definitions)
+    ranges={} if pair else _independent_integer_range_values(referenced,scalar_domains,scalar_inputs,status,predicates,definitions)
+    strings={n for n in referenced if scalar_domains[n]=={'type':'string'} and statuses.get(n,'required')=='required'}
+    eq_values={}
+    if 2<=len(strings)<=5:
+        literals=set();saw_pair=False
+        def allowed_atom(node):
+            nonlocal saw_pair
+            if not used_refs(node,definitions)&strings:return True
+            op=node.get('op');args=node.get('args',[])
+            if op in ('and','or','not'):return all(allowed_atom(a) for a in args)
+            if op not in ('eq','ne') or len(args)!=2:return False
+            if all(set(a)=={'ref'} and a['ref'] in strings for a in args):saw_pair=True;return True
+            for ref,value in (args,args[::-1]):
+                if set(ref)=={'ref'} and ref['ref'] in strings and set(value)=={'literal'} and isinstance(value['literal'],str):
+                    literals.add(value['literal']);return True
+            return False
+        if all(allowed_atom(p) for p in predicates) and saw_pair:
+            cells=[];i=0
+            while len(cells)<len(strings):
+                token='\x00'*i;i+=1
+                if token not in literals:cells.append(token)
+            eq_values={n:sorted(literals)+cells for n in strings}
+    representatives={}
+    for n,d in scalar_domains.items():
+        pr=statuses.get(n,'required');v=ranges.get(n) or pair.get(n) or eq_values.get(n)
+        if v is None:
+            if pr=='absent':v=[types.MISSING]
+            elif pr=='undefined':v=[types.UNDEFINED]
+            else:
+                v=types.finite_values(d)
+                if v is not None and pr=='optional':v=[types.MISSING,*v]
+        if v is None and n not in referenced:
+            if pr=='optional':v=[types.MISSING]
+            elif pr=='required':
+                if d.get('type')=='integer':v=[min(d.get('max',max(0,d.get('min',0))),max(0,d.get('min',0)))]
+                elif d=={'type':'string'}:v=['']
+                elif d.get('type')=='real':v=[d.get('min',d.get('max',0))]
+        if v is None and pr=='required':
+            for derive in (_independent_integer_cells,_independent_string_cells,_independent_real_cells):
+                v=derive(d,n,predicates)
+                if v is not None:break
+        if not v:return {}
+        representatives[n]=v if n in referenced else v[:1]
+    result={n:representatives[n] for n in names-parents}
+    for parent,members in records.items():
+        axes=[representatives[i] for _,i in members]
+        if math.prod(map(len,axes))>LIMIT:return {}
+        concrete=[{m:v for (m,_),v in zip(members,combo)} for combo in itertools.product(*axes)]
+        if not all(types.contains(domains[parent],x) for x in concrete):return {}
+        result[parent]=concrete
+    return result
+
+
+def _independent_linear_cells(names,domains,inputs,current_presence,clauses,definitions):
+    """Derive the complete scalar image and legal preimages from Source.
+
+    Deliberately does not invoke the Compiler partition helper or read its
+    receipts. Only the canonical numeric evaluation semantics are shared.
+    """
+    from fractions import Fraction
+    atoms=[]
+    def read(node):
+        if node.get('op') in ('and','or','not'):
+            for arg in node['args']:read(arg)
+            return
+        if node.get('op') not in ('lt','le','gt','ge'):return
+        for term,limit in (node['args'],node['args'][::-1]):
+            if (set(limit)=={'literal'} and type(limit['literal']) is int and term.get('op') in ('add','sub')
+                    and len(term.get('args',[]))==2 and all(set(v)=={'ref'} for v in term['args'])):
+                left,right=(v['ref'] for v in term['args'])
+                if left!=right:atoms.append((node,(term['op'],left,right),limit['literal']))
+    for c in clauses:read(c)
+    if not atoms:return {}
+    op,a,b=atoms[0][1];group={a,b}
+    if not group<=set(names):return {}
+    recognized=[n for n,key,_ in atoms if key==(op,a,b)]
+    def allowed(node):
+        if node.get('op')=='call':return False
+        if not (used_refs(node,definitions)&group):return True
+        if node.get('op') in ('and','or','not'):return all(allowed(arg) for arg in node['args'])
+        return node in recognized
+    if not all(allowed(c) for c in clauses):return {}
+    da,db=domains[a],domains[b];kind=da.get('type')
+    if kind not in ('real','integer') or db.get('type')!=kind:return {}
+    if any(x in inputs and current_presence(x)!='required' for x in group):return {}
+    a0,a1=da.get('min'),da.get('max');b0,b1=db.get('min'),db.get('max')
+    if any(v is not None and type(v) is not int for v in (a0,a1,b0,b1)):return {}
+    if op=='sub':b0,b1=((-b1 if b1 is not None else None),(-b0 if b0 is not None else None))
+    low=None if None in (a0,b0) else a0+b0;high=None if None in (a1,b1) else a1+b1
+    boundaries={value for _,key,value in atoms if key==(op,a,b)}|{low,high}
+    points=sorted(v for v in boundaries if v is not None and (low is None or v>=low) and (high is None or v<=high))
+    if points:
+        representatives=list(points)
+        for l,r in zip(points,points[1:]):
+            if r-l>=2:representatives.append(l+1)
+            elif kind=='real':representatives.append(Fraction(l+r,2))
+        if low is None:representatives.append(points[0]-1)
+        if high is None:representatives.append(points[-1]+1)
+    else:representatives=[0]
+    out={a:set(),b:set()}
+    for value in representatives:
+        # Intersect x's original interval with the reflected y interval
+        # at the selected total. Choose its lower endpoint when it exists.
+        x=a0
+        if b1 is not None and (x is None or value-b1>x):x=value-b1
+        ceiling=a1
+        if b0 is not None and (ceiling is None or value-b0<ceiling):ceiling=value-b0
+        if x is None:x=0 if ceiling is None or ceiling>=0 else ceiling
+        if ceiling is not None and x>ceiling:return {}
+        y=value-x if op=='add' else x-value
+        for field,v in ((a,x),(b,y)):
+            exact=Fraction(v)
+            try:representative=int(exact) if exact.denominator==1 else float(exact)
+            except OverflowError:return {}
+            if Fraction(representative)!=exact or not types.contains(domains[field],representative):return {}
+            out[field].add(representative)
+    return {field:sorted(vals) for field,vals in out.items()} if all(out.values()) else {}
+
+
+def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=None,observation_relations=None):
+    state_invariants=state_invariants or {}
+    observation_relations=observation_relations or {}
     rules=[r for _,_,tce in tces for r in tce['rules']]
     # Acceptance Guard-space may use only constraints whose every reference
     # is an input owned by that PI. Output/result constraints belong to a
@@ -294,6 +599,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                      if chosen is not None and chosen['source_pi']==owner
                      and all(owned_roles.get(ref)=='input'
                              for ref in used_refs(expr,definitions))]
+        has_pi_constraints=bool(constraints)
+        constraints.extend(state_invariants.values())
+        trigger_observations=observation_relations.get(ident,{})
+        constraints.extend(trigger_observations.values())
         def current_presence(field):
             info=inputs[field]
             selected=[ov for ov in overrides if chosen and ov['operation']==chosen['id']
@@ -311,10 +620,25 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
             names.update(used_refs(clause,definitions))
         dimensions=[];possible=True;partition_fields=[];partition_kinds=set()
         clauses=[*constraints,*(r['when'] for r in applicable)]
+        projected=_independent_record_cells(names,domains,roles,inputs,current_presence,clauses,definitions)
         integer_pair=_independent_integer_pair_values(names,domains,inputs,current_presence,clauses,definitions)
         integer_range=({} if integer_pair else _independent_integer_range_values(
             names,domains,inputs,current_presence,clauses,definitions))
+        raw_count=1
+        if integer_pair:
+            for field in names:
+                pr=current_presence(field) if field in inputs else 'required'
+                if pr in ('absent','undefined'):continue
+                vals=types.finite_values(domains[field])
+                if vals is not None:raw_count*=len(vals)+(1 if pr=='optional' else 0)
+        real_range=_independent_real_reference_cells(names,domains,inputs,current_presence,clauses,definitions)
+        linear_range=_independent_linear_cells(names,domains,inputs,current_presence,clauses,definitions)
+        string_group={k for k in names if domains.get(k)=={'type':'string'}
+                      and (k not in inputs or current_presence(k)=='required')}
+        string_palette=independent_reference_palette(string_group,clauses) if len(string_group)>=2 else None
         for field in sorted(names):
+            if projected:
+                dimensions.append(projected[field]);partition_fields.append(field);partition_kinds.add('record_member');continue
             if field not in domains or roles.get(field) in ('output','action'):
                 possible=False;break
             if field in inputs:
@@ -325,6 +649,16 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                     values=types.finite_values(domains[field])
                     if values is not None and presence=='optional':values=[types.MISSING,*values]
             else:values=types.finite_values(domains[field])
+            if string_palette is not None and field in string_group:
+                values=string_palette;partition_fields.append(field);partition_kinds.add('string_ref')
+            if field in linear_range:
+                values=linear_range[field]
+                partition_fields.append(field)
+                partition_kinds.add('linear_order')
+            if field in real_range:
+                values=real_range[field]
+                partition_fields.append(field)
+                partition_kinds.add('real_ref_range')
             if field in integer_range:
                 values=integer_range[field]
                 partition_fields.append(field)
@@ -345,7 +679,22 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                 if values is not None:
                     partition_fields.append(field)
                     partition_kinds.add('string')
-            if values is None and field in integer_pair:
+            if values is None and (field not in inputs or current_presence(field)=='required'):
+                values=_independent_real_cells(domains[field],field,clauses)
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('real')
+            if values is None and field in inputs and current_presence(field)=='optional':
+                representatives=_independent_integer_cells(domains[field],field,clauses,allow_presence=True)
+                kind='optional_integer'
+                if representatives is None:
+                    representatives=_independent_string_cells(domains[field],field,clauses,allow_presence=True)
+                    kind='optional_string'
+                if representatives is not None:
+                    values=[types.MISSING,*representatives]
+                    partition_fields.append(field)
+                    partition_kinds.add(kind)
+            if field in integer_pair and (values is None or raw_count>LIMIT):
                 values=integer_pair[field]
                 partition_fields.append(field)
                 partition_kinds.add((
@@ -393,17 +742,26 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                            'reason':'no admissible Source-constrained Guard state',
                            'guard_refs':sorted(names),
                            'unreachable_rules':unvisited,
-                           'excluded_by_pi_constraints':bool(constraints)}
+                           'excluded_by_pi_constraints':has_pi_constraints}
             continue
         receipt={'result':'unproven' if unknown else 'conflict' if overlaps else 'uncovered' if gaps else 'proved',
                  'guard_refs':sorted(names),'unreachable_rules':unvisited,
                  'uncovered_count':gaps if not partition_fields else None,
                  'overlap_count':overlaps if not partition_fields else None,
                  'uncovered':uncovered_examples,'overlaps':overlap_examples,
-                 'excluded_by_pi_constraints':bool(constraints)}
+                 'excluded_by_pi_constraints':has_pi_constraints}
+        if state_invariants:receipt['guard_invariant_rule_ids']=sorted(state_invariants)
+        if trigger_observations:receipt['observation_relation_rule_ids']=sorted(trigger_observations)
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
+                    else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
+                    else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
+                    else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
+                    else 'required-record-member-partition/v1' if partition_kinds=={'record_member'}
+                    else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
+                    else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
                     else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
                     else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}

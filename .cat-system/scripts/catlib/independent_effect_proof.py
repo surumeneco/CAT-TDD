@@ -115,6 +115,17 @@ def _certifies(rule,write,fields,definitions,presence_map,limit=4096):
             return types.contains(domain,expr['literal'])
         if set(expr)=={'ref'}:
             return subtyping.subset(fields[expr['ref']]['domain'],domain) is True
+        if expr.get('op')=='member':
+            parent=fields[expr['args'][0]['ref']]
+            if parent['role']!='input' or presence_map.get(parent['id'])!='required':return False
+            record=parent['domain']
+            while record.get('type')=='reference' and record.get('resolved'):record=record['of']
+            if record.get('type')!='record' or not record.get('resolved'):return False
+            matches=[m for m in record['fields'] if m['id']==expr['args'][1]['literal'] and m['presence']=='required']
+            if len(matches)!=1:return False
+            member=matches[0]['domain']
+            while member.get('type')=='reference' and member.get('resolved'):member=member['of']
+            return subtyping.subset(member,domain) is True
         if _symbolic(expr,domain,fields):return True
         dimensions=[]
         for ref in refs:

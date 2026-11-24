@@ -18,7 +18,7 @@ def _reads(node, field):
         _reads(child, field) for child in node.get('args', []))
 
 
-def _constants(node, field):
+def _constants(node, field, allow_presence=False):
     if not isinstance(node, dict):
         return None
     if node.get('op') == 'call':
@@ -27,6 +27,8 @@ def _constants(node, field):
     if not _reads(node, field):
         return []
     op, args = node.get('op'), node.get('args')
+    if allow_presence and op in ('is-present','is-missing','is-undefined') and args==[{'ref':field}]:
+        return []
     if op in ('eq', 'ne') and isinstance(args, list) and len(args) == 2:
         for left, right in ((args[0], args[1]), (args[1], args[0])):
             if (isinstance(left, dict) and set(left) == {'ref'}
@@ -40,7 +42,7 @@ def _constants(node, field):
             return None
         found = []
         for arg in args:
-            nested = _constants(arg, field)
+            nested = _constants(arg, field, allow_presence)
             if nested is None:
                 return None
             found.extend(nested)
@@ -48,7 +50,7 @@ def _constants(node, field):
     return None
 
 
-def string_partition_values(domain, field, predicates, allow_unused=False):
+def string_partition_values(domain, field, predicates, allow_unused=False, allow_presence=False):
     """Give concrete representatives of exact eq/ne truth classes, or None.
 
     Only the unrestricted string Domain is eligible. Aliases, formatted
@@ -59,7 +61,7 @@ def string_partition_values(domain, field, predicates, allow_unused=False):
         return None
     found = []
     for predicate in predicates:
-        literals = _constants(predicate, field)
+        literals = _constants(predicate, field, allow_presence)
         if literals is None:
             return None
         found.extend(literals)
@@ -72,3 +74,35 @@ def string_partition_values(domain, field, predicates, allow_unused=False):
     while other in constants:
         other += '\x00'
     return [*sorted(constants), other]
+
+
+def reference_palette(names,predicates,extra_literals=(),require_pair=True):
+    """Complete equality classes of up to five unrestricted string variables.
+
+    All mentioned constants are fixed. N fresh distinct strings suffice for
+    every equality pattern of N variables; no transform or hidden call allowed.
+    This may also cover before/after variables and explicit copy/literal writes.
+    """
+    group=set(names)
+    if not 1<=len(group)<=5:return None
+    constants=set(extra_literals);paired=False
+    def has_call(node):return node.get('op')=='call' or any(has_call(a) for a in node.get('args',[]))
+    def inspect(node):
+        nonlocal paired
+        if not any(_reads(node,k) for k in group):return True
+        args=node.get('args',[])
+        if node.get('op') in ('and','or','not'):return all(inspect(a) for a in args)
+        if node.get('op') not in ('eq','ne') or len(args)!=2:return False
+        a,b=args
+        if set(a)==set(b)=={'ref'} and {a['ref'],b['ref']}<=group:
+            paired |= a['ref']!=b['ref'];return True
+        for ref,lit in ((a,b),(b,a)):
+            if set(ref)=={'ref'} and ref['ref'] in group and set(lit)=={'literal'} and type(lit['literal']) is str:
+                constants.add(lit['literal']);return True
+        return False
+    if any(has_call(p) or not inspect(p) for p in predicates) or require_pair and not paired:return None
+    fresh=[];value=''
+    while len(fresh)<len(group):
+        if value not in constants:fresh.append(value)
+        value+='\x00'
+    return [*sorted(constants),*fresh]

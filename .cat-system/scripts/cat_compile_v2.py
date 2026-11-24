@@ -42,7 +42,7 @@ INT = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')
 SAFE_INT = 9007199254740991
 OPS = {'eq','ne','lt','le','gt','ge','and','or','not','add','sub','mul',
        'div','floor','abs','length','concat','to-int','set-add','set-remove','call',
-       'is-missing','is-undefined','is-present'}
+       'is-missing','is-undefined','is-present','member'}
 
 _PRESENT_GUARD_VALUE=object()
 
@@ -629,6 +629,48 @@ def literal_type(v):
     if isinstance(v,list):return 'sequence'
     return 'null'
 
+def _record_shape(domain):
+    while domain.get('type')=='reference' and domain.get('resolved'):
+        domain=domain['of']
+    return domain if domain.get('type')=='record' and domain.get('resolved') else None
+
+
+def _member_domain(expr,fields):
+    if expr.get('op')!='member':return None
+    args=expr.get('args',[])
+    require(set(expr)=={'op','args'} and len(args)==2 and set(args[0])=={'ref'}
+            and set(args[1])=={'literal'} and isinstance(args[1]['literal'],str),'invalid member projection')
+    parent=fields.get(args[0]['ref'])
+    require(parent and parent['role']=='input' and parent.get('presence','required')=='required',
+            'member projection requires declared required PI input record')
+    record=_record_shape(parent['domain'])
+    require(record is not None,'member projection requires resolved record')
+    member=next((f for f in record['fields'] if f['id']==args[1]['literal']),None)
+    require(member and member['presence']=='required','member projection requires declared required member')
+    domain=member['domain']
+    while domain.get('type')=='reference' and domain.get('resolved'):domain=domain['of']
+    require(domain.get('type') in ('boolean','integer','real','string','enum'),
+            'member projection supports only nonnullable scalar Domain')
+    return domain
+
+
+def _bind_member_refs(expr,fields):
+    # Existing exact field IDs have precedence. A projection is one member
+    # level, explicitly bound to the parent field, not another wire field.
+    if set(expr)=={'ref'} and expr['ref'] not in fields and not expr['ref'].startswith('param.'):
+        parent,sep,member=expr['ref'].rpartition('.')
+        if sep and parent in fields and _record_shape(fields[parent]['domain']) is not None:
+            bound={'op':'member','args':[{'ref':parent},{'literal':member}]}
+            _member_domain(bound,fields)
+            expr.clear();expr.update(bound);return
+    for arg in expr.get('args',[]):_bind_member_refs(arg,fields)
+
+
+def _member_parents(expr):
+    if expr.get('op')=='member':return {expr['args'][0]['ref']}
+    return set().union(*(_member_parents(a) for a in expr.get('args',[]))) if expr.get('args') else set()
+
+
 def inspect_expr(expr, fields, definitions, params=(), stack=()):
     """Conservative AST type checker; unsupported conversions fail, never coerce."""
     require(isinstance(expr,dict),'expression must be AST object')
@@ -648,6 +690,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     check_keys(expr,['op','args'],['name'],where='operator expression')
     op=expr['op']; require(op in OPS,'unsupported operator '+str(op))
     args=expr['args']; require(isinstance(args,list),'operator args must be array')
+    if op=='member':return _member_domain(expr,fields)['type']
     if op in ('is-missing','is-undefined','is-present'):
         require(len(args)==1 and isinstance(args[0],dict) and set(args[0])=={'ref'},
                 op+' requires exactly one direct PI field reference')
@@ -675,11 +718,23 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
         require(all(t in permitted or t=='parameter' for t in types),
                 f'{op}: invalid operand types {types}; expected {sorted(permitted)}')
     if op in ('eq','ne'):
+        if any(_member_parents(a) for a in args):
+            def comparable(a,t):
+                d=_member_domain(a,fields) if a.get('op')=='member' else fields.get(a.get('ref'),{}).get('domain',{})
+                if d and d.get('type')=='enum':
+                    kinds={literal_type(x) for x in d['values']}
+                    require(len(kinds)==1,'heterogeneous enum member comparison unsupported')
+                    return next(iter(kinds))
+                return t
+            require(comparable(args[0],types[0])==comparable(args[1],types[1]),'member comparison type mismatch')
         require(not any(ref in fields and typed.has_semantic_domain(fields[ref]['domain'])
                         for ref in used_refs(expr,definitions)),
                 'typed JSON/instant expression requires explicit domain binding')
         return 'boolean'
-    if op in ('lt','le','gt','ge'):types_are({'integer','real'});return 'boolean'
+    if op in ('lt','le','gt','ge'):
+        types_are({'integer','real'})
+        if any(_member_parents(a) for a in args):require(types[0]==types[1],'member comparison type mismatch')
+        return 'boolean'
     if op in ('and','or','not'):types_are({'boolean'});return 'boolean'
     if op in ('add','sub','mul'):
         types_are({'integer','real'});return 'real' if 'real' in types else 'integer'
@@ -705,6 +760,89 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
         return 'integer'
     raise Blocked('operator missing return type '+op)
 
+def _linear_order_atom(expr):
+    """Recognize only direct order comparison of two distinct numeric refs
+    added/subtracted against an integer literal. Never reinterpret equality.
+    """
+    if expr.get('op') not in ('lt','le','gt','ge') or len(expr.get('args',[]))!=2:return None
+    for index in (0,1):
+        term,limit=expr['args'][index],expr['args'][1-index]
+        if (term.get('op') not in ('add','sub') or len(term.get('args',[]))!=2
+                or set(limit)!={'literal'} or type(limit['literal']) is not int):continue
+        a,b=term['args']
+        if set(a)==set(b)=={'ref'} and a['ref']!=b['ref']:
+            return term,limit['literal'],index
+    return None
+
+
+def _linear_order_values(fields,names,predicates,presence,definitions):
+    """Order-cell witnesses for one scalar sum/difference over two intervals.
+
+    Every observed atom of the pair must depend on the same exact term.
+    Its image is an interval (integer lattice or real interval); we only
+    certify when a legal, exactly representable preimage of every cell exists.
+    """
+    from fractions import Fraction
+    terms=[]
+    def collect(node):
+        if node.get('op') in ('and','or','not'):
+            for arg in node['args']:collect(arg)
+        else:
+            atom=_linear_order_atom(node)
+            if atom:terms.append(atom)
+    for pred in predicates:collect(pred)
+    if not terms:return {}
+    term=terms[0][0];a,b=(x['ref'] for x in term['args']);group={a,b}
+    if not group<=set(names):return {}
+    def legal(node):
+        if node.get('op')=='call':return False
+        if not group.intersection(used_refs(node,definitions)):return True
+        if node.get('op') in ('and','or','not'):return all(legal(x) for x in node['args'])
+        atom=_linear_order_atom(node)
+        return atom is not None and atom[0]==term
+    if not all(legal(p) for p in predicates):return {}
+    domains=[fields[n]['domain'] for n in (a,b)]
+    kind=domains[0].get('type')
+    if kind not in ('integer','real') or domains[1].get('type')!=kind:return {}
+    if any(n in presence and presence[n]!='required' for n in group):return {}
+    bounds=[(d.get('min'),d.get('max')) for d in domains]
+    if any(v is not None and type(v) is not int for pair in bounds for v in pair):return {}
+    (al,ah),(bl,bh)=bounds
+    negative=term['op']=='sub'
+    if negative:bl,bh=(-bh if bh is not None else None),(-bl if bl is not None else None)
+    lower=al+bl if al is not None and bl is not None else None
+    upper=ah+bh if ah is not None and bh is not None else None
+    cuts=sorted({x for x in [*(t[1] for t in terms if t[0]==term),lower,upper]
+                 if x is not None and (lower is None or x>=lower) and (upper is None or x<=upper)})
+    targets=[]
+    if not cuts:targets=[0]
+    else:
+        if lower is None:targets.append(cuts[0]-1)
+        for i,cut in enumerate(cuts):
+            targets.append(cut)
+            if i+1<len(cuts):
+                right=cuts[i+1]
+                if cut+1<right:targets.append(cut+1)
+                elif kind=='real':targets.append(Fraction(cut+right,2))
+        if upper is None:targets.append(cuts[-1]+1)
+    values={a:set(),b:set()}
+    for z in targets:
+        lows=[x for x in (al,z-bh if bh is not None else None) if x is not None]
+        highs=[x for x in (ah,z-bl if bl is not None else None) if x is not None]
+        lo=max(lows) if lows else None;hi=min(highs) if highs else None
+        if lo is not None and hi is not None and lo>hi:return {}
+        x=lo if lo is not None else min(0,hi) if hi is not None else 0
+        y=z-x
+        if negative:y=-y
+        for name,value,domain in zip((a,b),(x,y),domains):
+            f=Fraction(value)
+            try:concrete=int(f) if f.denominator==1 else float(f)
+            except OverflowError:return {}
+            if Fraction(concrete)!=f or not typed.contains(domain,concrete):return {}
+            values[name].add(concrete)
+    return {n:sorted(v) for n,v in values.items()} if all(values.values()) else {}
+
+
 def eval_expr(expr, env, definitions, params=None):
     if 'literal' in expr:return deepcopy(expr['literal'])
     if 'ref' in expr:
@@ -729,7 +867,28 @@ def eval_expr(expr, env, definitions, params=None):
             if op=='and' and not value:return False
             if op=='or' and value:return True
         return op=='and'
+    # This exact order fragment compares mathematical numeric values, not a
+    # rounded intermediate binary64 sum. Integer/float inputs retain their
+    # represented values; general arithmetic and Effect values are unchanged.
+    atom=_linear_order_atom(expr)
+    if atom is not None:
+        from fractions import Fraction
+        import math
+        term,limit,index=atom
+        operands=[eval_expr(x,env,definitions,params) for x in term['args']]
+        require(all(type(x) is int or type(x) is float and math.isfinite(x) for x in operands),
+                'linear order requires finite numeric operands')
+        a,b=map(Fraction,operands)
+        value=a+b if term['op']=='add' else a-b
+        left,right=(value,limit) if index==0 else (limit,value)
+        return {'lt':lambda:left<right,'le':lambda:left<=right,
+                'gt':lambda:left>right,'ge':lambda:left>=right}[op]()
     xs=[eval_expr(x,env,definitions,params) for x in expr['args']]
+    if op=='member':
+        require(len(xs)==2 and isinstance(xs[0],dict) and isinstance(xs[1],str) and xs[1] in xs[0]
+                and xs[0][xs[1]] is not typed.MISSING and xs[0][xs[1]] is not typed.UNDEFINED,
+                'required record member absent')
+        return deepcopy(xs[0][xs[1]])
     if op=='call':
         f=definitions[expr['name']];return eval_expr(f['body'],env,definitions,dict(zip(f['params'],xs)))
     try:
@@ -836,6 +995,9 @@ def _symbolic_effect_containment(expr, target_domain, fields):
     """
     op=expr.get('op')
     args=expr.get('args',[])
+    if op=='member':
+        try:return semantic_subtyping.subset(_member_domain(expr,fields),target_domain) is True
+        except Blocked:return None
     if op=='add' and len(args)>=2:
         domains=[]
         for arg in args:
@@ -999,6 +1161,14 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
     return checks
 
 
+def _string_reference_values(fields,names,predicates,presence):
+    group={n for n in names if fields.get(n,{}).get('domain')=={'type':'string'}
+           and presence.get(n,'required')=='required'}
+    if len(group)<2:return {}
+    palette=semantic_string_partition.reference_palette(group,predicates)
+    return {n:palette for n in group} if palette is not None else {}
+
+
 def _integer_reference_equality_values(fields, names, predicates, input_presence, definitions):
     """Exact weak-order Guard classes for 2..5 same-Domain integer references.
 
@@ -1118,11 +1288,159 @@ def _integer_reference_range_values(fields, names, predicates, input_presence, d
         result[name]=admissible
     return result
 
+def _real_reference_range_values(fields, names, predicates, input_presence, definitions):
+    """Local real weak-order classes for 2..3 direct required references.
+
+    Fix every literal and Domain endpoint, then cover all relative orderings
+    within each open cell by N distinct representable values. Failure to
+    construct such witnesses stays unproved; no arithmetic or typed equality.
+    """
+    from fractions import Fraction
+    import math
+    refs=sorted(name for name in names if name in fields
+                and fields[name]['domain'].get('type')=='real'
+                and (name not in input_presence or input_presence[name]=='required'))
+    if not 2<=len(refs)<=3:return {}
+    group=set(refs);cuts=set();coupled=False
+    def number(x):return type(x) is int or type(x) is float and math.isfinite(x)
+    domains={name:fields[name]['domain'] for name in refs}
+    for domain in domains.values():
+        for value in (domain.get('min'),domain.get('max')):
+            if value is None:continue
+            if not number(value):return {}
+            cuts.add(Fraction(value))
+    def supported(node):
+        nonlocal coupled
+        if not isinstance(node,dict) or node.get('op')=='call':return False
+        if not group.intersection(used_refs(node,definitions)):return True
+        op,args=node.get('op'),node.get('args',[])
+        if op in ('and','or','not'):return all(supported(a) for a in args)
+        if op not in ('lt','le','gt','ge') or len(args)!=2:return False
+        if all(set(a)=={'ref'} and a['ref'] in group for a in args):
+            coupled |= args[0]['ref']!=args[1]['ref']
+            return True
+        for a,b in (args,args[::-1]):
+            if set(a)=={'ref'} and a['ref'] in group and set(b)=={'literal'} and number(b['literal']):
+                cuts.add(Fraction(b['literal']));return True
+        return False
+    if not all(supported(p) for p in predicates) or not coupled:return {}
+    n=len(refs);points=sorted(cuts);values=[]
+    if not points:values=list(range(n))
+    else:
+        if any(d.get('min') is None for d in domains.values()):
+            values.extend(range(math.floor(points[0])-n,math.floor(points[0])))
+        for i,point in enumerate(points):
+            values.append(int(point) if point.denominator==1 else float(point))
+            if i+1==len(points):continue
+            right=points[i+1]
+            if not any((d.get('min') is None or Fraction(d['min'])<=point)
+                       and (d.get('max') is None or Fraction(d['max'])>=right) for d in domains.values()):continue
+            start=math.floor(point)+1
+            if start+n-1<right:cell=list(range(start,start+n))
+            else:
+                try:cell=[float((point*(n+1-k)+right*k)/(n+1)) for k in range(1,n+1)]
+                except OverflowError:return {}
+                if not all(math.isfinite(x) for x in cell):return {}
+                if not point<Fraction(cell[0]) or not Fraction(cell[-1])<right or any(a>=b for a,b in zip(cell,cell[1:])):return {}
+            values.extend(cell)
+        if any(d.get('max') is None for d in domains.values()):
+            start=math.ceil(points[-1])+1;values.extend(range(start,start+n))
+    result={name:[v for v in values if typed.contains(domain,v)] for name,domain in domains.items()}
+    return result if all(result.values()) else {}
+
+
 def _has_pair_order_comparison(node):
     """Ordering labels cannot be confused with equality-only receipts."""
     if not isinstance(node,dict):return False
     return (node.get('op') in ('lt','le','gt','ge')
             or any(_has_pair_order_comparison(x) for x in node.get('args',[])))
+
+
+def _record_projection_values(fields,names,predicates,presence,definitions,member_exprs=()):
+    """Exact Cartesian cells of projected scalar members; reassemble wire record.
+
+    Temporary analysis IDs never escape into the Model or vector payload.
+    A whole-record read or unknown relation disables this proof fragment.
+    """
+    parents=set().union(*(_member_parents(p) for p in [*predicates,*member_exprs]))
+    if not parents:return {}
+    if not parents<=set(names):return {}
+    flat={name:fields[name] for name in names if name not in parents}
+    flat_presence={n:presence[n] for n in flat if n in presence}
+    groups={};keys={}
+    for parent in sorted(parents):
+        if presence.get(parent)!='required':return {}
+        shape=_record_shape(fields[parent]['domain'])
+        if shape is None:return {}
+        groups[parent]=[]
+        for member in shape['fields']:
+            mid=member['id'];key='@member:'+parent+':'+mid
+            if key in flat or key in fields:return {}
+            if member['presence'] in ('optional','absent'):
+                continue
+            if member['presence']!='required':return {}
+            d=member['domain']
+            while d.get('type')=='reference' and d.get('resolved'):d=d['of']
+            if d.get('type') not in ('boolean','integer','real','string','enum'):return {}
+            keys[parent,mid]=key;groups[parent].append((mid,key))
+            flat[key]={'id':key,'domain':d,'role':'input','presence':'required'}
+            flat_presence[key]='required'
+    def rewrite(node):
+        if node.get('op')=='member':
+            parent,mid=node['args'][0]['ref'],node['args'][1]['literal']
+            if (parent,mid) not in keys:raise Blocked('projection not in required member scope')
+            return {'ref':keys[parent,mid]}
+        if node.get('ref') in parents or node.get('op')=='call':raise Blocked('whole record or opaque call in projection partition')
+        return ({**node,'args':[rewrite(a) for a in node['args']]} if 'args' in node else node)
+    try:clauses=[rewrite(p) for p in predicates]
+    except Blocked:return {}
+    used=set().union(*(used_refs(p,definitions) for p in clauses)) if clauses else set()
+    if not used<=set(flat):return {}
+    integer_pair=_integer_reference_equality_values(flat,used,clauses,flat_presence,definitions)
+    integer_range={} if integer_pair else _integer_reference_range_values(flat,used,clauses,flat_presence,definitions)
+    strings={n for n in used if flat[n]['domain']=={'type':'string'} and flat_presence.get(n,'required')=='required'}
+    string_values={}
+    if 2<=len(strings)<=5:
+        constants=set();pair=False
+        def string_clause(n):
+            nonlocal pair
+            if not strings.intersection(used_refs(n,definitions)):return True
+            args=n.get('args',[])
+            if n.get('op') in ('and','or','not'):return all(string_clause(a) for a in args)
+            if n.get('op') not in ('eq','ne') or len(args)!=2:return False
+            if all(set(a)=={'ref'} and a['ref'] in strings for a in args):pair=True;return True
+            for a,b in (args,args[::-1]):
+                if set(a)=={'ref'} and a['ref'] in strings and set(b)=={'literal'} and type(b['literal']) is str:
+                    constants.add(b['literal']);return True
+            return False
+        if all(string_clause(c) for c in clauses) and pair:
+            fresh=[];candidate=''
+            while len(fresh)<len(strings):
+                if candidate not in constants:fresh.append(candidate)
+                candidate+='\x00'
+            string_values={n:[*sorted(constants),*fresh] for n in strings}
+    values={}
+    for name,field in flat.items():
+        domain=field['domain'];pr=flat_presence.get(name,'required')
+        candidates=integer_range.get(name) or integer_pair.get(name) or string_values.get(name)
+        if candidates is None:
+            candidates=_presence_cases(domain,pr) if name in flat_presence else typed.finite_values(domain)
+        if candidates is None and name not in used and pr=='optional':candidates=[typed.MISSING]
+        if candidates is None and pr=='required':
+            for solver in (semantic_interval_partition.integer_partition_values,semantic_string_partition.string_partition_values,semantic_interval_partition.real_partition_values):
+                candidates=solver(domain,name,clauses,allow_unused=name not in used)
+                if candidates is not None:break
+        if candidates is None or not candidates:return {}
+        # All unobserved variables are irrelevant to this Guard relation;
+        # choose one valid witness, not a sampled truth cell.
+        values[name]=candidates if name in used else candidates[:1]
+    result={n:values[n] for n in names if n not in parents}
+    for parent,members in groups.items():
+        dims=[values[key] for _,key in members]
+        if __import__('math').prod(map(len,dims))>65536:return {}
+        result[parent]=[dict(zip((mid for mid,_ in members),cell)) for cell in itertools.product(*dims)]
+        if not all(typed.contains(fields[parent]['domain'],value) for value in result[parent]):return {}
+    return result
 
 
 def _presence_cases(domain,presence):
@@ -1133,6 +1451,50 @@ def _presence_cases(domain,presence):
     values=typed.finite_values(domain)
     if values is None:return None
     return ([typed.MISSING,*values] if presence=='optional' else values)
+
+
+def _guard_invariant_exprs(proofs):
+    """Only opt-in certificates may restrict the finite Guard universe."""
+    return {p['rule_id']:parse_expr_text(p['scope'][len('initial-state-relation '):])
+            for p in proofs if p.get('requirement')=='@cat:finite-state-guard-invariant/v1'
+            and p.get('status')=='passed' and p.get('scope','').startswith('initial-state-relation ')}
+
+
+def _proved_guard_invariants(documents, fields, process, rules, checks, confirmed):
+    if not confirmed:return {}
+    proved={}
+    for doc in documents:
+        if doc['process']!=process or doc['kind']!='domain-spec' or not doc['scope_verified']:continue
+        for rule in doc['rules']:
+            scope=rule.get('condition','')
+            if (rule.get('requirement')!='@cat:finite-state-guard-invariant/v1'
+                    or rule.get('verification_contract')!='cat:intrinsic-model/v1'
+                    or not scope.startswith('initial-state-relation ')):continue
+            try:
+                expr=parse_expr_text(scope[len('initial-state-relation '):])
+                refs=sorted(used_refs(expr,{}))
+                if not refs or any(fields.get(r,{}).get('role')!='state' for r in refs):continue
+                if inspect_expr(expr,fields,{})!='boolean':continue
+                dims=[typed.finite_values(fields[r]['domain']) for r in refs]
+                if any(not d for d in dims) or __import__('math').prod(map(len,dims))>4096:continue
+                states=[dict(zip(refs,v)) for v in itertools.product(*dims)]
+                valid=[env for env in states if eval_expr(expr,env,{}) is True]
+                if not valid:continue
+                preserves=True
+                for row in rules:
+                    for n,out in enumerate(row['allowed'],1):
+                        writes=[(i,w) for i,w in enumerate(out['write'],1) if w['target'] in refs]
+                        if any(used_refs(w['expr'],{})-set(refs) or checks.get(
+                            f"{row['source_artifact']}#{row['id']}:{n}:{i}:{w['target']}",{}).get('result')!='proved'
+                            for i,w in writes):preserves=False;break
+                        for env in valid:
+                            after={**env,**{w['target']:eval_expr(w['expr'],env,{}) for _,w in writes}}
+                            if eval_expr(expr,after,{}) is not True:preserves=False;break
+                        if not preserves:break
+                    if not preserves:break
+                if preserves:proved[rule['id']]=expr
+            except (Blocked,KeyError,TypeError,ValueError,ArithmeticError):continue
+    return proved
 
 
 def _active_pi_constraints(model, trigger):
@@ -1447,8 +1809,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             for param in d['params']:
                 (semantic_ident(param,'DomainRule param',False) if contract=='markdown-v2' else ident(param,'DomainRule param'))
             unique(d['params'],'DomainRule params');definitions[d['id']]=d
-        for d in definitions.values():inspect_expr(d['body'],fields,definitions,d['params'])
+        for d in definitions.values():
+            require(not _member_parents(d['body']),'record member projections must be bound directly in PI/TCE, not hidden in DomainRule')
+            inspect_expr(d['body'],fields,definitions,d['params'])
     for predicate in constraints:
+        if contract=='markdown-v2':_bind_member_refs(predicate,pi_fields)
+        else:require(not _member_parents(predicate),'record projection requires markdown-v2 Source')
         require(inspect_expr(predicate,pi_fields,definitions)=='boolean','PI constraint must be boolean')
 
     # A flattened inventory is retained for old source/model readers, but
@@ -1467,6 +1833,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         accepted=sorted({op['trigger'] for op in pi_operations
                          if op['source_pi']==pi_id and op['direction']=='accept'})
         active=accepted if input_only else []
+        for trigger in active:
+            for parent in _member_parents(predicate):
+                require(_trigger_input_presence(fields[parent],_input_operation_bindings(pi_operations,trigger),operation_presence)=='required',
+                        'record projection parent is not required on accepted Operation')
         pi_constraint_scopes.append({'source_pi':pi_id,'expr':predicate,
                                      'triggers':active})
         if not active and contract=='markdown-v2':
@@ -1485,6 +1855,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             check_keys(r,['id','trigger','when','allowed'],where='TCE behavior')
             (semantic_ident(r['id'],'TCE behavior id') if contract=='markdown-v2' else ident(r['id'],'TCE rule id'))
             require(r['trigger'] in {t['id'] for t in p['triggers']},'undeclared trigger '+str(r['trigger']))
+            if contract=='markdown-v2':_bind_member_refs(r['when'],fields)
+            else:require(not _member_parents(r['when']),'record projection requires markdown-v2 Source')
             require(inspect_expr(r['when'],fields,definitions)=='boolean','TCE condition must be boolean')
             require(not any(fields[x]['role'] in ('output','action') for x in used_refs(r['when'],definitions)),'Condition reads non-observable output/action')
             require(isinstance(r['allowed'],list) and r['allowed'],'allowed results must be nonempty')
@@ -1495,6 +1867,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 for e in outcome['write']:
                     check_keys(e,['target','expr'],where='Effect')
                     require(e['target'] in fields and fields[e['target']]['role'] in ('state','output','action'),'Effect target not declared/actuable '+str(e['target']))
+                    if contract=='markdown-v2':_bind_member_refs(e['expr'],fields)
+                    else:require(not _member_parents(e['expr']),'record projection requires markdown-v2 Source')
                     produced=inspect_expr(e['expr'],fields,definitions)
                     expected=fields[e['target']]['domain']['type']
                     # Direct references preserve their full declared Domain, not only
@@ -1516,6 +1890,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                     typed.same(source_domain,target_domain['of'])))
                         require(inclusion is True,
                                 f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    elif expression.get('op')=='member':
+                        require(semantic_subtyping.subset(_member_domain(expression,fields),target_domain) is True,
+                                f'Effect {e["target"]}: projected member Domain mismatch')
                     elif 'literal' in expression:
                         # A literal that has the right broad kind may still fall
                         # outside a range, format, collection, or enum Domain.
@@ -1534,6 +1911,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                         expr=e['expr']
                         if 'literal' in expr:
                             require(in_domain(fields[e['target']]['domain'],expr['literal']),'enum literal not in Effect target domain')
+                        elif expr.get('op')=='member':
+                            require(semantic_subtyping.subset(_member_domain(expr,fields),fields[e['target']]['domain']) is True,
+                                    'member enum not subset of effect enum')
                         elif 'ref' in expr and expr['ref'] in fields and fields[expr['ref']]['domain']['type']=='enum':
                             require(all(in_domain(fields[e['target']]['domain'],x) for x in fields[expr['ref']]['domain']['values']),'source enum not subset of effect enum')
                         else:
@@ -1556,9 +1936,17 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         for rule in rules:
             accepted=[op for op in pi_operations if op['direction']=='accept'
                       and op.get('trigger')==rule['trigger']]
+            member_parents=_member_parents(rule['when'])
+            for outcome in rule['allowed']:
+                for write in outcome['write']:member_parents.update(_member_parents(write['expr']))
             if len(accepted)>1:
+                require(not member_parents,'member projection requires unambiguous accepted Operation')
                 continue  # The existing ambiguous-Operation audit fails closed.
             input_owners=_input_operation_bindings(pi_operations,rule['trigger'])
+            for parent in member_parents:
+                require(len(accepted)==1 and accepted[0]['source_pi']==fields[parent].get('source_pi') and
+                        _trigger_input_presence(fields[parent],input_owners,operation_presence)=='required',
+                        'member projection parent unavailable or nonrequired on this Operation')
             refs=used_refs(rule['when'],definitions)
             for outcome in rule['allowed']:
                 for write in outcome['write']:
@@ -1575,6 +1963,25 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             require(not unavailable,
                     f'TCE {rule["id"]} reads Observation unavailable at Trigger {rule["trigger"]}: {unavailable}')
 
+    effect_checks=_effect_totality_checks(
+        rules,fields,definitions,pi_operations=pi_operations,
+        operation_presence=operation_presence)
+    guard_invariants=_proved_guard_invariants(rule_docs,fields,p['process'],rules,effect_checks,
+        all(fm['status']=='confirmed' for _,fm in files))
+    from catlib import semantic_observation_relation
+    observation_relations=semantic_observation_relation.prove(rule_docs,p['process'],fields,
+        {t['id'] for t in p['triggers']},all(fm['status']=='confirmed' for _,fm in files))
+    observation_proof_ids={rid for rels in observation_relations.values() for rid in rels}
+    from catlib import semantic_transition_relation
+    transition_proofs={r['id'] for doc in rule_docs for r in doc['rules']
+        if all(fm['status']=='confirmed' for _,fm in files) and doc['process']==p['process']
+        and doc['kind']=='domain-spec' and doc['scope_verified']
+        and r.get('requirement')==semantic_transition_relation.TOKEN
+        and r.get('verification_contract')=='cat:intrinsic-model/v1'
+        and semantic_transition_relation.prove(r['condition'],fields,pi_docs,rules,effect_checks,guard_invariants.values())}
+    intrinsic_proofs=semantic_intrinsic_rules.evaluate(
+        rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
+        operation_presence,effect_checks,guard_invariants,transition_proofs,observation_proof_ids)
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
     # operation owns its output and every TCE alternative respects the
@@ -1598,6 +2005,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         scoped_constraints = ([x['expr'] for x in pi_constraint_scopes
                                if trigger in x['triggers']]
                               if contract=='markdown-v2' else constraints)
+        has_pi_constraints=bool(scoped_constraints)
+        trigger_observations=observation_relations.get(trigger,{})
+        scoped_constraints=[*scoped_constraints,*guard_invariants.values(),*trigger_observations.values()]
         relevant=set().union(
             *(used_refs(r['when'],definitions) for r in rr),
             *(used_refs(c,definitions) for c in scoped_constraints)) if rr or scoped_constraints else set()
@@ -1623,14 +2033,35 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         partition_fields=[]
         partition_kinds=set()
         predicates=[*scoped_constraints,*(r['when'] for r in rr)]
+        projected=_record_projection_values(fields,ordered,predicates,input_presence,definitions)
         integer_pair=_integer_reference_equality_values(
             fields,ordered,predicates,input_presence,definitions)
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,ordered,predicates,input_presence,definitions))
+        raw_count=__import__('math').prod(len(v) if v is not None else 1 for v in
+            (_presence_cases(fields[k]['domain'],input_presence[k]) if k in input_presence
+             else typed.finite_values(fields[k]['domain']) for k in ordered)) if integer_pair else 0
+        real_range=_real_reference_range_values(fields,ordered,predicates,input_presence,definitions)
+        linear_range=_linear_order_values(fields,ordered,predicates,input_presence,definitions)
+        string_pair=_string_reference_values(fields,ordered,predicates,input_presence)
         for field_id in ordered:
+            if projected:
+                domainvalues.append(projected[field_id]);partition_fields.append(field_id);partition_kinds.add('record_member');continue
             field=fields[field_id]
             values=(_presence_cases(field['domain'],input_presence[field_id])
                     if field_id in input_presence else typed.finite_values(field['domain']))
+            if field_id in string_pair:
+                values=string_pair[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('string_ref')
+            if field_id in linear_range:
+                values=linear_range[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('linear_order')
+            if field_id in real_range:
+                values=real_range[field_id]
+                partition_fields.append(field_id)
+                partition_kinds.add('real_ref_range')
             if field_id in integer_range:
                 # Values for every coupled reference must come from the same
                 # Domain-endpoint/literal cuts. A per-field interval sampler
@@ -1658,7 +2089,25 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 if values is not None:
                     partition_fields.append(field_id)
                     partition_kinds.add('string')
-            if values is None and field_id in integer_pair:
+            if values is None and (field_id not in input_presence
+                                   or input_presence[field_id]=='required'):
+                values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('real')
+            if values is None and input_presence.get(field_id)=='optional':
+                present=semantic_interval_partition.integer_partition_values(
+                    field['domain'],field_id,predicates,allow_presence=True)
+                kind='optional_integer'
+                if present is None:
+                    present=semantic_string_partition.string_partition_values(
+                        field['domain'],field_id,predicates,allow_presence=True)
+                    kind='optional_string'
+                if present is not None:
+                    values=[typed.MISSING,*present]
+                    partition_fields.append(field_id)
+                    partition_kinds.add(kind)
+            if field_id in integer_pair and (values is None or raw_count>65536):
                 values=integer_pair[field_id]
                 partition_fields.append(field_id)
                 partition_kinds.add((
@@ -1713,7 +2162,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                   'reason':'no admissible Source-constrained Guard state',
                                   'guard_refs':ordered,
                                   'unreachable_rules':sorted(unreachable),
-                                  'excluded_by_pi_constraints':bool(scoped_constraints)}
+                                  'excluded_by_pi_constraints':has_pi_constraints}
             presence_unproven.update(special & relevant)
             continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
@@ -1722,10 +2171,19 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                'overlaps':overlaps[:16],'uncovered':gaps[:64],
                'uncovered_count':len(gaps) if not partition_fields else None,
                'unreachable_rules':sorted(unreachable),
-               'excluded_by_pi_constraints':bool(scoped_constraints)}
+               'excluded_by_pi_constraints':has_pi_constraints}
+        if guard_invariants:check['guard_invariant_rule_ids']=sorted(guard_invariants)
+        if trigger_observations:check['observation_relation_rule_ids']=sorted(trigger_observations)
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
+                    else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
+                    else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
+                    else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
+                    else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
+                    else 'required-record-member-partition/v1' if partition_kinds=={'record_member'}
+                    else 'optional-string-literal-equality-partition/v1' if partition_kinds=={'optional_string'}
+                    else 'optional-integer-literal-partition/v1' if partition_kinds=={'optional_integer'}
                     else 'integer-reference-equality-partition/v1' if partition_kinds=={'integer_ref_pair'}
                     else 'integer-reference-order-partition/v1' if partition_kinds=={'integer_ref_order'}
                     else 'integer-reference-equality-partition/v2' if partition_kinds=={'integer_ref_multi_equality'}
@@ -1759,8 +2217,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     # A rule can be proved here only when the *authorized source itself*
     # declares one of the exact, fully decidable model predicates.
     # Runtime fixtures and free-text Rule verification do not qualify.
-    intrinsic_proofs=semantic_intrinsic_rules.evaluate(
-        rule_docs,list(fields.values()),p['triggers'],rules)
+    # Establish selected Effect value totality before certifying a fresh output.
     proven_rule_ids={proof['rule_id'] for proof in intrinsic_proofs}
     for rule in rule_obligations:
         if rule['id'] in proven_rule_ids:
@@ -1768,9 +2225,6 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     unverified_rule_ids=sorted({r['id'] for r in rule_obligations
                                 if r['verification_status']!='not-applicable'}-proven_rule_ids)
     # Guard coverage does not prove all Effect expressions total and in Domain.
-    effect_checks=_effect_totality_checks(
-        rules,fields,definitions,pi_operations=pi_operations,
-        operation_presence=operation_presence)
     unverified_effect_ids=sorted(key for key,proof in effect_checks.items()
                                  if proof['result']!='proved')
     normative_model = (all(fm['status']=='confirmed' for _,fm in files)
@@ -1939,6 +2393,8 @@ def expand_cases(model, vectors):
         # ordinary read still fails inside eval_expr and cannot become an oracle.
         require(all(eval_expr(c,env,defs) for c in _active_pi_constraints(model,test['trigger'])),
                 f'{test["id"]}: violates PI combination constraint')
+        require(all(eval_expr(c,env,defs) for c in _guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()),
+                f'{test["id"]}: violates proved state invariant')
         rule=match_rules(model,test['trigger'],env)
         defs={d['id']:d for d in model['definitions']}
         allowed=[]
@@ -1975,6 +2431,8 @@ def expand_cases(model, vectors):
 def selection_vectors(model, strategy='rule-witness/v1'):
     require(strategy == 'rule-witness/v1','unsupported test-selection rule: '+str(strategy))
     require(model.get('status')=='confirmed','normative vector selection requires confirmed TestModel')
+    require(not any(p.get('requirement')=='@cat:trigger-observation-relation/v1' for p in model.get('intrinsic_rule_proofs',[])),
+            'observation relation requires explicit technology observation binding for vectors')
     fields={f['id']:f for f in model['fields']}
     presence_inputs=[f['id'] for f in fields.values() if f['role']=='input'
                      and f.get('presence','required')!='required']
@@ -2020,23 +2478,38 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                        or fields[name].get('source_pi') in bindings])
         domains=[]
         rules_here=[r for r in model['rules'] if r['trigger']==trigger]
-        predicates=[*_active_pi_constraints(model,trigger),*(r['when'] for r in rules_here)]
+        predicates=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values(),*(r['when'] for r in rules_here)]
         observed=set().union(*(used_refs(expr,defs) for expr in predicates)) if predicates else set()
         for rule in rules_here:
             for outcome in rule['allowed']:
                 for write in outcome['write']:
                     observed.update(used_refs(write['expr'],defs))
         guard_names=set().union(*(used_refs(predicate,defs) for predicate in predicates)) if predicates else set()
+        projected=_record_projection_values(fields,variable_ids,predicates,presence,defs,
+            [w['expr'] for r in rules_here for outcome in r['allowed'] for w in outcome['write']])
         integer_pair=_integer_reference_equality_values(
             fields,guard_names,predicates,presence,defs)
         integer_range=({} if integer_pair else _integer_reference_range_values(
             fields,guard_names,predicates,presence,defs))
+        raw_count=__import__('math').prod(len(v) if v is not None else 1 for v in
+            (_presence_cases(fields[k]['domain'],presence[k]) if k in presence
+             else typed.finite_values(fields[k]['domain']) for k in variable_ids)) if integer_pair else 0
+        real_range=_real_reference_range_values(fields,guard_names,predicates,presence,defs)
+        linear_range=_linear_order_values(fields,guard_names,predicates,presence,defs)
+        string_pair=_string_reference_values(fields,guard_names,predicates,presence)
         for field_id in variable_ids:
+            if projected:
+                domains.append(projected[field_id]);continue
             field=fields[field_id]
             values=(_presence_cases(field['domain'],presence[field_id])
                     if field_id in presence else typed.finite_values(field['domain']))
+            if field_id in string_pair:values=string_pair[field_id]
             if field_id in integer_range:
                 values=integer_range[field_id]
+            if field_id in real_range:
+                values=real_range[field_id]
+            if field_id in linear_range:
+                values=linear_range[field_id]
             if values is None and field_id in presence and presence[field_id]=='optional' and field_id not in observed:
                 # The omission is a valid witness of an unobserved optional
                 # value; it is not a sample used as a finite-domain proof.
@@ -2049,7 +2522,16 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                                    or presence[field_id]=='required'):
                 values=semantic_string_partition.string_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
-            if values is None and field_id in integer_pair:
+            if values is None and (field_id not in presence or presence[field_id]=='required'):
+                values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and presence.get(field_id)=='optional':
+                present=semantic_interval_partition.integer_partition_values(
+                    field['domain'],field_id,predicates,allow_unused=True,allow_presence=True)
+                if present is None:
+                    present=semantic_string_partition.string_partition_values(
+                        field['domain'],field_id,predicates,allow_unused=True,allow_presence=True)
+                if present is not None:values=[typed.MISSING,*present]
+            if field_id in integer_pair and (values is None or raw_count>65536):
                 values=integer_pair[field_id]
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
@@ -2059,7 +2541,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 'test-selection exceeds configured 65536 combinations')
         for values in itertools.product(*domains):
             env=dict(zip(variable_ids,values))
-            if not all(eval_expr(c,env,defs) for c in _active_pi_constraints(model,trigger)):
+            if not all(eval_expr(c,env,defs) for c in [*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()]):
                 continue
             hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
             require(len(hit)==1,f'confirmed TestModel selection found {len(hit)} rules at {trigger}')
@@ -2307,6 +2789,10 @@ def format_expr(expr, params=(), language='en'):
         ref=expr['ref']
         return ref[6:] if ref.startswith('param.') and ref[6:] in params else ref
     op=expr['op'];args=[format_expr(x,params,language) for x in expr['args']]
+    if op=='member':
+        require(set(expr)=={'op','args'} and len(args)==2 and set(expr['args'][0])=={'ref'}
+                and set(expr['args'][1])=={'literal'} and isinstance(expr['args'][1]['literal'],str),'invalid projected Model expression')
+        return 'member['+args[0]+', '+args[1]+']'
     symbols={'eq':'==','ne':'!=','lt':'<','le':'<=','gt':'>','ge':'>=','add':'+','sub':'-','mul':'*','div':'/'}
     if op in symbols:return '('+(' '+symbols[op]+' ').join(args)+')'
     if op in ('and','or'):
