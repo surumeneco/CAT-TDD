@@ -323,7 +323,6 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         pi_operations=effect_operations,operation_presence=effect_presence)
     unverified_effect_ids=sorted(ident for ident,check in effect_checks.items()
                                  if check['result']!='proved')
-    source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain)
     constraint_scopes=[]
     unbound_constraints=[]
     markdown_bindings=[]
@@ -352,15 +351,19 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                 if reason is not None:
                     unbound_constraints.append({'source_pi':fm['id'],
                                                 'expr':expr,'reason':reason})
-    intrinsic_proofs=_intrinsic_source_proofs(
-        rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects,
-        pi_docs,tces,effect_checks,set(unjustified_effect_proofs))
-    intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
-    all_rule_ids={rule['id'] for doc in rule_docs for rule in doc['rules']
-                  if rule.get('verification_status')!='not-applicable'}
     source_all_confirmed=(all(fm.get('status')=='confirmed'
                               for _,fm in files if fm['kind'] not in ('common-rule','domain-spec'))
                           and all(doc['status']=='confirmed' for doc in rule_docs))
+    intrinsic_proofs=_intrinsic_source_proofs(
+        rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects,
+        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed)
+    from cat_compile_v2 import parse_expr_text
+    invariants={proof['rule_id']:parse_expr_text(proof['scope'][len('initial-state-relation '):])
+                for proof in intrinsic_proofs if proof['requirement']=='@cat:finite-state-guard-invariant/v1'}
+    source_guard_audit=independent_coverage.audit(p,pi_docs,tces,fields,domains,domain,invariants)
+    intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
+    all_rule_ids={rule['id'] for doc in rule_docs for rule in doc['rules']
+                  if rule.get('verification_status')!='not-applicable'}
     # The Compiler's human-facing Source-to-Model mapping is itself a
     # claim about normative provenance. Reconstruct it directly from parsed
     # Process/PI/TCE/Rule/DomainRule inputs, not from any compiler map or
@@ -529,8 +532,42 @@ def _source_state_equality(scope, fields, domains, triggers, tces, checks, rejec
     return bool(seen) and seen==set(triggers)
 
 
+def _source_finite_invariant(scope, roles, domains, tces, checks, rejected):
+    from itertools import product
+    from math import prod
+    from cat_compile_v2 import parse_expr_text, used_refs, inspect_expr, eval_expr
+    prefix='initial-state-relation '
+    if not isinstance(scope,str) or not scope.startswith(prefix):return False
+    try:
+        predicate=parse_expr_text(scope[len(prefix):])
+        refs=used_refs(predicate,{})
+        if not refs or any(roles.get(r)!='state' for r in refs):return False
+        ids=sorted(refs)
+        if inspect_expr(predicate,{r:{'role':'state','domain':domains[r]} for r in ids},{})!='boolean':return False
+        dimensions=[semantic_types.finite_values(domains[r]) for r in ids]
+        if any(not d for d in dimensions) or prod(map(len,dimensions))>4096:return False
+        nonempty=False
+        for values in product(*dimensions):
+            before=dict(zip(ids,values))
+            if eval_expr(predicate,before,{}) is not True:continue
+            nonempty=True
+            for _,fm,tce in tces:
+                for row in tce['rules']:
+                    for outcome_no,outcome in enumerate(row['allowed'],1):
+                        after=before.copy()
+                        for write_no,w in enumerate(outcome['write'],1):
+                            if w['target'] not in refs:continue
+                            key=f"{fm['id']}#{row['id']}:{outcome_no}:{write_no}:{w['target']}"
+                            if key in rejected or checks.get(key,{}).get('result')!='proved':return False
+                            if not used_refs(w['expr'],{})<=refs:return False
+                            after[w['target']]=eval_expr(w['expr'],before,{})
+                        if eval_expr(predicate,after,{}) is not True:return False
+        return nonempty
+    except (Blocked,KeyError,ValueError,TypeError,ArithmeticError):return False
+
+
 def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects,
-                            pi_docs=(),tces=(),effect_checks=None,rejected=()):
+                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False):
     def resolved(d):
         if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
         t=d['type']
@@ -562,6 +599,9 @@ def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, ef
                         _source_fresh_output(scope,triggers,pi_docs,tces,effect_checks or {},rejected))
             elif token=='@cat:all-trigger-state-equality-preservation/v1':
                 proved=_source_state_equality(scope,fields,domains,triggers,tces,effect_checks or {},rejected)
+            elif token=='@cat:finite-state-guard-invariant/v1':
+                proved=(confirmed and document['process']==process and document['kind']=='domain-spec'
+                        and _source_finite_invariant(scope,fields,domains,tces,effect_checks or {},rejected))
             else:
                 proved=(scope=='assembled-process' and predicates.get(token) is True)
             if proved:
@@ -1001,6 +1041,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                       'excluded_by_pi_constraints')
         symbolic_receipt_keys=('proof_method','partition_fields',
                                'abstract_state_count','proof_scope')
+        optional_receipt_keys=('guard_invariant_rule_ids',)
         if isinstance(actual_guards,dict):
             for trigger,expected_receipt in source_guard['triggers'].items():
                 if expected_receipt['result'] in ('proved','uncovered','conflict'):
@@ -1010,6 +1051,8 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
                             for k in receipt_keys)
                             or any(not semantic_types.same(observed.get(k),expected_receipt.get(k))
                                    for k in symbolic_receipt_keys)
+                            or any(not semantic_types.same(observed.get(k),expected_receipt.get(k))
+                                   for k in optional_receipt_keys)
                             or ('proof_method' not in expected_receipt and
                                 any(k in observed for k in symbolic_receipt_keys))):
                         if 'source_guard_coverage' not in mismatches:

@@ -124,7 +124,7 @@ def _state_equality_scope(scope, fields, triggers, rules, effect_checks):
     return True
 
 
-def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=(),effect_checks=None):
+def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=(),effect_checks=None,guard_invariants=()):
     """Return verified proofs; each certificate is bound to exact source bytes."""
     proofs=[]
     for doc in rule_documents:
@@ -138,6 +138,8 @@ def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=()
                 proved=_fresh_output_scope(scope,fields,triggers,tce_rules,operations,overrides,effect_checks or {})
             elif requirement==STATE_EQUALITY:
                 proved=_state_equality_scope(scope,fields,triggers,tce_rules,effect_checks or {})
+            elif requirement=='@cat:finite-state-guard-invariant/v1':
+                proved=rule['id'] in guard_invariants
             else:
                 proved=(scope==SCOPE and requirement in PREDICATES and
                         _property(requirement,fields,triggers,tce_rules))

@@ -521,7 +521,8 @@ def _independent_linear_cells(names,domains,inputs,current_presence,clauses,defi
     return {field:sorted(vals) for field,vals in out.items()} if all(out.values()) else {}
 
 
-def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
+def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=None):
+    state_invariants=state_invariants or {}
     rules=[r for _,_,tce in tces for r in tce['rules']]
     # Acceptance Guard-space may use only constraints whose every reference
     # is an input owned by that PI. Output/result constraints belong to a
@@ -562,6 +563,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                      if chosen is not None and chosen['source_pi']==owner
                      and all(owned_roles.get(ref)=='input'
                              for ref in used_refs(expr,definitions))]
+        has_pi_constraints=bool(constraints)
+        constraints.extend(state_invariants.values())
         def current_presence(field):
             info=inputs[field]
             selected=[ov for ov in overrides if chosen and ov['operation']==chosen['id']
@@ -689,14 +692,15 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None):
                            'reason':'no admissible Source-constrained Guard state',
                            'guard_refs':sorted(names),
                            'unreachable_rules':unvisited,
-                           'excluded_by_pi_constraints':bool(constraints)}
+                           'excluded_by_pi_constraints':has_pi_constraints}
             continue
         receipt={'result':'unproven' if unknown else 'conflict' if overlaps else 'uncovered' if gaps else 'proved',
                  'guard_refs':sorted(names),'unreachable_rules':unvisited,
                  'uncovered_count':gaps if not partition_fields else None,
                  'overlap_count':overlaps if not partition_fields else None,
                  'uncovered':uncovered_examples,'overlaps':overlap_examples,
-                 'excluded_by_pi_constraints':bool(constraints)}
+                 'excluded_by_pi_constraints':has_pi_constraints}
+        if state_invariants:receipt['guard_invariant_rule_ids']=sorted(state_invariants)
         if partition_fields:
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
