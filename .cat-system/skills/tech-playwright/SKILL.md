@@ -18,3 +18,5 @@ description: "Implement and execute Playwright browser end-to-end or UI integrat
 ## CAT v2との関係
 
 既存の`cat_compile.py`/`cat-playwright-binding/v1`は代表値先行のlegacy試作。`cat-test-model/v2`からPlaywrightを生成するbackendは未実装。必要ならVitestのDriver契約とは独立したPlaywright実行adapterを追加し、元の条件式と全観測対象を保持する。現時点でv1の成功をv2のPlaywright対応済みと呼ばない。
+
+CAT v2の採用テスト技術制約の限定実行検査は `cat_test_technology.py` を参照する。生成テストの実ブラウザDriver、またはWorkに宣言済みの独立ブラウザ試験について、実runner/HEAD/入力/named JUnitと実ブラウザ起動・正常終了の観測を照合する。これはPlaywright生成backendの実装でも、一般の実装・provider・Process間境界の証明でもない。
