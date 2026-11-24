@@ -458,6 +458,14 @@ def conformance_input_hashes(wpath, w, kind):
             if conf.get(key):
                 path=Path(compilation_path(wpath,w,conf,key,True))
                 result[key]={'path':str(path),'sha256':sha(path.read_bytes())}
+        if conf.get('composition_binding'):
+            try:
+                _,assemblies=composition_runtime.composition_source_inputs(result['composition_binding']['path'])
+            except (composition_runtime.CompositionError,ValueError,OSError,KeyError,TypeError) as exc:
+                raise Blocked('composition Source input invalid: '+str(exc)) from exc
+            for process,entries in assemblies.items():
+                for key,entry in entries.items():
+                    result['composition_source:'+process+':'+key]=entry
         for i,rel in enumerate(conf.get('composition_models',[]),1):
             entry={**conf,'model':rel}
             path=Path(compilation_path(wpath,w,entry,'model',True))
