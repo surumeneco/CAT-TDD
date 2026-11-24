@@ -361,6 +361,10 @@ def technology_conformance(wpath, w, conf):
             repo_name = binding.get('repository')
             require(isinstance(repo_name, str) and repo_name, 'TypeScript conformance binding repository required')
             repo_root = resolve_dir(wpath, w, '@repo:' + repo_name)
+            if binding.get('capability_analysis') == 'typed-data-functions/v1':
+                declared = next((r for r in w['repositories'] if r['name'] == repo_name), None)
+                require(declared is not None and set(binding.get('source_globs', [])) <= set(declared.get('production_paths', [])),
+                        'typed data proof requires explicit Work production paths')
             pis=compilation_pi_paths(wpath,w,conf,True)
             argv = [sys.executable,
                     str(ROOT / 'skills/tech-typescript/scripts/cat_typescript_conformance.py'),
@@ -531,7 +535,7 @@ def conformance_runtime_fingerprint():
 
     A Source/Work/implementation HEAD may be unchanged while a new compiler,
     verifier, inspector, or Gate implementation would reach another result.
-    Pin the complete shipped Python runtime (including Technology Skills) and
+    Pin the complete shipped Python and JavaScript runtime (including Technology Skills) and
     routing config; the conservative inventory may invalidate evidence after
     unrelated runtime changes, but cannot silently retain an old Gate result.
     This is *not* an authenticity attestation or proof of Provider execution.
@@ -540,7 +544,8 @@ def conformance_runtime_fingerprint():
     routing = ROOT / 'config' / 'routing.json'
     require((scripts / 'cat_flow.py').is_file() and routing.is_file(),
             'CAT Gate runtime scripts/routing missing')
-    files = [*scripts.rglob('*.py'), *((ROOT / 'skills').rglob('*.py')), routing]
+    files = [*scripts.rglob('*.py'), *((ROOT / 'skills').rglob('*.py')),
+             *scripts.rglob('*.mjs'), *((ROOT / 'skills').rglob('*.mjs')), routing]
     inventory = []
     for path in sorted(files, key=lambda x: x.relative_to(ROOT).as_posix()):
         require(path.is_file() and not path.is_symlink(),

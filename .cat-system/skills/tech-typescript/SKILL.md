@@ -35,3 +35,5 @@ Workの`Compilation / Conformance binding`は`cat-typescript-conformance-binding
 この証明は指定されたsource module本体の能力使用に限る。呼出元、loader、build transform、任意のTypeScript型検査、PIの型意味の同値、他Processへの伝達や外部Providerは証明しない。既知能力の規範外使用は引き続き`blocked`。この限定検査の未証明は、既存の個別Interface検査結果と分離して報告する。
 
 採用済みstrict型検査は、`Compilation.technology_constraints` の `cat-project-typecheck/v1` を使って独立の実装制約として実行できる。実際のnpm lockfileとコンパイラ、対象ソース包含を検査する。型検査成功はPI・観測/作用能力・実行時挙動の証明ではない。詳細は `docs/機械的変換.md`。
+
+`typed-data-functions/v1` はnpm lockfile一致の実TypeScript ASTで、明示したWork production pathの公開関数を型付き通常データ・局所関数・局所配列コピー/交換・限定標準intrinsicの範囲で検査する。未知の構文、外部参照、runtime import、入力書込み、未解析依存は合格にしない。通常データと未改変intrinsicを前提とし、proxy/getter、呼出元、build transform、実行時型妥当性、全域挙動、相手Processは証明しない。
