@@ -1773,8 +1773,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     # A rule can be proved here only when the *authorized source itself*
     # declares one of the exact, fully decidable model predicates.
     # Runtime fixtures and free-text Rule verification do not qualify.
+    # Establish selected Effect value totality before certifying a fresh output.
+    effect_checks=_effect_totality_checks(
+        rules,fields,definitions,pi_operations=pi_operations,
+        operation_presence=operation_presence)
     intrinsic_proofs=semantic_intrinsic_rules.evaluate(
-        rule_docs,list(fields.values()),p['triggers'],rules)
+        rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
+        operation_presence,effect_checks)
     proven_rule_ids={proof['rule_id'] for proof in intrinsic_proofs}
     for rule in rule_obligations:
         if rule['id'] in proven_rule_ids:
@@ -1782,9 +1787,6 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     unverified_rule_ids=sorted({r['id'] for r in rule_obligations
                                 if r['verification_status']!='not-applicable'}-proven_rule_ids)
     # Guard coverage does not prove all Effect expressions total and in Domain.
-    effect_checks=_effect_totality_checks(
-        rules,fields,definitions,pi_operations=pi_operations,
-        operation_presence=operation_presence)
     unverified_effect_ids=sorted(key for key,proof in effect_checks.items()
                                  if proof['result']!='proved')
     normative_model = (all(fm['status']=='confirmed' for _,fm in files)

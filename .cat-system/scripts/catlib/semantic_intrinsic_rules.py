@@ -9,6 +9,7 @@ from __future__ import annotations
 
 CONTRACT='cat:intrinsic-model/v1'
 SCOPE='assembled-process'
+OUTCOME_PRESENCE='@cat:declared-outcome-output-presence/v1'
 PREDICATES=frozenset({
     '@cat:effect-targets-declared/v1',
     '@cat:tce-triggers-declared/v1',
@@ -45,7 +46,43 @@ def _property(token,fields,triggers,tce_rules):
     return False
 
 
-def evaluate(rule_documents,fields,triggers,tce_rules):
+def _fresh_output_scope(scope, fields, triggers, rules, operations, overrides, effect_checks):
+    """One explicit response-scoped output, not a persistent state variable."""
+    parts=scope.split(' ') if isinstance(scope,str) else []
+    if len(parts)!=5 or parts[0]!='fresh-output' or not all(parts):return False
+    _,pi,operation,trigger,field_id=parts
+    if trigger not in {t['id'] for t in triggers}:return False
+    fields_by_id={f['id']:f for f in fields}
+    field=fields_by_id.get(field_id)
+    if not field or field['role']!='output' or field.get('source_pi')!=pi:return False
+    if not _resolved(field.get('domain')):return False
+    candidates=[op for op in operations if op['direction']=='provide'
+                and op.get('trigger') in (None,trigger)]
+    if len(candidates)!=1:return False
+    op=candidates[0]
+    if (op['id'],op.get('source_pi'),op.get('trigger'))!=(operation,pi,trigger):return False
+    selected=[x['presence'] for x in overrides if x['operation']==operation
+              and x['field']==field_id and x.get('source_pi')==pi]
+    if len(selected)>1:return False
+    presence=selected[0] if selected else field.get('presence','required')
+    if presence not in ('optional','required','absent'):return False
+    checked=0
+    for rule in rules:
+        if rule['trigger']!=trigger:continue
+        for number,outcome in enumerate(rule['allowed'],1):
+            writes=[(i,w) for i,w in enumerate(outcome['write'],1) if w['target']==field_id]
+            absent=field_id in outcome['absent_outputs']
+            if len(writes)>1 or bool(writes)==absent:return False
+            if (presence=='required' and absent) or (presence=='absent' and writes):return False
+            if writes:
+                i,_=writes[0]
+                key=f"{rule['source_artifact']}#{rule['id']}:{number}:{i}:{field_id}"
+                if effect_checks.get(key,{}).get('result')!='proved':return False
+            checked+=1
+    return checked>0
+
+
+def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=(),effect_checks=None):
     """Return verified proofs; each certificate is bound to exact source bytes."""
     proofs=[]
     for doc in rule_documents:
@@ -53,11 +90,14 @@ def evaluate(rule_documents,fields,triggers,tce_rules):
             continue
         for rule in doc.get('rules',[]):
             requirement=rule.get('requirement')
-            if not (rule.get('condition')==SCOPE
-                    and rule.get('verification_contract')==CONTRACT
-                    and requirement in PREDICATES):
-                continue
-            if _property(requirement,fields,triggers,tce_rules):
+            if rule.get('verification_contract')!=CONTRACT:continue
+            scope=rule.get('condition')
+            if requirement==OUTCOME_PRESENCE:
+                proved=_fresh_output_scope(scope,fields,triggers,tce_rules,operations,overrides,effect_checks or {})
+            else:
+                proved=(scope==SCOPE and requirement in PREDICATES and
+                        _property(requirement,fields,triggers,tce_rules))
+            if proved:
                 proofs.append({
                     'rule_id':rule['id'],
                     'source_artifact':doc['id'],
@@ -65,7 +105,7 @@ def evaluate(rule_documents,fields,triggers,tce_rules):
                     'requirement':requirement,
                     'verification_contract':CONTRACT,
                     'proof_method':CONTRACT,
-                    'scope':SCOPE,
+                    'scope':scope,
                     'status':'passed',
                 })
     return sorted(proofs,key=lambda x:x['rule_id'])

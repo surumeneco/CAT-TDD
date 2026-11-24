@@ -278,7 +278,8 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                     unbound_constraints.append({'source_pi':fm['id'],
                                                 'expr':expr,'reason':reason})
     intrinsic_proofs=_intrinsic_source_proofs(
-        rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects)
+        rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects,
+        pi_docs,tces,effect_checks,set(unjustified_effect_proofs))
     intrinsic_ids={proof['rule_id'] for proof in intrinsic_proofs}
     all_rule_ids={rule['id'] for doc in rule_docs for rule in doc['rules']
                   if rule.get('verification_status')!='not-applicable'}
@@ -376,7 +377,47 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
 
 # Independently reconstruct intrinsic model-rule evidence from the source.
 # This module deliberately does not invoke the Compiler's proof function.
-def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects):
+def _source_fresh_output(scope, triggers, pi_docs, tces, effect_checks, rejected):
+    # Independently select an exact PI/Operation/Trigger/Field directly from
+    # Source; do not consume the Compiler's derived Frame or certificate.
+    if not isinstance(scope,str):return False
+    words=scope.split(' ')
+    if len(words)!=5 or words[0]!='fresh-output' or not all(words):return False
+    _,owner,operation,trigger,field_id=words
+    if trigger not in triggers:return False
+    provided=[(fm['id'],op) for _,fm,pi in pi_docs for op in pi.get('operations',[])
+              if op['direction']=='provide' and op.get('trigger') in (None,trigger)]
+    if len(provided)!=1:return False
+    actual_owner,op=provided[0]
+    if actual_owner!=owner or op['id']!=operation or op.get('trigger')!=trigger:return False
+    selected=[pi for _,fm,pi in pi_docs if fm['id']==owner]
+    if len(selected)!=1:return False
+    pi=selected[0]
+    fields=[f for f in pi['fields'] if f['id']==field_id and f['role']=='output']
+    if len(fields)!=1:return False
+    overrides=[x['presence'] for x in pi.get('operation_presence',[])
+               if x['operation']==operation and x['field']==field_id]
+    if len(overrides)>1:return False
+    presence=overrides[0] if overrides else fields[0].get('presence','required')
+    if presence not in ('required','optional','absent'):return False
+    seen=False
+    for _,fm,tce in tces:
+        for rule in tce['rules']:
+            if rule['trigger']!=trigger:continue
+            for n,outcome in enumerate(rule['allowed'],1):
+                seen=True
+                matching=[i for i,w in enumerate(outcome['write'],1) if w['target']==field_id]
+                if len(matching)>1:return False
+                if presence=='required' and not matching:return False
+                if presence=='absent' and matching:return False
+                if matching:
+                    key=f"{fm['id']}#{rule['id']}:{n}:{matching[0]}:{field_id}"
+                    if key in rejected or effect_checks.get(key,{}).get('result')!='proved':return False
+    return seen
+
+
+def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects,
+                            pi_docs=(),tces=(),effect_checks=None,rejected=()):
     def resolved(d):
         if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
         t=d['type']
@@ -400,15 +441,21 @@ def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, ef
             continue
         for rule in document.get('rules',[]):
             token=rule.get('requirement')
-            if (rule.get('condition')=='assembled-process'
-                    and rule.get('verification_contract')=='cat:intrinsic-model/v1'
-                    and predicates.get(token) is True):
+            scope=rule.get('condition')
+            if rule.get('verification_contract')!='cat:intrinsic-model/v1':continue
+            if token=='@cat:declared-outcome-output-presence/v1':
+                target=scope.split(' ')[-1] if isinstance(scope,str) else None
+                proved=(resolved(domains.get(target)) and
+                        _source_fresh_output(scope,triggers,pi_docs,tces,effect_checks or {},rejected))
+            else:
+                proved=(scope=='assembled-process' and predicates.get(token) is True)
+            if proved:
                 proofs.append({
                     'rule_id':rule['id'],'source_artifact':document['id'],
                     'source_sha256':document['sha256'],'requirement':token,
                     'verification_contract':'cat:intrinsic-model/v1',
                     'proof_method':'cat:intrinsic-model/v1',
-                    'scope':'assembled-process','status':'passed',
+                    'scope':scope,'status':'passed',
                 })
     return sorted(proofs,key=lambda item:item['rule_id'])
 

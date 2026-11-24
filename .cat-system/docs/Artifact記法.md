@@ -381,6 +381,7 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 | declared.effects | assembled-process | @cat:effect-targets-declared/v1 | cat:intrinsic-model/v1 |
 | declared.triggers | assembled-process | @cat:tce-triggers-declared/v1 | cat:intrinsic-model/v1 |
 | resolved.domains | assembled-process | @cat:field-domains-resolved/v1 | cat:intrinsic-model/v1 |
+| response.presence | fresh-output example.pi reply submit output.result | @cat:declared-outcome-output-presence/v1 | cat:intrinsic-model/v1 |
 ~~~
 
 | Requirement | 厳密な判定対象 |
@@ -388,8 +389,10 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 | `@cat:effect-targets-declared/v1` | 組み立て済みTCEの全Effect作用先がProcess/PIで宣言済みのstate/output/actionであること |
 | `@cat:tce-triggers-declared/v1` | 組み立て済みTCEの全TriggerがProcessに宣言済みであること |
 | `@cat:field-domains-resolved/v1` | 組み立て済みモデルの全フィールドDomainが再帰的に解決済みであること |
+| `@cat:declared-outcome-output-presence/v1` | 指定の提供Operation・Triggerの全宣言Outcomeで、指定出力の値域および有効Presenceに反しないこと |
 
-- `Condition` は **`assembled-process`**、`Verification` は **`cat:intrinsic-model/v1`**、`Requirement` は上表の対応する値と完全一致する必要がある。本文の自然言語要求や他のVerifier契約をこの文字列に置き換えて無断で意味変更してはならない。
+- 最初の3述語の `Condition` は **`assembled-process`**、`Verification` は **`cat:intrinsic-model/v1`**、`Requirement` は上表の対応する値と完全一致する必要がある。本文の自然言語要求や他のVerifier契約をこの文字列に置き換えて無断で意味変更してはならない。
+- 出力Presence述語の `Condition` は厳密に `fresh-output <PI ID> <provide Operation ID> <Trigger ID> <output Field ID>` とする。これは当該応答の出力を各Outcome開始時に未生成とする明示的な規範宣言であり、永続状態・以前の応答・外部配信を初期化する意味ではない。提供Operationを一意に解決でき、所有PI・Trigger・Fieldが一致し、Domainが解決済みで、全宣言Outcomeについて代入が高々1回かつ型／値域証明済みである場合だけ証明する。Operation別Presence（なければ基本Presence）が required なら全Outcomeで代入、absent なら全Outcomeで非代入、optional なら両方を許す。undefined、曖昧な提供Operation、宣言Outcomeが空のものは未証明とする。非代入は当該fresh outputの不在に限り、外部送信・到達可能性・Guardの網羅性は別に検査する。
 - 正当にConfirmedとなった規範Artifactの出典ID・SHA-256と決定根拠が揃い、モデル条件が実証された場合だけ、Compilerが `intrinsic_rule_proofs` を生成する。独立 `model-conformance` は元Artifactから同じ性質を再検査し、結果・出典を比較する。
 - 未承認Artifact、未知の述語、条件の変更、自由記述、外部通信・DOM・データベース・Discord送信等の実装・複数実行に関するRuleは**未証明**である。登録済みfixtureやrunnerの単なる `passed` を自然言語要求の証明に代用しない。
 - この限定語彙を超える意味は、別の規範上の意味定義・Verifierの責任範囲・正当な承認と結合した機械証明手段が成立するまで `inconclusive/blocked` のまま扱う。
