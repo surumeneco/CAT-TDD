@@ -202,6 +202,11 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
                              and isinstance(p.get('scope'),str)
                              and p['scope'].startswith('fresh-output ')
                              and len(p['scope'].split(' '))==5
+                             and all(p['scope'].split(' ')))
+                         or (p.get('requirement')=='@cat:all-trigger-state-equality-preservation/v1'
+                             and isinstance(p.get('scope'),str)
+                             and p['scope'].startswith('initial-state-equality ')
+                             and len(p['scope'].split(' '))==3
                              and all(p['scope'].split(' '))))
                     and p.get('status')=='passed']
             observed=next((r for r in (rule_verification or {}).get('results',[])
