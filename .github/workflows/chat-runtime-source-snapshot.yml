@@ -1,0 +1,28 @@
+name: Chat runtime source snapshot
+on:
+  push:
+    branches: [infra/chat-runtime-fb3bd562]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fb3bd562684d80b016bf08b4cf21ad73079ea8fe
+          persist-credentials: false
+      - name: Verify and archive immutable source
+        run: |
+          test "$(git rev-parse HEAD)" = "fb3bd562684d80b016bf08b4cf21ad73079ea8fe"
+          test "$(git rev-parse HEAD:.cat-system)" = "44089a373b58a89b56aff65247d9e3d1000f7b18"
+          mkdir -p /tmp/cat-source
+          git archive --format=tar.gz --output=/tmp/cat-source/cat-tdd-fixed-fb3bd5.tar.gz HEAD .cat-system
+          cd /tmp/cat-source
+          sha256sum cat-tdd-fixed-fb3bd5.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cat-tdd-chat-source-fb3bd5
+          path: /tmp/cat-source/cat-tdd-fixed-fb3bd5.tar.gz
+          if-no-files-found: error
+          compression-level: 0
