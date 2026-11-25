@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/generated-junit.yml'
       - '.cat-system/scripts/cat_compile_v2.py'
+      - '.cat-system/scripts/cat_flow.py'
+      - 'tests/test_compile_cli_replay.py'
       - '.cat-system/scripts/catlib/**'
       - '.cat-system/skills/tech-junit/**'
       - 'tests/test_observed_transport.py'
