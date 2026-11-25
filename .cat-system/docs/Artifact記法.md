@@ -582,7 +582,7 @@ Gate statusの日本語aliasは `成功 / 対象外 / 未実行 / 停止 / 不�
 
 ### Compilation
 
-決定論的コンパイルを使用するWorkだけ `Compilation / 変換` を追加する。TCEセルは`;`区切りで同一Processの複数confirmed TCEを列挙でき、closure/model生成ではassembled specificationとして扱う。`Conformance binding / 適合接続`は技術固有Inspectorが実装境界を仕様IDへ結び付ける機械設定であり、仕様そのものではない。 `Technology constraints / 技術制約接続` は採用済みのコンパイラ等の実装制約の検査設定への参照であり、PI適合証明とは独立する。 `Runtime constraints / 実行基盤制約接続` は採用済みNode/NestJS/PostgreSQLの限定された実runtime検査Bindingを参照する。
+決定論的コンパイルを使用するWorkだけ `Compilation / 変換` を追加する。TCEセルは`;`区切りで同一Processの複数confirmed TCEを列挙でき、closure/model生成ではassembled specificationとして扱う。`Conformance binding / 適合接続`は技術固有Inspectorが実装境界を仕様IDへ結び付ける機械設定であり、仕様そのものではない。 `Technology constraints / 技術制約接続` は採用済みのコンパイラ等の実装制約の検査設定への参照であり、PI適合証明とは独立する。 `Runtime constraints / 実行基盤制約接続` は採用済みNode/NestJS/PostgreSQLの限定された実runtime検査Bindingを参照する。 `Runtime boundary binding / 実境界接続` は、実装の両端を起動して実データを観測する限定profileのBindingを参照する。`cat-runtime-boundary-binding/v1` の適用条件・実行証拠・非保証範囲は機械的変換の「実境界の独立観測」を参照する。仕様上の通信方式を追加するものではない。
 
 ~~~md
 ## 変換

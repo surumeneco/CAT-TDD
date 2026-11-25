@@ -31,6 +31,7 @@ import cat_model_conformance as source_model_runtime
 import cat_process_composition as composition_runtime
 import cat_effect_trace_correlation as effect_correlation_runtime
 import cat_external_effect_receipts as effect_receipts_runtime
+import cat_runtime_boundary as runtime_boundary
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / 'config' / 'routing.json'
@@ -429,6 +430,12 @@ def conformance_context_sha(w):
     return sha(json_bytes(payload))
 
 
+def _runtime_boundary_repositories(wpath,w):
+    return {repo['name']:{'root':resolve_dir(wpath,w,'@repo:'+repo['name']),
+                          'production_paths':repo.get('production_paths',[]),
+                          'test_paths':repo.get('test_paths',[])} for repo in w['repositories']}
+
+
 def conformance_input_hashes(wpath, w, kind):
     conf = w.get('compilation') or {}
     keys = ['process', 'pi', 'domain_rule']
@@ -442,6 +449,8 @@ def conformance_input_hashes(wpath, w, kind):
             keys.append('technology_constraints')
         if conf.get('runtime_constraints'):
             keys.append('runtime_constraints')
+        if conf.get('runtime_boundary_binding'):
+            keys.append('runtime_boundary_binding')
         keys.extend(key for key in ('effect_trace','effect_packet','effect_driver')
                     if conf.get(key))
     # Runtime rule verification must be invalidated when its registered
@@ -463,6 +472,13 @@ def conformance_input_hashes(wpath, w, kind):
     for index, raw in enumerate(compilation_tce_paths(wpath, w, conf, True), 1):
         path = Path(raw)
         result['tce:' + str(index)] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    if kind=='implementation-conformance' and conf.get('runtime_boundary_binding'):
+        try:
+            deps=runtime_boundary.input_hashes(result['runtime_boundary_binding']['path'],
+                    _runtime_boundary_repositories(wpath,w))
+        except (ValueError, OSError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+            raise Blocked('runtime boundary dependencies invalid: '+str(exc)) from exc
+        result.update({'runtime-boundary:'+k:v for k,v in deps.items()})
     if kind=='implementation-conformance' and conf.get('effect_packet'):
         packet_path=Path(compilation_path(wpath,w,conf,'effect_packet',True))
         packet=read_json(packet_path)
@@ -590,6 +606,9 @@ def record_conformance_evidence(wpath, w, kind, result):
     if kind == 'implementation-conformance':
         payload['repo_state_sha256'] = _implementation_repository_fingerprint(wpath, w)
         payload['technology_results'] = result.get('technology_results', [])
+        if result.get('runtime_boundary_evidence'):
+            path=Path(result['runtime_boundary_evidence'])
+            payload['runtime_boundary_evidence']={'path':str(path),'sha256':sha(path.read_bytes())}
     path = runtime / (kind + '.json')
     path.write_bytes(json_bytes(payload))
     output = dict(result)
@@ -629,6 +648,12 @@ def conformance_evidence_status(wpath, w, kind):
         if kind == 'implementation-conformance':
             if e.get('repo_state_sha256') != _implementation_repository_fingerprint(wpath, w):
                 return {'status': 'stale', 'evidence': str(path), 'reason': 'implementation repository state changed'}
+            if e.get('runtime_boundary_evidence'):
+                obs=wpath.parent/'.cat-flow'/'cache'/'implementation-runtime-boundary.json'
+                if not obs.is_file() or obs.is_symlink() or e['runtime_boundary_evidence']!={'path':str(obs),'sha256':sha(obs.read_bytes())}:
+                    return {'status':'stale','evidence':str(path),'reason':'runtime boundary observation changed'}
+            elif (w.get('compilation') or {}).get('runtime_boundary_binding') and e.get('verdict')=='passed':
+                return {'status':'stale','evidence':str(path),'reason':'runtime boundary observation missing'}
         return {'status': e.get('verdict', 'inconclusive'), 'evidence': str(path), 'reason': e.get('reason', '')}
     except (OSError, KeyError, Blocked):
         return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance evidence cannot be revalidated'}
@@ -850,9 +875,28 @@ def conformance_work(wpath, w, kind):
                 rule_verification=verifier_runtime.evaluate(model_path,registry_path)
             except (verifier_runtime.VerifierError,Blocked,ValueError,OSError,KeyError,TypeError) as exc:
                 return {'gate':kind,'status':'blocked','reason':'invalid normative rule verifier: '+str(exc)}
-    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate,rule_verification,verified_green)
     runtime=wpath.parent/'.cat-flow'/'cache'
     runtime.mkdir(parents=True,exist_ok=True)
+    boundary=None
+    boundary_path=None
+    if conf.get('runtime_boundary_binding'):
+        try:
+            # Never retain a prior observation as evidence of this execution.
+            (runtime/'implementation-runtime-boundary.json').unlink(missing_ok=True)
+            require(conf.get('model'),'runtime boundary verification requires current Model')
+            binding_path=compilation_path(wpath,w,conf,'runtime_boundary_binding',True)
+            repo_roots=_runtime_boundary_repositories(wpath,w)
+            before=_implementation_repository_fingerprint(wpath,w)
+            boundary=runtime_boundary.evaluate(binding_path,repo_roots,
+                      compilation_path(wpath,w,conf,'model',True),skeleton['source_sha256'])
+            require(before==_implementation_repository_fingerprint(wpath,w),'implementation repository changed during runtime boundary observation')
+            require(set(boundary.get('covered_obligation_ids',[]))<={o['id'] for o in skeleton['items'] if o['method']=='integration-contract'},
+                    'runtime boundary evidence targets undeclared obligation')
+            boundary_path=runtime/'implementation-runtime-boundary.json'
+            boundary_path.write_bytes(json_bytes(boundary))
+        except (Blocked,ValueError,OSError,KeyError,TypeError,subprocess.TimeoutExpired) as exc:
+            return {'gate':kind,'status':'blocked','reason':'runtime boundary observation rejected: '+str(exc)}
+    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate,rule_verification,verified_green,boundary)
     evaluated=runtime/'implementation-obligations-evaluated.json'
     evaluated.write_bytes(json_bytes(data))
     items=data.get('items')
@@ -876,6 +920,8 @@ def conformance_work(wpath, w, kind):
           'evaluated_obligations':str(evaluated)}
     if effect_correlation is not None:
         base['effect_correlation_evidence']=effect_correlation['path']
+    if boundary_path is not None:
+        base['runtime_boundary_evidence']=str(boundary_path)
     if any(x['status']=='failed' for x in items):
         return {'gate':kind,'status':'blocked','reason':'one or more implementation obligations failed',**base}
     if missing or any(x['status'] in ('inconclusive','not-run') for x in items):

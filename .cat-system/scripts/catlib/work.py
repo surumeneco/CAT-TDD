@@ -185,7 +185,8 @@ def read_work_markdown(path):
                    ('Effect repository','作用リポジトリ'):'effect_repo',
                    ('Effect driver repo path','作用ドライバ相対パス'):'effect_repo_path',
                    ('Composition models','合成モデル'):'composition_models',
-                   ('Composition binding','合成接続'):'composition_binding'}
+                   ('Composition binding','合成接続'):'composition_binding',
+                   ('Runtime boundary binding','実境界接続'):'runtime_boundary_binding'}
         for humans, key in mapping.items():
             value = _cell(row, *humans, key, required=False)
             if not _none(value): compilation[key] = value
@@ -463,7 +464,7 @@ def validate(w):
                 vals=compilation['composition_models']
                 if not isinstance(vals,list) or len(vals)<2 or not all(isinstance(x,str) and x for x in vals):
                     errs.append('compilation.composition_models requires >=2 paths')
-            for extra_key in ('verifier_registry','composition_binding','technology_constraints','runtime_constraints'):
+            for extra_key in ('verifier_registry','composition_binding','technology_constraints','runtime_constraints','runtime_boundary_binding'):
                 if compilation.get(extra_key) is not None and (not isinstance(compilation[extra_key],str) or not compilation[extra_key]):
                     errs.append('compilation.'+extra_key+' invalid')
             if compilation.get('conformance_binding') is not None and (not isinstance(compilation.get('conformance_binding'), str) or not compilation['conformance_binding']):

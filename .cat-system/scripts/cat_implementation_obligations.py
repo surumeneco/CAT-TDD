@@ -173,7 +173,7 @@ def generate(process_path, pi_path, tce_paths, domain_path=None, technologies=()
 
 
 def aggregate(document, queue=None, technology_results=(), model_conformance=None,
-              rule_verification=None, verified_green=None):
+              rule_verification=None, verified_green=None, verified_boundary=None):
     """Aggregate only independently checked Green receipts; Queue flags are not proof."""
     result=json.loads(json.dumps(document))
     items=result.get('items',[])
@@ -304,11 +304,18 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
             ob.pop('evidence',None)
             limitation='model correspondence is not runtime domain-function verification'
         elif method=='integration-contract':
-            # Two local checks cannot prove externally observable ordering,
-            # delivery, or partner Process effects.
-            ob.update(status='inconclusive',reason='independent cross-process runtime evidence required')
-            ob.pop('evidence',None)
-            limitation='model/technology inspection is not remote integration evidence'
+            # Only cat_flow's fresh independent runtime evaluator supplies this
+            # parameter. A submitted trace, Queue flag or inspector result is
+            # never sufficient to discharge a boundary obligation.
+            if (verified_boundary and verified_boundary.get('status')=='passed'
+                    and ob['id'] in verified_boundary.get('covered_obligation_ids',[])):
+                ob.update(status='passed',evidence='live-runtime-boundary:'+ob['id'])
+                ob.pop('reason',None)
+                limitation=verified_boundary['limitation']
+            else:
+                ob.update(status='inconclusive',reason='independent cross-process runtime evidence required')
+                ob.pop('evidence',None)
+                limitation='model/technology inspection is not remote integration evidence'
         elif method.startswith('technology-skill:'):
             tech_name=method.split(':',1)[1]
             # An Inspector may only have checked PI symbols/capabilities. A
