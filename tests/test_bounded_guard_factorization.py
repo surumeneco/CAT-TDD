@@ -72,7 +72,7 @@ class BoundedGuardFactorizationTests(unittest.TestCase):
             with self.assertRaises(Blocked):selection_vectors(model)
 
     def test_null_partition_and_negative(self):
-        for guard,gap,expected in [('input.request == null',False,'proved'),('input.request == null',True,'uncovered'),('input.request == "value"',False,'unproven')]:
+        for guard,gap,expected in [('input.request == null',False,'proved'),('input.request == null',True,'uncovered'),('input.request == "value"',False,'proved'),('input.request == "value"',True,'uncovered')]:
             with self.subTest(guard=guard,gap=gap), tempfile.TemporaryDirectory() as td:
                 root=Path(td);p,pi,tce=fixture(root,'string',guard=guard,gap=gap)
                 pi.write_text(pi.read_text(encoding='utf8').replace('record<version:integer,metadata:string>','nullable<string>'),encoding='utf8')
@@ -80,13 +80,13 @@ class BoundedGuardFactorizationTests(unittest.TestCase):
                 self.assertEqual(check['result'],expected)
                 out=root/'Model.json';out.write_text(json.dumps(model),encoding='utf8')
                 if expected=='proved':
-                    self.assertEqual(check['proof_method'],'nullable-string-null-partition/v1')
-                    self.assertEqual(check['abstract_state_count'],2)
+                    self.assertEqual(check['proof_method'],'nullable-string-null-partition/v1' if guard.endswith('null') else 'nullable-reference-equality-partition/v1')
+                    self.assertEqual(check['abstract_state_count'],2 if guard.endswith('null') else 3)
                     self.assertEqual(validate(p,pi,tce,out)['status'],'passed')
                     self.assertEqual(closure(root),'passed')
                     # Only concrete, legal input values may reach test selection.
                     cases=expand_cases(model,selection_vectors(model))
-                    self.assertEqual({c['input']['input.request'] for c in cases},{None,''})
+                    self.assertEqual({c['input']['input.request'] for c in cases},{None,''} if guard.endswith('null') else {None,'value'})
                 else:
                     self.assertNotEqual(closure(root),'passed')
 
