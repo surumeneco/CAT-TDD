@@ -966,6 +966,22 @@ def _guard_reads_value_before_presence(node, field):
         _guard_reads_value_before_presence(arg,field) for arg in node.get('args',[]))
 
 
+def _guard_guarantees_nonnull(expr, field):
+    """Sufficient truth implication for a direct, same-cut nullable read."""
+    op=expr.get('op'); args=expr.get('args',[])
+    if op=='and': return any(_guard_guarantees_nonnull(x,field) for x in args)
+    if op=='or': return bool(args) and all(_guard_guarantees_nonnull(x,field) for x in args)
+    if op=='not' and len(args)==1 and args[0].get('op')=='eq':
+        args=args[0].get('args',[]); op='ne'
+    return op=='ne' and (args==[{'ref':field},{'literal':None}] or args==[{'literal':None},{'ref':field}])
+
+
+def _guarded_source_domain(domain, guard, field):
+    if domain.get('type')=='nullable' and _guard_guarantees_nonnull(guard,field):
+        return domain['of']
+    return domain
+
+
 def _guard_guarantees_present(expr, field):
     """Sound, evaluation-order-aware Guard truth implies value Presence."""
     if expr.get('op')=='is-present' and expr.get('args')==[{'ref':field}]:
@@ -1121,6 +1137,8 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
                         checks[ident]={'result':'unproven','reason':'Effect reads nonrequired input without a Presence proof'}
                     else:
                         proof=semantic_subtyping.subset(source_field['domain'],domain)
+                        if proof is not True:
+                            proof=semantic_subtyping.subset(_guarded_source_domain(source_field['domain'],rule['when'],expr['ref']),domain)
                         checks[ident]=({'result':'proved'} if proof is True
                                       else {'result':'unproven','reason':'Effect source Domain unresolved or inclusion unproved'})
                     continue
@@ -1968,6 +1986,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     if set(expression)=={'ref'} and expression['ref'] in fields:
                         source_domain=fields[expression['ref']]['domain']
                         inclusion=semantic_subtyping.subset(source_domain,target_domain)
+                        if inclusion is not True:
+                            inclusion=semantic_subtyping.subset(_guarded_source_domain(source_domain,r['when'],expression['ref']),target_domain)
                         if inclusion is None and _unresolved_domain(source_domain):
                             # Deferred name resolution is permitted only for an
                             # identical unresolved alias or an exact union arm.
