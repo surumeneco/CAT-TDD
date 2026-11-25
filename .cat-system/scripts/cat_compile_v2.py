@@ -2507,6 +2507,26 @@ def _vector_field_presence(model,operation,field):
     return matched[0]['presence'] if matched else presence
 
 
+def _exact_value_kind(domain):
+    while domain.get('type')=='reference' and domain.get('resolved'):
+        domain=domain['of']
+    return domain.get('type') if domain.get('type') in ('json','instant') else None
+
+
+def _encode_vector_value(domain,value):
+    kind=_exact_value_kind(domain)
+    if kind=='json':return json_time.encode_json_transport(value)
+    if kind=='instant':return json_time.encode_instant_transport(value)
+    return value
+
+
+def _decode_vector_value(domain,value):
+    kind=_exact_value_kind(domain)
+    if kind=='json':return json_time.decode_json_transport(value)
+    if kind=='instant':return json_time.decode_instant_transport(value)
+    return value
+
+
 def _vector_input_value(domain,presence,payload,name):
     if name not in payload:
         require(presence in ('optional','absent'),
@@ -2517,6 +2537,7 @@ def _vector_input_value(domain,presence,payload,name):
         return typed.UNDEFINED
     require(presence not in ('absent','undefined'),
             'value input incompatible with Presence '+name)
+    value=_decode_vector_value(domain,value)
     require(in_domain(domain,value), 'input out of domain '+name)
     return value
 
@@ -2700,6 +2721,7 @@ def expand_cases(model, vectors):
             val=_vector_input_value(field['domain'],presence,test['input'],name)
             if val is not typed.MISSING:env[name]=val
         for name,val in test['state'].items():
+            val=_decode_vector_value(fields[name]['domain'],val)
             require(in_domain(fields[name]['domain'],val),f'{test["id"]}: {name} out of declared domain')
             env[name]=val
         defs={d['id']:d for d in model['definitions']}
@@ -2723,7 +2745,7 @@ def expand_cases(model, vectors):
         allowed=[]
         for index,out in enumerate(rule['allowed']):
             if explicit:output_frames=alternative_frames[index]
-            after=deepcopy(test['state']); emitted={}
+            after={key:deepcopy(env[key]) for key in states}; emitted={}
             for write in out['write']:
                 target=write['target'];val=eval_expr(write['expr'],env,defs)
                 require(in_domain(fields[target]['domain'],val),f'{test["id"]}: output {target} out of declared domain')
@@ -2746,7 +2768,7 @@ def expand_cases(model, vectors):
                             'required output missing for operation '+output_operation['id']+': '+field['id'])
                     require(pres!='absent' or field['id'] not in emitted,
                             'absent output emitted by operation '+output_operation['id']+': '+field['id'])
-            allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs'],
+            allowed.append({'state':{k:_encode_vector_value(fields[k]['domain'],v) for k,v in after.items()},'output':{k:_encode_vector_value(fields[k]['domain'],v) for k,v in emitted.items()},'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs'],
                             **({'output_operations':sorted(op['id'] for op in output_frames.values())} if explicit else {})})
         case_data={'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                    'input':test['input'],'initial_state':test['state'],'allowed':allowed}
@@ -2915,10 +2937,10 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             if env is None:env={k:d[i] for k,d,i in zip(variable_ids,domains,values)}
             sample={
                 'id':'case.'+rule['id'],'trigger':trigger,
-                'input':{key:({'$cat_presence':'undefined'} if env[key] is typed.UNDEFINED else env[key])
+                'input':{key:({'$cat_presence':'undefined'} if env[key] is typed.UNDEFINED else _encode_vector_value(fields[key]['domain'],env[key]))
                          for key in variable_ids if fields[key]['role']=='input'
                          and env[key] is not typed.MISSING},
-                'state':{key:env[key] for key in variable_ids if fields[key]['role']=='state'}
+                'state':{key:_encode_vector_value(fields[key]['domain'],env[key]) for key in variable_ids if fields[key]['role']=='state'}
             }
             if observation_ids:sample['observations']={key:env[key] for key in observation_ids}
             if operation is not None and any(value!='required' for value in presence.values()):
@@ -2971,12 +2993,17 @@ def _check_observation_transport(model, binding, expected):
 
 
 def emit_vitest(model,vectors,binding_path):
-    require(not any(typed.has_semantic_domain(f['domain']) for f in model.get('fields',[])), 'Vitest renderer requires explicit JSON/instant binding')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','driver'],
-               optional=('undefined_transport','output_operation_transport','observation_transport'),
+               optional=('undefined_transport','output_operation_transport','observation_transport','semantic_value_transport'),
                where='driver binding')
     require(binding['schema']==D and binding['process']==model['process'],'driver binding incompatible')
+    semantic=[f for f in model.get('fields',[]) if typed.has_semantic_domain(f['domain'])]
+    require(binding.get('semantic_value_transport') in (None,'cat-exact-values/v1'), 'unsupported semantic value transport')
+    require(not semantic or (binding.get('semantic_value_transport')=='cat-exact-values/v1' and all(
+            f['role'] in ('input','state','output') and _exact_value_kind(f['domain']) for f in semantic)),
+            'Vitest renderer requires explicit JSON/instant binding for supported top-level fields')
+    require(semantic or binding.get('semantic_value_transport') is None, 'semantic transport requires semantic fields')
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     observed=_check_observation_transport(model,binding,'js-driver-observed/v1')
