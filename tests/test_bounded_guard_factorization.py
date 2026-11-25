@@ -35,11 +35,41 @@ class BoundedGuardFactorizationTests(unittest.TestCase):
                     out.write_text(json.dumps(model),encoding='utf8')
                     self.assertNotEqual(validate(p,pi,tce,out)['status'],'passed')
 
+    def test_exact_large_selection_preserves_first_witness_and_rejects_unproved(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);p,pi,tce=large_fixture(root)
+            # 128 x 1024 genuine finite input combinations, not observations.
+            pi.write_text(pi.read_text(encoding='utf8').replace('integer[0..1439]','integer[0..127]'),encoding='utf8')
+            model=load(p,pi,tce)
+            self.assertEqual(model['coverage_checks']['compare']['result'],'proved')
+            self.assertEqual(model['coverage_checks']['compare']['guard_refs'],['input.extra','input.request'])
+            out=root/'Model.json';out.write_text(json.dumps(model),encoding='utf8')
+            self.assertEqual(validate(p,pi,tce,out)['status'],'passed')
+            self.assertEqual(closure(root),'passed')
+            vectors=selection_vectors(model)
+            self.assertEqual(vectors,selection_vectors(model))
+            expanded=expand_cases(model,vectors)
+            self.assertEqual([(case['source_tce'],case['input']['input.request'],case['input']['input.extra']) for case in expanded],
+                [('equal',0,0),('different',1,0)])
+            # A synthetic forged proof cannot suppress a later gap or overlap.
+            from copy import deepcopy
+            for forged in ('unproven','gap','overlap'):
+                with self.subTest(forged=forged):
+                    invalid=deepcopy(model)
+                    if forged=='gap':
+                        invalid['rules'][-1]['when']={'op':'and','args':[invalid['rules'][-1]['when'],{'op':'ne','args':[{'ref':'input.request'},{'literal':127}]}]}
+                    elif forged=='overlap':
+                        invalid['rules'][0]['when']={'op':'or','args':[invalid['rules'][0]['when'],{'op':'eq','args':[{'ref':'input.request'},{'literal':127}]}]}
+                    else:
+                        invalid['coverage_checks']['compare']['result']='unproven'
+                    with self.assertRaises(Blocked):selection_vectors(invalid)
+
     def test_budget_stays_unproved(self):
         with tempfile.TemporaryDirectory() as td:
             p,pi,tce=large_fixture(Path(td),oversized=True)
             model=load(p,pi,tce,allow_partial=True)
             self.assertEqual(model['coverage_checks']['compare']['result'],'unproven')
+            with self.assertRaises(Blocked):selection_vectors(model)
 
     def test_null_partition_and_negative(self):
         for guard,gap,expected in [('input.request == null',False,'proved'),('input.request == null',True,'uncovered'),('input.request == "value"',False,'unproven')]:
