@@ -92,6 +92,30 @@ def _independent_integer_cells(domain, field, clauses, allow_presence=False):
     return reps if reps and len(reps)<=LIMIT else None
 
 
+def _independent_sequence_lengths(domain, field, clauses):
+    if domain.get('type')!='sequence':return None
+    constants=set()
+    def legal(node):
+        if node.get('op')=='call':return False
+        if field not in used_refs(node,{}):return True
+        op=node.get('op');args=node.get('args',[])
+        if op in ('and','or','not'):return all(legal(x) for x in args)
+        if op not in ('eq','ne','lt','le','gt','ge') or len(args)!=2:return False
+        for a,b in (args,args[::-1]):
+            if a=={'op':'length','args':[{'ref':field}]} and set(b)=={'literal'} and type(b['literal']) is int:
+                constants.add(b['literal']);return True
+        return False
+    if not all(legal(x) for x in clauses) or not constants:return None
+    lengths={0}
+    for n in constants:lengths.update(x for x in (n-1,n,n+1) if x>=0)
+    if max(lengths)>4096 or sum(lengths)>16384:return None
+    from catlib.semantic_structural_copy import _example
+    try:
+        value=_example(domain['element'])
+        if not types.contains(domain['element'],value):return None
+        return [[value]*n for n in sorted(lengths)]
+    except (ValueError,TypeError,KeyError,IndexError,RecursionError):return None
+
 def _independent_real_cells(domain, field, clauses):
     """Reconstruct ordered real cells from Source, not compiler receipts."""
     from fractions import Fraction
@@ -842,6 +866,11 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                 if values is not None:
                     partition_fields.append(field)
                     partition_kinds.add('real')
+            if values is None and (field not in inputs or current_presence(field)=='required'):
+                values=_independent_sequence_lengths(domains[field],field,clauses)
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('sequence_length')
             if values is None and field in inputs and current_presence(field)=='optional':
                 representatives=_independent_integer_cells(domains[field],field,clauses,allow_presence=True)
                 kind='optional_integer'
@@ -957,6 +986,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                     else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
                     else 'nullable-string-null-partition/v1' if partition_kinds=={'nullable_string_null'}
                     else 'nullable-reference-equality-partition/v1' if partition_kinds=={'nullable_ref_equality'}
+                    else 'sequence-length-literal-partition/v1' if partition_kinds=={'sequence_length'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
