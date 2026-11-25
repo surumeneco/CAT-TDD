@@ -2887,6 +2887,54 @@ def expand_cases(model, vectors):
     unique([t['id'] for t in cases],'vector IDs')
     return cases
 
+def _ordered_effect_witness_values(model, trigger, fields, guard_names, observed, presence, definitions):
+    """Concrete values for guard-independent required structured fields only.
+
+    The rule coverage and all Effect totality checks must already be proved.
+    Witness selection is not a new proof of totality or implementation correctness.
+    """
+    from catlib.semantic_structural_copy import _example, _supported
+    if (model.get('coverage_requirement') != 'closed'
+            or model.get('coverage_checks', {}).get(trigger, {}).get('result') != 'proved'):
+        return {}
+    checks = model.get('effect_checks', {})
+    refs = set()
+    for rule in model['rules']:
+        if rule['trigger'] != trigger:
+            continue
+        for n, outcome in enumerate(rule['allowed'], 1):
+            for i, write in enumerate(outcome['write'], 1):
+                target, expr = write['target'], write['expr']
+                check = checks.get(f"{rule['source_artifact']}#{rule['id']}:{n}:{i}:{target}", {})
+                if check.get('result') != 'proved':
+                    return {}
+                if expr.get('op') in ('sequence-append', 'sequence-swap', 'sequence-replace-member', 'record-value'):
+                    if (check.get('proof_method') != 'typed-domain-closure/v1'
+                            or _symbolic_effect_containment(expr, fields[target]['domain'], fields) is not True):
+                        return {}
+                    refs.update(used_refs(expr, definitions))
+    if not refs:
+        return {}
+    values = {}
+    for name, field in fields.items():
+        domain = field['domain']
+        shape = domain
+        while shape.get('type') == 'reference' and shape.get('resolved') is True:
+            shape = shape['of']
+        if (field['role'] not in ('input', 'state') or name in guard_names
+                or presence.get(name, 'required') != 'required'
+                or shape.get('type') not in ('record', 'sequence')
+                or not _supported(domain) or (name in observed and name not in refs)):
+            continue
+        try:
+            sample = _example(domain, empty=name not in refs)
+            if typed.contains(domain, sample):
+                values[name] = [sample]
+        except (ValueError, TypeError, KeyError, IndexError, RecursionError):
+            continue
+    return values
+
+
 def selection_vectors(model, strategy='rule-witness/v1'):
     require(strategy == 'rule-witness/v1','unsupported test-selection rule: '+str(strategy))
     require(model.get('status')=='confirmed','normative vector selection requires confirmed TestModel')
@@ -2959,6 +3007,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         nullable_pair=semantic_string_partition.nullable_reference_cells({n:fields[n]['domain'] for n in guard_names},predicates,presence)
         from catlib.semantic_structural_copy import witness_values
         copy_values=witness_values(model,trigger,fields,guard_names,observed,presence)
+        ordered_values=_ordered_effect_witness_values(model,trigger,fields,guard_names,observed,presence,defs)
         for field_id in variable_ids:
             if projected:
                 domains.append(projected[field_id]);continue
@@ -3002,6 +3051,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 values=integer_pair[field_id]
             if values is None and field_id in copy_values:
                 values=copy_values[field_id]
+            if values is None and field_id in ordered_values:
+                values=ordered_values[field_id]
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)

@@ -39,6 +39,44 @@ class SequenceEffects(unittest.TestCase):
                 self.assertEqual(m['status'],'confirmed');self.assertEqual(m['unverified_effect_ids'],[])
                 for name,data in [('model.json',json.dumps(m)),('model.md',render_model_markdown(m))]:
                     dest=Path(td)/name;dest.write_text(data,encoding='utf-8');self.assertEqual(validate(p,pi,tce,dest)['status'],'passed')
+    def test_ordered_effects_native_generation(self):
+        import subprocess
+        from test_conformance_runtime import base_work
+        from cat_compile_v2 import selection_vectors,expand_cases,emit_vitest
+        script=Path(__file__).resolve().parents[1]/'.cat-system/scripts/cat_flow.py'
+        for expr,expected in [
+                ('sequence_append(input.items,input.item)',lambda v:v['input.items']+[v['input.item']]),
+                ('sequence_append(input.items,{"id":"new","name":""})',lambda v:v['input.items']+[{'id':'new','name':''}]),
+                ('sequence_swap(input.items,input.index,input.index + 1)',lambda v:list(reversed(v['input.items']))),
+                ('sequence_replace_member(input.items,input.index,"name","new")',lambda v:[{**v['input.items'][0],'name':'new'},*v['input.items'][1:]])]:
+            with self.subTest(expr=expr),tempfile.TemporaryDirectory() as td:
+                root=Path(td);source=self.fixture(root,expr)
+                work=base_work();work['technologies']=['Vitest']
+                work['specification']['artifact_refs']=['demo.process.tce']
+                work['compilation']={'schema':'cat-compile/v2','process':'Process.md','pi':'PI.md','tce':'TCE.md',
+                    'model':'Model.json','vectors':'Vectors.json','queue':'Queue.json','binding':'Binding.json',
+                    'tests_output':'Generated.test.ts','allow_draft':False,'allow_partial':True}
+                (root/'Work.json').write_text(json.dumps(work),encoding='utf-8')
+                (root/'Binding.json').write_text(json.dumps({'schema':'cat-test-driver/v2','process':'demo.process','driver':'./driver'}),encoding='utf-8')
+                if expr.startswith('sequence_swap'):
+                    for cmd,kind in [('conformance','process-closure'),('compile','model'),('conformance','model-conformance'),
+                                     ('compile','vectors'),('compile','queue'),('compile','tests')]:
+                        run=subprocess.run([sys.executable,str(script),cmd,'--work',str(root/'Work.json'),'--kind',kind],
+                                           capture_output=True,text=True,encoding='utf-8',timeout=30)
+                        self.assertEqual(run.returncode,0,(run.stdout,run.stderr))
+                        self.assertEqual(json.loads(run.stdout)['status'],'passed',run.stdout)
+                model=load(*source);vectors=selection_vectors(model)
+                cases=expand_cases(model,vectors)
+                self.assertIn('case.demo.accept',emit_vitest(model,vectors,root/'Binding.json'))
+                self.assertEqual(len(cases),2)
+                for case in cases:
+                    v=case['input'];self.assertEqual(len(v['input.items']),2)
+                    self.assertNotEqual(v['input.items'][0],v['input.items'][1])
+                    self.assertEqual(case['allowed'][0]['output']['output.accepted'],expected(v))
+                # A forged unproved Effect cannot enable structural witnesses.
+                model['effect_checks'][next(k for k in model['effect_checks'] if k.endswith('output.accepted'))]={'result':'unproven'}
+                with self.assertRaises(Blocked):selection_vectors(model)
+
     def test_narrow_or_nonrequired_rejected(self):
         for expr,target,item,presence in [
             ('sequence_append(input.items,input.item)','sequence<record<id:string,name:string>>','record<id:string,name:integer>','required'),
