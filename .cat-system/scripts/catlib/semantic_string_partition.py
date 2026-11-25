@@ -106,3 +106,19 @@ def reference_palette(names,predicates,extra_literals=(),require_pair=True):
         if value not in constants:fresh.append(value)
         value+='\x00'
     return [*sorted(constants),*fresh]
+
+
+def nullable_string_null_partition(domain, field, predicates):
+    """Required nullable<string>: exact null/non-null Guard classes only."""
+    if domain!={'type':'nullable','of':{'type':'string'}}:return None
+    def check(node):
+        if node.get('op')=='call':return False
+        if not _reads(node,field):
+            return all(check(a) for a in node.get('args',[]))
+        args=node.get('args',[])
+        if node.get('op') in ('eq','ne') and len(args)==2:
+            return args in ([{'ref':field},{'literal':None}],[{'literal':None},{'ref':field}])
+        if node.get('op') in ('and','or','not'):return all(check(a) for a in args)
+        return False
+    if not any(_reads(p,field) for p in predicates) or not all(check(p) for p in predicates):return None
+    return [None,'']

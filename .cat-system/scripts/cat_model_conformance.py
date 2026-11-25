@@ -356,13 +356,13 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                           and all(doc['status']=='confirmed' for doc in rule_docs))
     from catlib import semantic_observation_relation
     observation_fields={**effect_fields,**{obs['id']:{**effect_fields[obs['id']],
-                        'available_on':obs.get('available_on',[])} for obs in p.get('observations',[])}}
+                        'available_on':obs.get('available_on',[]),'source':obs['source']} for obs in p.get('observations',[])}}
     observation_relations=semantic_observation_relation.independent_prove(rule_docs,p['process'],observation_fields,
         {t['id'] for t in p['triggers']},source_all_confirmed)
     observation_proof_ids={rid for rels in observation_relations.values() for rid in rels}
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects,
-        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed,effect_fields,observation_proof_ids)
+        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed,observation_fields,observation_proof_ids,observation_relations)
     from cat_compile_v2 import parse_expr_text
     invariants={proof['rule_id']:parse_expr_text(proof['scope'][len('initial-state-relation '):])
                 for proof in intrinsic_proofs if proof['requirement']=='@cat:finite-state-guard-invariant/v1'}
@@ -426,6 +426,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'interfaces': tuple(sorted(p.get('interfaces', []))),
         'boundary': pi_docs[0][2].get('boundary') if len(pi_docs)==1 else None,
         'pi_boundaries': [{'artifact':fm['id'],**a['boundary']} for _,fm,a in pi_docs],
+        'output_frames':[dict(row,source_pi=fm['id']) for _,fm,a in pi_docs for row in a.get('output_frames',[])],
         'operation_presence':sorted((e['operation'],e['field'],e['presence'],fm['id'])
                                     for _,fm,a in pi_docs for e in a.get('operation_presence',[])),
         'operations': {
@@ -472,9 +473,11 @@ def _source_fresh_output(scope, triggers, pi_docs, tces, effect_checks, rejected
     words=scope.split(' ')
     if len(words)!=5 or words[0]!='fresh-output' or not all(words):return False
     _,owner,operation,trigger,field_id=words
+    if any(fm['id']==owner and pi.get('output_frames') for _,fm,pi in pi_docs):return False
     if trigger not in triggers:return False
     provided=[(fm['id'],op) for _,fm,pi in pi_docs for op in pi.get('operations',[])
-              if op['direction']=='provide' and op.get('trigger') in (None,trigger)]
+              if fm['id']==owner and op['direction']=='provide'
+              and op.get('trigger') in (None,trigger)]
     if len(provided)!=1:return False
     actual_owner,op=provided[0]
     if actual_owner!=owner or op['id']!=operation or op.get('trigger')!=trigger:return False
@@ -573,7 +576,7 @@ def _source_finite_invariant(scope, roles, domains, tces, checks, rejected):
 
 
 def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects,
-                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False,source_fields=None,observation_proof_ids=()):
+                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False,source_fields=None,observation_proof_ids=(),observation_relations=None):
     def resolved(d):
         if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
         t=d['type']
@@ -622,14 +625,14 @@ def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, ef
                 })
     if confirmed and source_fields is not None:
         from cat_compile_v2 import parse_expr_text
-        from catlib import independent_transition_relation
+        from catlib import independent_transition_relation, semantic_transition_relation
         invariants=[parse_expr_text(proof['scope'][len('initial-state-relation '):])
                     for proof in proofs if proof['requirement']=='@cat:finite-state-guard-invariant/v1']
         for document in rule_docs:
             if document['process']!=process or document['kind']!='domain-spec' or not document['scope_verified']:continue
             for rule in document['rules']:
-                if rule.get('requirement')!='@cat:finite-transition-relation/v1' or rule.get('verification_contract')!='cat:intrinsic-model/v1':continue
-                if independent_transition_relation.verify(rule['condition'],source_fields,pi_docs,tces,effect_checks or {},rejected,invariants):
+                if not semantic_transition_relation.matches(rule.get('requirement'),rule.get('condition')) or rule.get('verification_contract')!='cat:intrinsic-model/v1':continue
+                if independent_transition_relation.verify(rule['condition'],source_fields,pi_docs,tces,effect_checks or {},rejected,invariants,observation_relations):
                     proofs.append({'rule_id':rule['id'],'source_artifact':document['id'],
                         'source_sha256':document['sha256'],'requirement':rule['requirement'],
                         'verification_contract':'cat:intrinsic-model/v1','proof_method':'cat:intrinsic-model/v1',
@@ -709,6 +712,12 @@ def markdown_model(path):
         seen_operation_presence.add(key)
         operation_presence.append((key[0],key[1],cell(row,'Presence'),cell(row,'Source PI','出典PI')))
     operation_presence.sort()
+    frame_section=section(text,'Output frames','提供出力フレーム')
+    output_frames=[]
+    if frame_section is not None:
+        match=re.fullmatch(r'```json\s*(.*?)\s*```',frame_section,re.S)
+        require(match is not None,'invalid Markdown Output frames')
+        output_frames=json.loads(match.group(1))
     observation_section=section(text,'Observation availability','観測利用可能時点')
     require(observation_section is not None,'missing Markdown observation availability')
     observation_availability={}
@@ -867,6 +876,7 @@ def markdown_model(path):
             'rule_obligations':rule_obligations, 'intrinsic_rule_proofs':intrinsic_proofs,
             'named_type_definitions':named_types_data,
             'operation_presence':operation_presence,
+            'output_frames':output_frames,
             'observation_availability':observation_availability,
             'markdown_domains':markdown_domains,
             'interfaces': interfaces, 'boundary': boundary, 'pi_boundaries':pi_boundaries,
@@ -966,6 +976,7 @@ def json_model(path):
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
         'boundary': model.get('pi_boundary'),
         'pi_boundaries':model.get('pi_boundaries',[]),
+        'output_frames':model.get('output_frames',[]),
         'operation_presence':sorted((e['operation'],e['field'],e['presence'],e['source_pi'])
                                     for e in model.get('operation_presence',[])),
         'operations': operations,
@@ -1008,7 +1019,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     if expected['unjustified_effect_proofs']:
         mismatches.append('effect_totality_independent')
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
-              'constraints', 'definitions', 'rules', 'effects', 'frames')
+              'constraints', 'definitions', 'rules', 'effects', 'frames', 'output_frames')
     if Path(model).suffix.lower()!='.json':
         # Markdown need not carry JSON proof receipts, but it must preserve
         # the normative PI/Operation Trigger and unresolved result-time scope.

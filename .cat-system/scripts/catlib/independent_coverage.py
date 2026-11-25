@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 import math
 from catlib import semantic_types as types
+from catlib import semantic_json_instant as json_time
 from cat_compile_v2 import eval_expr,used_refs,Blocked
 
 LIMIT=65536
@@ -223,6 +224,80 @@ def independent_reference_palette(names,clauses,extra_literals=(),require_pair=T
     except (ValueError,KeyError,TypeError):return None
 
 
+def _finite_truth_tables(names,dimensions,clauses,definitions):
+    """Recompute bounded predicate truth tables from independent Source ASTs.
+
+    Table entries can be undefined. An undefined entry is relevant only when
+    reached by the normal ordered constraint and Guard evaluation, not merely
+    because it exists in a projected subspace excluded by prior constraints.
+    """
+    from operator import itemgetter
+    n=math.prod(map(len,dimensions))
+    if n>2_000_000 or n*len(clauses)>64_000_000:return None
+    if any(any(x is _PRESENT_CLASS for x in dim) for dim in dimensions):return None
+    total=0;leaves=0
+    def describe(expr):
+        nonlocal total,leaves
+        deps=used_refs(expr,definitions)
+        if not deps<=set(names):raise ValueError('unknown Source dependency')
+        pos=tuple(i for i,name in enumerate(names) if name in deps)
+        axes=[range(len(dimensions[i])) for i in pos]
+        size=math.prod(map(len,axes))
+        if size>LIMIT:
+            op=expr.get('op')
+            if op not in ('and','or','not'):raise ValueError('large atomic Source predicate')
+            return (op,[describe(child) for child in expr['args']])
+        total+=size;leaves+=1
+        if total>1_000_000 or n*leaves>64_000_000:raise ValueError('Source proof budget exceeded')
+        return ('table',(expr,pos,axes))
+    try:plans=[describe(expr) for expr in clauses]
+    except ValueError:return None
+    def table(expr,pos,axes):
+        values={}
+        for key in itertools.product(*axes):
+            env={names[i]:dimensions[i][j] for i,j in zip(pos,key)}
+            try:
+                value=eval_expr(expr,env,definitions)
+                values[key]=value if type(value) is bool else None
+            except (Blocked,TypeError,ValueError,KeyError):values[key]=None
+        pick=itemgetter(*pos) if len(pos)>1 else (lambda row:(row[pos[0]],)) if pos else (lambda row:())
+        def evaluate(row):
+            value=values[pick(row)]
+            if value is None:raise Blocked('undefined Source predicate')
+            return value
+        return evaluate
+    def compile_plan(plan):
+        op,body=plan
+        if op=='table':return table(*body)
+        children=[compile_plan(child) for child in body]
+        if op=='and':return lambda row:all(child(row) for child in children)
+        if op=='or':return lambda row:any(child(row) for child in children)
+        return lambda row:not children[0](row)
+    return [compile_plan(plan) for plan in plans]
+
+
+def _independent_null_cells(domain,field,clauses):
+    if domain!={'type':'nullable','of':{'type':'string'}}:return None
+    found=False
+    def audit(node):
+        nonlocal found
+        if node.get('op')=='call':return False
+        args=node.get('args',[])
+        if node.get('op') in ('eq','ne') and len(args)==2:
+            for a,b in ((args[0],args[1]),(args[1],args[0])):
+                if a=={'ref':field} and b=={'literal':None}:
+                    found=True;return True
+        if node.get('ref')==field:return False
+        # A reference below any other non-Boolean operation is outside
+        # this exact fragment, even when an inner null comparison exists.
+        if node.get('op') not in ('and','or','not'):
+            if field in used_refs(node,{}):return False
+        return all(audit(arg) for arg in args)
+    def opaque(node):return node.get('op')=='call' or any(opaque(a) for a in node.get('args',[]))
+    if any(opaque(c) for c in clauses):return None
+    return [None,''] if all(audit(c) for c in clauses) and found else None
+
+
 def _independent_string_cells(domain, field, clauses, allow_presence=False):
     """Independent literal-equality truth cells, without compiler helpers."""
     if domain != {'type': 'string'}:
@@ -419,7 +494,7 @@ def _independent_record_cells(names,domains,roles,inputs,current_presence,clause
             if m['presence']!='required':return {}
             domain=m['domain']
             while domain.get('type')=='reference' and domain.get('resolved'):domain=domain['of']
-            if domain.get('type') not in ('boolean','integer','real','string','enum'):return {}
+            if domain.get('type') not in ('boolean','integer','real','string','enum') and not (domain.get('type') in ('json','instant') and (p,member) not in pairs):return {}
             ident='@member:'+p+':'+member
             if ident in domains or ident in scalar_domains:return {}
             mapping[p,member]=ident;record.append((member,ident));scalar_domains[ident]=domain
@@ -474,6 +549,8 @@ def _independent_record_cells(names,domains,roles,inputs,current_presence,clause
                 if d.get('type')=='integer':v=[min(d.get('max',max(0,d.get('min',0))),max(0,d.get('min',0)))]
                 elif d=={'type':'string'}:v=['']
                 elif d.get('type')=='real':v=[d.get('min',d.get('max',0))]
+                elif d.get('type')=='json':v=[{} if d['root']=='object' else None]
+                elif d.get('type')=='instant':v=[json_time.decode_offset_datetime('1970-01-01T00:00:00Z')]
         if v is None and pr=='required':
             for derive in (_independent_integer_cells,_independent_string_cells,_independent_real_cells):
                 v=derive(d,n,predicates)
@@ -580,6 +657,18 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
         operations.extend({**op,'source_pi':fm['id']} for op in pi.get('operations',[]))
         overrides.extend({**ov,'source_pi':fm['id']} for ov in pi.get('operation_presence',[]))
 
+    # Independently reconstruct explicit output-cut semantics from PI/TCE
+    # Source. The Compiler's derived frame and receipt are not consulted.
+    from catlib.output_frame_contract import declarations, validate_declarations
+    explicit=declarations(pi_docs)
+    source_fields={k:{'role':'output','source_pi':v['owner']} for k,v in outputs.items()}
+    source_fields.update({k:{'role':'input','source_pi':v['owner']} for k,v in inputs.items()})
+    try:validate_declarations(explicit,source_fields,operations,overrides,rules,process['triggers'])
+    except ValueError as exc:raise Blocked(str(exc)) from exc
+    explicit_owners={row['source_pi'] for row in explicit}
+    explicit_outputs={k:v for k,v in outputs.items() if v['owner'] in explicit_owners}
+    outputs={k:v for k,v in outputs.items() if v['owner'] not in explicit_owners}
+    legacy_operations=[op for op in operations if op['source_pi'] not in explicit_owners]
     output_special={k for k,v in outputs.items() if v['presence']!='required'}
     output_special.update(ov['field'] for ov in overrides
                           if ov['field'] in outputs and ov['presence']!='required')
@@ -680,6 +769,11 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                     partition_fields.append(field)
                     partition_kinds.add('string')
             if values is None and (field not in inputs or current_presence(field)=='required'):
+                values=_independent_null_cells(domains[field],field,clauses)
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('nullable_string_null')
+            if values is None and (field not in inputs or current_presence(field)=='required'):
                 values=_independent_real_cells(domains[field],field,clauses)
                 if values is not None:
                     partition_fields.append(field)
@@ -707,25 +801,66 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
             if values is None:
                 possible=False;break
             dimensions.append(values)
-        if not possible or math.prod(map(len,dimensions))>LIMIT:
+        size=math.prod(map(len,dimensions))
+        table=(_finite_truth_tables(sorted(names),dimensions,clauses,definitions)
+               if possible and size>LIMIT else None)
+        masks=None
+        if possible and size>LIMIT and table is None and not any(
+                any(v is _PRESENT_CLASS for v in dim) for dim in dimensions):
+            # Use the same pure expression primitive on independently rebuilt
+            # Source partitions, not the Compiler's masks, outcomes or receipts.
+            from catlib.finite_truth_masks import truth_masks
+            masks=truth_masks(sorted(names),dimensions,constraints,[r['when'] for r in applicable],
+                              definitions,eval_expr,used_refs,Blocked)
+        if not possible or (size>LIMIT and table is None and masks is None):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
         gaps=overlaps=0;visited=set();unknown=False
         admissible=0
         uncovered_examples=[];overlap_examples=[]
         def snapshot(env):
+            def transport(value):
+                if type(value) is json_time.InstantValue:return json_time.encode_instant_transport(value)
+                if isinstance(value,dict):return {k:transport(v) for k,v in value.items()}
+                if isinstance(value,list):return [transport(v) for v in value]
+                return value
             return {name:({'$cat_presence':'missing'} if value is types.MISSING else
                           {'$cat_presence':'undefined'} if value is types.UNDEFINED else
-                          {'$cat_presence':'present'} if value is _PRESENT_CLASS else value)
+                          {'$cat_presence':'present'} if value is _PRESENT_CLASS else transport(value))
                     for name,value in env.items()}
-        for items in itertools.product(*dimensions):
-            env=dict(zip(sorted(names),items))
+        ordered=sorted(names)
+        if masks is not None:
+            from catlib.finite_truth_masks import row_indices, first_indices
+            accepted,regions=masks
+            admissible=accepted.bit_count();covered=overlap=0
+            for rule,region in zip(applicable,regions):
+                if region:visited.add(rule['id'])
+                overlap|=covered&region;covered|=region
+            uncovered=accepted&~covered
+            gaps=uncovered.bit_count();overlaps=overlap.bit_count()
+            def env_at(i):return {k:d[j] for k,d,j in zip(ordered,dimensions,row_indices(i,dimensions))}
+            uncovered_examples=[snapshot(env_at(i)) for i in first_indices(uncovered,64)]
+            overlap_examples=[{'state':snapshot(env_at(i)),
+                               'rules':[r['id'] for r,region in zip(applicable,regions) if (region>>i)&1]}
+                              for i in first_indices(overlap,16)]
+        rows=(() if masks is not None else
+              itertools.product(*(range(len(d)) for d in dimensions)) if table is not None
+              else itertools.product(*dimensions))
+        for items in rows:
+            env=None if table is not None else dict(zip(ordered,items))
             try:
-                if not all(eval_expr(c,env,definitions) for c in constraints):continue
-                admissible+=1
-                hit=[r['id'] for r in applicable if eval_expr(r['when'],env,definitions)]
+                if table is not None:
+                    if not all(fn(items) for fn in table[:len(constraints)]):continue
+                    admissible+=1
+                    hit=[r['id'] for r,fn in zip(applicable,table[len(constraints):]) if fn(items)]
+                else:
+                    if not all(eval_expr(c,env,definitions) for c in constraints):continue
+                    admissible+=1
+                    hit=[r['id'] for r in applicable if eval_expr(r['when'],env,definitions)]
             except (Blocked,TypeError,ValueError,KeyError):
                 unknown=True;break
+            if (not hit or len(hit)>1) and env is None:
+                env={k:d[i] for k,d,i in zip(ordered,dimensions,items)}
             if len(hit)==0:
                 gaps+=1
                 if len(uncovered_examples)<64:uncovered_examples.append(snapshot(env))
@@ -756,6 +891,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
+                    else 'nullable-string-null-partition/v1' if partition_kinds=={'nullable_string_null'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
@@ -774,44 +910,70 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                            proof_scope='local-guard-truth-partition-not-effect-or-implementation')
         result[ident]=receipt
         if outputs:
-            providers=[op for op in operations if op['direction']=='provide'
+            providers=[op for op in legacy_operations if op['direction']=='provide'
                        and (op.get('trigger') is None or op['trigger']==ident)]
-            # Nonrequired output frames need an explicit, unique provider.
-            # Required fields must be emitted by each alternative regardless
-            # of whether a nonrequired field or a provide operation exists.
-            # A provide Operation only scopes an output frame when the
-            # Source declares nonrequired or operation-specific output Presence.
-            # Otherwise the legacy direct TCE frame covers all required outputs,
-            # even when an unrelated PI declares a provide Operation.
+            # Derive each owning PI's result frame from Source. Legacy direct
+            # output semantics are retained if no scoped Presence is declared.
             needs_provider=(bool(output_special) or any(ov['field'] in outputs for ov in overrides))
-            provider=providers[0] if needs_provider and len(providers)==1 else None
-            if provider is not None:
-                covered_owners.add(provider['source_pi'])
-            scoped_outputs=(outputs if provider is None else {
-                field:info for field,info in outputs.items()
-                if info['owner']==provider['source_pi']})
-            if output_special and (provider is None
-                or any(ov['operation']!=provider['id'] for ov in overrides
-                       if ov['field'] in scoped_outputs)):
+            grouped={op['source_pi']:op for op in providers}
+            valid=(needs_provider and bool(providers) and len(grouped)==len(providers)
+                   and (len(providers)==1 or all(op.get('trigger')==ident for op in providers)))
+            if valid:
+                for ov in overrides:
+                    info=outputs.get(ov['field'])
+                    op=grouped.get(info['owner']) if info is not None else None
+                    if op is None or ov['operation']==op['id']:
+                        continue
+                    matches=[item for item in operations if item['id']==ov['operation']
+                             and item['source_pi']==op['source_pi']]
+                    if (len(matches)!=1 or matches[0]['direction']!='provide'
+                            or matches[0].get('trigger') in (None,ident)):
+                        valid=False
+            # A Trigger without a provider is an empty frame only when all
+            # output owners have explicitly Trigger-bound provider inventory.
+            owners={info['owner'] for info in outputs.values()}
+            scoped={op['source_pi'] for op in legacy_operations if op['direction']=='provide'
+                    and op.get('trigger') is not None}
+            inactive=needs_provider and not providers and owners<=scoped
+            frames=grouped if valid or inactive else None
+            if frames is not None:
+                covered_owners.update(frames)
+            scoped_outputs=(outputs if frames is None else {
+                field:info for field,info in outputs.items() if info['owner'] in frames})
+            if output_special and frames is None:
                 output_ok=False
                 output_unproved.update(output_special)
             for rule in applicable:
                 for outcome in rule['allowed']:
                     emitted={x['target'] for x in outcome['write']}
-                    if provider is not None:
+                    if frames is not None:
                         unowned=emitted & (outputs.keys()-scoped_outputs.keys())
                         if unowned:
                             output_ok=False
                             output_unproved.update(unowned)
                     for field,info in scoped_outputs.items():
                         ps=([ov['presence'] for ov in overrides
-                             if ov['field']==field and ov['operation']==provider['id']]
-                            if provider is not None else [])
+                             if ov['field']==field and ov['operation']==frames[info['owner']]['id']]
+                            if frames is not None else [])
                         presence=ps[0] if ps else info['presence']
                         if (presence=='undefined' or (presence=='required' and field not in emitted)
                                 or (presence=='absent' and field in emitted)):
                             output_ok=False
                             output_unproved.add(field)
+    for rule in rules:
+        for n,outcome in enumerate(rule['allowed'],1):
+            selected={row['source_pi']:row['operation'] for row in explicit
+                      if (row['trigger'],row['rule'],row['outcome'])==(rule['trigger'],rule['id'],n)}
+            writes={w['target'] for w in outcome['write']}
+            for field,info in explicit_outputs.items():
+                operation=selected.get(info['owner'])
+                presence='absent'
+                if operation is not None:
+                    matched=[ov['presence'] for ov in overrides if ov['field']==field and ov['operation']==operation and ov['source_pi']==info['owner']]
+                    presence=matched[0] if len(matched)==1 else info['presence'] if not matched else 'undefined'
+                if presence=='undefined' or (presence=='required' and field not in writes) or (presence=='absent' and field in writes):
+                    output_ok=False
+                    output_unproved.add(field)
     orphaned={field for field in output_special
               if outputs[field]['owner'] not in covered_owners}
     if orphaned:

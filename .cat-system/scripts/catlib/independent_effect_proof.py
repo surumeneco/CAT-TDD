@@ -96,6 +96,19 @@ def _symbolic(expr, target, fields):
     return False
 
 
+def _nonnull_on_true(node, ref):
+    # Independently derive the sufficient implication from original Source.
+    op=node.get('op'); children=node.get('args',[])
+    if op in ('and','or'):
+        evidence=[_nonnull_on_true(child,ref) for child in children]
+        return any(evidence) if op=='and' else bool(evidence) and all(evidence)
+    negated=op=='not' and len(children)==1 and children[0].get('op')=='eq'
+    if negated: children=children[0].get('args',[])
+    if op!='ne' and not negated: return False
+    return len(children)==2 and any(
+        a=={'ref':ref} and b=={'literal':None} for a,b in (children,children[::-1]))
+
+
 def _certifies(rule,write,fields,definitions,presence_map,limit=4096):
     target=fields.get(write.get('target'))
     expr=write.get('expr')
@@ -114,7 +127,10 @@ def _certifies(rule,write,fields,definitions,presence_map,limit=4096):
         if 'literal' in expr:
             return types.contains(domain,expr['literal'])
         if set(expr)=={'ref'}:
-            return subtyping.subset(fields[expr['ref']]['domain'],domain) is True
+            source=fields[expr['ref']]['domain']
+            if subtyping.subset(source,domain) is True: return True
+            return (source.get('type')=='nullable' and _nonnull_on_true(rule['when'],expr['ref'])
+                    and subtyping.subset(source['of'],domain) is True)
         if expr.get('op')=='member':
             parent=fields[expr['args'][0]['ref']]
             if parent['role']!='input' or presence_map.get(parent['id'])!='required':return False

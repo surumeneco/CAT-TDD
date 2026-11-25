@@ -20,6 +20,7 @@ import tokenize
 
 from catlib.markdown import parse_frontmatter
 from catlib import semantic_types as typed
+from catlib import semantic_json_instant as json_time
 from catlib import semantic_rules
 from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
@@ -445,6 +446,18 @@ def _readable_spec_v2(path, kind, fm):
                 'presence':_canon(_cell(row,'Presence','存在'),
                                   {'required':{'必須'},'optional':{'任意'},'absent':{'不在'},
                                    'undefined':{'未定義'}},'Operation presence state')})
+        frame_rows=_section_any(body,'Output frames','提供出力フレーム')
+        output_frames=[]
+        if frame_rows is not None:
+            for row in _table_any(body,('Output frames','提供出力フレーム')):
+                number=_cell(row,'Outcome','結果')
+                require(number.isdigit() and int(number)>0,'Output frame Outcome must be positive integer')
+                operation=_cell(row,'Operation','操作')
+                output_frames.append({'trigger':semantic_ident(_cell(row,'Trigger','起点'),'Output frame Trigger'),
+                    'rule':semantic_ident(_cell(row,'Behavior','振る舞い'),'Output frame Behavior'),
+                    'outcome':int(number),'operation':None if operation=='—' else semantic_ident(operation,'Output frame Operation'),
+                    'mode':_canon(_cell(row,'Mode','活性'),{'one':{'必ず一つ'},'zero-or-one':{'零または一つ'},'none':{'非活性'}},'Output frame mode')})
+            require(output_frames,'explicit Output frames section must not be empty')
         constraints=[]
         for row in _table_any(body,('Constraints','制約'),required=False):
             constraints.append(parse_expr_text(_cell(row,'Expression','Condition','expression','condition','式','条件')))
@@ -455,7 +468,7 @@ def _readable_spec_v2(path, kind, fm):
                     'PI boundary mixed direction requires explicit per-peer operation semantics')
         return {'schema':S,'kind':kind,'process':process,'boundary':{'peer':peer,'direction':direction,**({'peers':extra_peers} if len(extra_peers)>1 else {})},
                 'fields':fields,'operations':operations,'operation_presence':operation_presence,
-                'constraints':constraints}
+                **({'output_frames':output_frames} if frame_rows is not None else {}),'constraints':constraints}
     if kind=='tce':
         require(_section_any(body,'Rules','Effects') is None,
                 'markdown-v2 TCE must use Behaviors/振る舞い; legacy Rules/Effects are markdown-v1 only')
@@ -567,7 +580,7 @@ def read_artifact(path, kind, allow_draft):
         except json.JSONDecodeError as e: raise Blocked(f'{path}: {e}') from e
     check_keys(spec,['schema','kind','process'],
                ['triggers','fields','rules','definitions','closed_world','coverage','constraints',
-                'interfaces','state_fields','observations','actions','boundary','operations','operation_presence'],str(path))
+                'interfaces','state_fields','observations','actions','boundary','operations','operation_presence','output_frames'],str(path))
     require(spec['schema']==S and spec['kind']==kind and spec['process']==fm.get('process'),
             f'{path}: frontmatter/semantic body mismatch')
     ident(fm.get('id'),'artifact id'); ident(spec['process'],'process id')
@@ -671,6 +684,14 @@ def _member_parents(expr):
     return set().union(*(_member_parents(a) for a in expr.get('args',[]))) if expr.get('args') else set()
 
 
+def _comparison_value_refs(expr, definitions):
+    # A validated scalar member reads its own Domain, not the parent record's
+    # sibling values. Keep used_refs unchanged for provenance and ownership.
+    if expr.get('op')=='member':return set()
+    if 'ref' in expr or expr.get('op')=='call':return used_refs(expr,definitions)
+    return set().union(*(_comparison_value_refs(a,definitions) for a in expr.get('args',[])))
+
+
 def inspect_expr(expr, fields, definitions, params=(), stack=()):
     """Conservative AST type checker; unsupported conversions fail, never coerce."""
     require(isinstance(expr,dict),'expression must be AST object')
@@ -728,7 +749,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
                 return t
             require(comparable(args[0],types[0])==comparable(args[1],types[1]),'member comparison type mismatch')
         require(not any(ref in fields and typed.has_semantic_domain(fields[ref]['domain'])
-                        for ref in used_refs(expr,definitions)),
+                        for ref in _comparison_value_refs(expr,definitions)),
                 'typed JSON/instant expression requires explicit domain binding')
         return 'boolean'
     if op in ('lt','le','gt','ge'):
@@ -957,6 +978,22 @@ def _guard_reads_value_before_presence(node, field):
         _guard_reads_value_before_presence(arg,field) for arg in node.get('args',[]))
 
 
+def _guard_guarantees_nonnull(expr, field):
+    """Sufficient truth implication for a direct, same-cut nullable read."""
+    op=expr.get('op'); args=expr.get('args',[])
+    if op=='and': return any(_guard_guarantees_nonnull(x,field) for x in args)
+    if op=='or': return bool(args) and all(_guard_guarantees_nonnull(x,field) for x in args)
+    if op=='not' and len(args)==1 and args[0].get('op')=='eq':
+        args=args[0].get('args',[]); op='ne'
+    return op=='ne' and (args==[{'ref':field},{'literal':None}] or args==[{'literal':None},{'ref':field}])
+
+
+def _guarded_source_domain(domain, guard, field):
+    if domain.get('type')=='nullable' and _guard_guarantees_nonnull(guard,field):
+        return domain['of']
+    return domain
+
+
 def _guard_guarantees_present(expr, field):
     """Sound, evaluation-order-aware Guard truth implies value Presence."""
     if expr.get('op')=='is-present' and expr.get('args')==[{'ref':field}]:
@@ -1112,6 +1149,8 @@ def _effect_totality_checks(rules, fields, definitions, max_combinations=4096,
                         checks[ident]={'result':'unproven','reason':'Effect reads nonrequired input without a Presence proof'}
                     else:
                         proof=semantic_subtyping.subset(source_field['domain'],domain)
+                        if proof is not True:
+                            proof=semantic_subtyping.subset(_guarded_source_domain(source_field['domain'],rule['when'],expr['ref']),domain)
                         checks[ident]=({'result':'proved'} if proof is True
                                       else {'result':'unproven','reason':'Effect source Domain unresolved or inclusion unproved'})
                     continue
@@ -1356,7 +1395,7 @@ def _has_pair_order_comparison(node):
             or any(_has_pair_order_comparison(x) for x in node.get('args',[])))
 
 
-def _record_projection_values(fields,names,predicates,presence,definitions,member_exprs=()):
+def _record_projection_values(fields,names,predicates,presence,definitions,member_exprs=(),*,guard_only=False):
     """Exact Cartesian cells of projected scalar members; reassemble wire record.
 
     Temporary analysis IDs never escape into the Model or vector payload.
@@ -1381,7 +1420,7 @@ def _record_projection_values(fields,names,predicates,presence,definitions,membe
             if member['presence']!='required':return {}
             d=member['domain']
             while d.get('type')=='reference' and d.get('resolved'):d=d['of']
-            if d.get('type') not in ('boolean','integer','real','string','enum'):return {}
+            if d.get('type') not in ('boolean','integer','real','string','enum') and not (guard_only and d.get('type') in ('json','instant')):return {}
             keys[parent,mid]=key;groups[parent].append((mid,key))
             flat[key]={'id':key,'domain':d,'role':'input','presence':'required'}
             flat_presence[key]='required'
@@ -1426,6 +1465,11 @@ def _record_projection_values(fields,names,predicates,presence,definitions,membe
         if candidates is None:
             candidates=_presence_cases(domain,pr) if name in flat_presence else typed.finite_values(domain)
         if candidates is None and name not in used and pr=='optional':candidates=[typed.MISSING]
+        if guard_only and candidates is None and name not in used and pr=='required':
+            # Whole-record reads/calls have already been rejected. These
+            # representatives witness nonempty unread sibling Domains only.
+            if domain.get('type')=='json':candidates=[{} if domain['root']=='object' else None]
+            elif domain.get('type')=='instant':candidates=[json_time.decode_offset_datetime('1970-01-01T00:00:00Z')]
         if candidates is None and pr=='required':
             for solver in (semantic_interval_partition.integer_partition_values,semantic_string_partition.string_partition_values,semantic_interval_partition.real_partition_values):
                 candidates=solver(domain,name,clauses,allow_unused=name not in used)
@@ -1560,58 +1604,98 @@ def _nonrequired_output_ids(fields,overrides):
         if fields[item['field']]['role']=='output' and item['presence']!='required'}
 
 
-def _provided_output_operation(fields,operations,overrides,trigger):
-    """A single source-owned provider is required for optional output proof."""
+def _provided_output_frames(fields,operations,overrides,trigger):
+    """Resolve fresh result frames by PI, not by a global provider count.
+
+    Multiple frames require explicit Trigger bindings and distinct owners.
+    The legacy singular unscoped operation is retained; no ordering or
+    transport protocol is inferred from the frame map.
+    """
     special=_nonrequired_output_ids(fields,overrides)
     declared=any(fields[item['field']]['role']=='output' for item in overrides)
     if not special and not declared:
         return None
     candidates=[op for op in operations if op['direction']=='provide'
                 and (op.get('trigger') is None or op['trigger']==trigger)]
-    if len(candidates)!=1:
+    frames={op['source_pi']:op for op in candidates}
+    if not candidates:
+        # An explicitly Trigger-bound provider inventory can be inactive.
+        # Do not infer an empty frame for legacy/undeclared output owners.
+        owners={f['source_pi'] for f in fields.values() if f['role']=='output'}
+        scoped={op['source_pi'] for op in operations if op['direction']=='provide'
+                and op.get('trigger') is not None}
+        return {} if owners and owners<=scoped else None
+    if len(frames)!=len(candidates):
         return None
-    operation=candidates[0]
-    # A distinct PI may provide outputs for a *different* trigger. Only
-    # output-Presence overrides owned by this PI bind this operation.
-    if any(item['operation']!=operation['id'] for item in overrides
-           if fields[item['field']]['role']=='output'
-           and fields[item['field']]['source_pi']==operation['source_pi']):
+    if len(candidates)>1 and any(op.get('trigger')!=trigger for op in candidates):
         return None
-    return operation
+    # Overrides of explicitly distinct response Triggers belong to those
+    # fresh frames. Reject accept, unscoped, unknown or ambiguous operations.
+    for item in overrides:
+        field=fields[item['field']]
+        operation=frames.get(field.get('source_pi'))
+        if field['role']!='output' or operation is None or item['operation']==operation['id']:
+            continue
+        other=[op for op in operations if op['id']==item['operation']
+               and op['source_pi']==operation['source_pi']]
+        if (len(other)!=1 or other[0]['direction']!='provide'
+                or other[0].get('trigger') in (None,trigger)):
+            return None
+    return frames
 
 
-def _unproved_output_presence(fields,operations,overrides,rules,triggers):
+def _unproved_output_presence(fields,operations,overrides,rules,triggers,explicit_frames=()):
     """Audit required output emission independently of nonrequired fields.
 
     No provide operation is needed for the legacy direct TCE output frame,
     but a nonrequired field still needs its explicit operation Presence.
     """
+    if explicit_frames:
+        from catlib.output_frame_contract import active_frames, declared_owners
+        owners=declared_owners(explicit_frames)
+        # Reuse legacy audit on the remaining owners, with no foreign writes.
+        remaining={k:f for k,f in fields.items() if f.get('source_pi') not in owners}
+        legacy_rules=[{**rule,'allowed':[{**out,'write':[w for w in out['write'] if w['target'] in remaining]}
+                                      for out in rule['allowed']]} for rule in rules]
+        errors=_unproved_output_presence(remaining,[op for op in operations if op['source_pi'] not in owners],
+            [ov for ov in overrides if ov['field'] in remaining],legacy_rules,triggers)
+        owned=[f for f in fields.values() if f['role']=='output' and f.get('source_pi') in owners]
+        for rule in rules:
+            for n,outcome in enumerate(rule['allowed'],1):
+                active=active_frames(explicit_frames,operations,rule['trigger'],rule['id'],n)
+                emitted={w['target'] for w in outcome['write']}
+                for field in owned:
+                    op=active.get(field['source_pi'])
+                    presence=_presence_for_field(field,op,overrides) if op is not None else 'absent'
+                    if presence=='undefined' or (presence=='required' and field['id'] not in emitted) or (presence=='absent' and field['id'] in emitted):
+                        errors.add(field['id'])
+        return errors
     special=_nonrequired_output_ids(fields,overrides)
     outputs=[f for f in fields.values() if f['role']=='output']
     errors=set()
     covered_owners=set()
     for trigger in triggers:
-        operation=_provided_output_operation(fields,operations,overrides,trigger)
-        if operation is not None:
-            covered_owners.add(operation['source_pi'])
-        if operation is None:
+        frames=_provided_output_frames(fields,operations,overrides,trigger)
+        if frames is not None:
+            covered_owners.update(frames)
+        if frames is None:
             errors.update(special)
             scoped_outputs=outputs
         else:
             scoped_outputs=[f for f in outputs
-                            if f['source_pi']==operation['source_pi']]
+                            if f['source_pi'] in frames]
         scoped_ids={f['id'] for f in scoped_outputs}
         for rule in (r for r in rules if r['trigger']==trigger):
             for outcome in rule['allowed']:
                 emitted={w['target'] for w in outcome['write']}
-                if operation is not None:
+                if frames is not None:
                     # An unrelated PI may not silently be declared emitted
-                    # under the selected provider for this trigger.
+                    # under a selected provider for this trigger.
                     errors.update(emitted & ({f['id'] for f in outputs}-scoped_ids))
                 for field in scoped_outputs:
                     name=field['id']
-                    presence=(_presence_for_field(field,operation,overrides)
-                              if operation is not None else field.get('presence','required'))
+                    presence=(_presence_for_field(field,frames[field['source_pi']],overrides)
+                              if frames is not None else field.get('presence','required'))
                     if (presence=='undefined'
                             or (presence=='required' and name not in emitted)
                             or (presence=='absent' and name in emitted)):
@@ -1621,10 +1705,65 @@ def _unproved_output_presence(fields,operations,overrides,rules,triggers):
     return errors
 
 
+def _large_finite_predicate_cache(ordered, dimensions, predicates, definitions):
+    """Bounded exact factorization; retain native ordered evaluation semantics.
+
+    Keys are axis indices, not serialized values. Only dependencies identified
+    by the full AST (including called definitions) enter each cache. Full
+    Cartesian traversal is still exact; the expensive evaluator is memoized.
+    """
+    import math
+    from operator import itemgetter
+    product=math.prod(map(len,dimensions))
+    if product>2_000_000 or product*len(predicates)>64_000_000:return None
+    if any(any(v is _PRESENT_GUARD_VALUE for v in dim) for dim in dimensions):return None
+    budget=0;lookups=0
+    def plan(expr):
+        nonlocal budget,lookups
+        refs=used_refs(expr,definitions)
+        if not refs<=set(ordered):raise ValueError('unknown predicate dependency')
+        axes=tuple(i for i,n in enumerate(ordered) if n in refs)
+        cells=math.prod(len(dimensions[i]) for i in axes)
+        if cells>65536:
+            # Split only a typed boolean connective. Retain source ordering
+            # and short-circuit semantics; never evaluate an unreachable read.
+            op=expr.get('op')
+            if op not in ('and','or','not'):raise ValueError('large atomic predicate')
+            children=[plan(child) for child in expr['args']]
+            def evaluate(row):
+                for child in children:
+                    value=child(row)
+                    require(type(value) is bool,op+' requires boolean')
+                    if op=='not':return not value
+                    if op=='and' and not value:return False
+                    if op=='or' and value:return True
+                return op=='and'
+            return evaluate
+        budget+=cells;lookups+=1
+        if budget>1_000_000 or product*lookups>64_000_000:
+            raise ValueError('predicate proof budget exceeded')
+        cache={}
+        get=itemgetter(*axes) if len(axes)>1 else (lambda row:(row[axes[0]],)) if axes else (lambda row:())
+        def evaluate(row):
+            key=get(row)
+            if key not in cache:
+                env={ordered[i]:dimensions[i][j] for i,j in zip(axes,key)}
+                cache[key]=eval_expr(expr,env,definitions)
+            return cache[key]
+        return evaluate
+    try:return [plan(expr) for expr in predicates]
+    except ValueError:return None
+
+
 def _debug_presence_env(env):
+    def transport(value):
+        if type(value) is json_time.InstantValue:return json_time.encode_instant_transport(value)
+        if isinstance(value,dict):return {k:transport(v) for k,v in value.items()}
+        if isinstance(value,list):return [transport(v) for v in value]
+        return value
     return {key:({'$cat_presence':'missing'} if value is typed.MISSING else
                  {'$cat_presence':'undefined'} if value is typed.UNDEFINED else
-                 {'$cat_presence':'present'} if value is _PRESENT_GUARD_VALUE else value)
+                 {'$cat_presence':'present'} if value is _PRESENT_GUARD_VALUE else transport(value))
             for key,value in env.items()}
 
 
@@ -1699,7 +1838,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if contract=='markdown-v2':
             require(pif['id'] in p.get('interfaces',[]),'Process Interfaces must reference loaded PI '+pif['id'])
             check_keys(pi,['schema','kind','process','boundary','fields','operations'],
-                       ['constraints','operation_presence'],where='PI')
+                       ['constraints','operation_presence','output_frames'],where='PI')
             check_keys(pi['boundary'],['peer','direction'],['peers'],where='PI boundary')
             require(all(x==peer_binding.ORIGIN or peer_binding.concrete_process_id(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
                     'PI peer process must use stable Process IDs')
@@ -1879,6 +2018,8 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     if set(expression)=={'ref'} and expression['ref'] in fields:
                         source_domain=fields[expression['ref']]['domain']
                         inclusion=semantic_subtyping.subset(source_domain,target_domain)
+                        if inclusion is not True:
+                            inclusion=semantic_subtyping.subset(_guarded_source_domain(source_domain,r['when'],expression['ref']),target_domain)
                         if inclusion is None and _unresolved_domain(source_domain):
                             # Deferred name resolution is permitted only for an
                             # identical unresolved alias or an exact union arm.
@@ -1976,18 +2117,22 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     transition_proofs={r['id'] for doc in rule_docs for r in doc['rules']
         if all(fm['status']=='confirmed' for _,fm in files) and doc['process']==p['process']
         and doc['kind']=='domain-spec' and doc['scope_verified']
-        and r.get('requirement')==semantic_transition_relation.TOKEN
+        and semantic_transition_relation.matches(r.get('requirement'),r.get('condition'))
         and r.get('verification_contract')=='cat:intrinsic-model/v1'
-        and semantic_transition_relation.prove(r['condition'],fields,pi_docs,rules,effect_checks,guard_invariants.values())}
+        and semantic_transition_relation.prove(r['condition'],fields,pi_docs,rules,effect_checks,guard_invariants.values(),observation_relations)}
+    from catlib.output_frame_contract import declarations, validate_declarations
+    explicit_frames=declarations(pi_docs)
+    try:validate_declarations(explicit_frames,fields,pi_operations,operation_presence,rules,p['triggers'])
+    except ValueError as exc:raise Blocked(str(exc)) from exc
     intrinsic_proofs=semantic_intrinsic_rules.evaluate(
         rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
-        operation_presence,effect_checks,guard_invariants,transition_proofs,observation_proof_ids)
+        operation_presence,effect_checks,guard_invariants,transition_proofs,observation_proof_ids,explicit_frames)
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
     # operation owns its output and every TCE alternative respects the
     # presence-specific emission frame. Missing/undefined are never coerced.
     presence_unproven=_unproved_output_presence(
-        fields,pi_operations,operation_presence,rules,triggers)
+        fields,pi_operations,operation_presence,rules,triggers,explicit_frames)
     for trigger in triggers:
         rr=[r for r in rules if r['trigger']==trigger]
         operation,ambiguous=_presence_accepted_operation(pi_operations,trigger)
@@ -2033,7 +2178,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         partition_fields=[]
         partition_kinds=set()
         predicates=[*scoped_constraints,*(r['when'] for r in rr)]
-        projected=_record_projection_values(fields,ordered,predicates,input_presence,definitions)
+        projected=_record_projection_values(fields,ordered,predicates,input_presence,definitions,guard_only=True)
         integer_pair=_integer_reference_equality_values(
             fields,ordered,predicates,input_presence,definitions)
         integer_range=({} if integer_pair else _integer_reference_range_values(
@@ -2091,6 +2236,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     partition_kinds.add('string')
             if values is None and (field_id not in input_presence
                                    or input_presence[field_id]=='required'):
+                values=semantic_string_partition.nullable_string_null_partition(field['domain'],field_id,predicates)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('nullable_string_null')
+            if values is None and (field_id not in input_presence
+                                   or input_presence[field_id]=='required'):
                 values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates)
                 if values is not None:
                     partition_fields.append(field_id)
@@ -2125,30 +2276,65 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             presence_unproven.update(special & relevant)
             continue
         combinations=__import__('math').prod(len(x) for x in domainvalues)
-        if combinations>65536:
+        cache=(_large_finite_predicate_cache(ordered,domainvalues,predicates,definitions)
+               if combinations>65536 else None)
+        masks=None
+        if combinations>65536 and cache is None and not any(
+                any(v is _PRESENT_GUARD_VALUE for v in dim) for dim in domainvalues):
+            from catlib.finite_truth_masks import truth_masks
+            masks=truth_masks(ordered,domainvalues,scoped_constraints,[r['when'] for r in rr],
+                              definitions,eval_expr,used_refs,Blocked)
+        if combinations>65536 and cache is None and masks is None:
             # Solver capacity is an absence of proof, not a domain mismatch.
             # Shadow/partial models retain the source-bound reason; normative
             # compilation still blocks unless an independent proof is supplied.
             per_trigger[trigger]={'result':'unproven',
-                                  'reason':'finite closure exceeds configured 65536 combinations',
+                                  'reason':'finite closure exceeds configured 65536 combinations and factorized proof budget',
                                   'combination_count':combinations,
                                   'guard_refs':ordered}
             presence_unproven.update(special & relevant)
             continue
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr);unknown=None
-        admissible=0
-        for values in itertools.product(*domainvalues):
-            env=dict(zip(ordered,values))
+        admissible=0;gap_count=overlap_count=0
+        if masks is not None:
+            from catlib.finite_truth_masks import row_indices, first_indices
+            accepted,hits=masks
+            admissible=accepted.bit_count();seen=collision=0
+            for rule,hit in zip(rr,hits):
+                if hit:unreachable.discard(rule['id'])
+                collision|=seen&hit;seen|=hit
+            missing=accepted^seen
+            gap_count=missing.bit_count();overlap_count=collision.bit_count()
+            def env_at(i):return {k:d[j] for k,d,j in zip(ordered,domainvalues,row_indices(i,domainvalues))}
+            gaps=[_debug_presence_env(env_at(i)) for i in first_indices(missing,64)]
+            overlaps=[{'state':_debug_presence_env(env_at(i)),
+                       'rules':[r['id'] for r,hit in zip(rr,hits) if (hit>>i)&1]}
+                      for i in first_indices(collision,16)]
+        rows=(() if masks is not None else
+              itertools.product(*(range(len(d)) for d in domainvalues)) if cache is not None
+              else itertools.product(*domainvalues))
+        for values in rows:
+            env=None if cache is not None else dict(zip(ordered,values))
             try:
-                if not all(eval_expr(c,env,definitions) for c in scoped_constraints):
-                    continue
-                admissible+=1
-                hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
+                if cache is not None:
+                    if not all(fn(values) for fn in cache[:len(scoped_constraints)]):continue
+                    admissible+=1
+                    hit=[r['id'] for r,fn in zip(rr,cache[len(scoped_constraints):]) if fn(values)]
+                else:
+                    if not all(eval_expr(c,env,definitions) for c in scoped_constraints):continue
+                    admissible+=1
+                    hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
             except Blocked as exc:
                 unknown=str(exc)
                 break
-            if not hit:gaps.append(_debug_presence_env(env))
-            if len(hit)>1:overlaps.append({'state':_debug_presence_env(env),'rules':hit})
+            if not hit or len(hit)>1:
+                if env is None:env={k:d[i] for k,d,i in zip(ordered,domainvalues,values)}
+                if not hit:
+                    gap_count+=1
+                    if len(gaps)<64:gaps.append(_debug_presence_env(env))
+                else:
+                    overlap_count+=1
+                    if len(overlaps)<16:overlaps.append({'state':_debug_presence_env(env),'rules':hit})
             unreachable-=set(hit)
         if unknown:
             per_trigger[trigger]={'result':'unproven','reason':unknown,
@@ -2167,9 +2353,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
         check={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered',
-               'guard_refs':ordered,'overlap_count':len(overlaps) if not partition_fields else None,
+               'guard_refs':ordered,'overlap_count':overlap_count if not partition_fields else None,
                'overlaps':overlaps[:16],'uncovered':gaps[:64],
-               'uncovered_count':len(gaps) if not partition_fields else None,
+               'uncovered_count':gap_count if not partition_fields else None,
                'unreachable_rules':sorted(unreachable),
                'excluded_by_pi_constraints':has_pi_constraints}
         if guard_invariants:check['guard_invariant_rule_ids']=sorted(guard_invariants)
@@ -2178,6 +2364,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
+                    else 'nullable-string-null-partition/v1' if partition_kinds=={'nullable_string_null'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
@@ -2286,6 +2473,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         result['pi_boundaries']=[{'artifact':fm['id'],**spec['boundary']} for _,fm,spec in pi_docs]
         result['pi_operations']=pi_operations
         result['operation_presence']=operation_presence
+        if explicit_frames:result['output_frames']=explicit_frames
         result['process_interfaces']=p.get('interfaces',[])
     if contract in ('markdown-v1','markdown-v2'):result['normalized_ir']='cat-machine/v2'
     return result
@@ -2334,23 +2522,143 @@ def _vector_input_value(domain,presence,payload,name):
 
 
 
-def _vector_output_operation(model,test,fields):
-    declared=[x for x in model.get('operation_presence',[])
-              if fields[x['field']]['role']=='output']
+def _explicit_vector_frames(model,fields,rule):
+    from catlib.output_frame_contract import active_frames, declared_owners
+    rows=model['output_frames']; owners=declared_owners(rows)
+    operations=model.get('pi_operations',[])
+    legacy_fields={k:f for k,f in fields.items() if f.get('source_pi') not in owners}
+    legacy_ops=[op for op in operations if op['source_pi'] not in owners]
+    legacy_overrides=[ov for ov in model.get('operation_presence',[]) if ov['field'] in legacy_fields]
+    legacy=_provided_output_frames(legacy_fields,legacy_ops,legacy_overrides,rule['trigger'])
+    require(legacy is not None or not any(f['role']=='output' for f in legacy_fields.values()),
+            'explicit frames with unresolved legacy output transport')
+    alternatives=[{**(legacy or {}),**active_frames(rows,operations,rule['trigger'],rule['id'],n)}
+                  for n in range(1,len(rule['allowed'])+1)]
+    require(bool(alternatives),'empty allowed result')
+    return alternatives
+
+
+def _vector_output_operations(model,test,fields,rule=None):
+    overrides=model.get('operation_presence',[])
+    declared=[x for x in overrides if fields[x['field']]['role']=='output']
+    operations=model.get('pi_operations',[])
+    frames=_provided_output_frames(fields,operations,overrides,test['trigger'])
     chosen=test.get('output_operation')
-    if declared or _nonrequired_output_ids(fields,model.get('operation_presence',[])):
+    if 'output_operations' in test:
+        many=test['output_operations']
+        require('output_operation' not in test,
+                'vector.output_operation and output_operations are mutually exclusive')
+        require(isinstance(many,list) and len(many)>1
+                and all(isinstance(x,str) for x in many) and len(set(many))==len(many),
+                'vector.output_operations requires distinct operation IDs')
+        require(frames is not None and set(many)=={x['id'] for x in frames.values()},
+                'vector.output_operations must match every source-bound provided operation for trigger')
+        return frames
+    require(frames is None or len(frames)<=1,
+            'multiple source-bound providers require vector.output_operations')
+    if frames == {}:
+        require(chosen is None, 'inactive provided output frame cannot select an operation')
+        return {}
+    if declared or _nonrequired_output_ids(fields,overrides):
         require(chosen is not None,
                 'nonrequired/operation-scoped output Presence requires vector.output_operation')
-    if chosen is None:return None
-    ops=[x for x in model.get('pi_operations',[])
-         if x['id']==chosen and x['direction']=='provide'
+    if chosen is None:return {}
+    ops=[x for x in operations if x['direction']=='provide'
          and (x.get('trigger') is None or x['trigger']==test['trigger'])]
-    require(len(ops)==1,'vector.output_operation is not a provided operation for trigger')
+    require(len(ops)==1 and ops[0]['id']==chosen,
+            'vector.output_operation is not a unique provided operation for trigger')
     op=ops[0]
     require(all(x['source_pi']==op['source_pi'] for x in declared
                 if x['operation']==op['id']),
             'output Presence override belongs to another PI')
-    return op
+    return {op['source_pi']:op}
+
+
+def _vector_observation_context(model, trigger, fields):
+    """Concrete test environment witnesses, not caller input or runtime evidence.
+
+    Normative CLI independently checks the model against Source before selection.
+    Retain the approved finite trigger-entry scope and proved restrictions here.
+    """
+    from catlib import semantic_transition_relation as relation
+    from catlib import semantic_observation_relation as observation
+    proofs=model.get('intrinsic_rule_proofs',[])
+    if not any(f.get('role')=='observation' for f in fields.values()) and not any(
+            p.get('requirement') in (relation.OBS_TOKEN,observation.TOKEN) for p in proofs):
+        return [],[]
+    defs={d['id']:d for d in model['definitions']}
+    inventory=set();constraints=[];constraint_ids=[]
+    def verified(proof):
+        require(proof.get('status')=='passed' and proof.get('verification_contract')=='cat:intrinsic-model/v1'
+                and proof.get('proof_method')=='cat:intrinsic-model/v1',
+                'observation witness requires passed intrinsic proof')
+        require(any(x.get('id')==proof.get('rule_id') and x.get('condition')==proof.get('scope')
+                    and x.get('requirement')==proof.get('requirement')
+                    and x.get('verification_contract')==proof.get('verification_contract')
+                    and x.get('verification_status')=='intrinsic-proved'
+                    and x.get('source_artifact')==proof.get('source_artifact')
+                    and x.get('source_sha256')==proof.get('source_sha256')
+                    and x.get('source_kind')=='domain-spec'
+                    for x in model.get('rule_obligations',[]))
+                and any(x.get('id')==proof.get('source_artifact') and x.get('kind')=='domain-spec'
+                        and x.get('sha256')==proof.get('source_sha256')
+                        and x.get('process')==model.get('process')
+                        for x in model.get('normative_rule_inputs',[])),
+                'observation proof is not bound to normative Source')
+    for proof in proofs:
+        token=proof.get('requirement');scope=proof.get('scope','')
+        if token==relation.OBS_TOKEN:
+            require(scope.startswith(relation.OBS_PREFIX),'invalid observed relation scope')
+            try:spec=json.loads(scope[len(relation.OBS_PREFIX):],object_pairs_hook=relation._unique_object)
+            except (ValueError,TypeError) as e:raise Blocked('invalid observed relation scope') from e
+            require(isinstance(spec,dict),'invalid observed relation scope')
+            if spec.get('trigger')!=trigger:continue
+            verified(proof)
+            required={'trigger','pi','operation','peer'}
+            require(required<=spec.keys(),'incomplete observed relation scope')
+            accept=[op for op in model.get('pi_operations',[]) if op.get('direction')=='accept' and op.get('trigger')==trigger]
+            require(len(accept)==1 and accept[0].get('id')==spec['operation'] and accept[0].get('source_pi')==spec['pi'],
+                    'observation witness accept scope mismatch')
+            boundary=[b for b in model.get('pi_boundaries',[]) if b.get('artifact')==spec['pi']]
+            require(len(boundary)==1 and peer_binding.match_operation(boundary[0].get('peers',[boundary[0].get('peer')]),accept[0].get('peer'),spec['peer'])=='static',
+                    'observation witness peer scope mismatch')
+            names=spec.get('observations')
+            require(isinstance(names,list) and names and all(isinstance(n,str) for n in names) and len(set(names))==len(names),'invalid observation witness inventory')
+            for name in names:
+                field=fields.get(name,{})
+                require(field.get('role')=='observation' and field.get('available_on')==[trigger] and field['domain']['type'] in ('boolean','enum'),
+                        'unsupported observation witness domain or availability '+name)
+                origin=field.get('source','');prefix='same-execution-observation '
+                require(origin.startswith(prefix),'observation witness lacks explicit source '+name)
+                try:binding=json.loads(origin[len(prefix):],object_pairs_hook=relation._unique_object)
+                except (ValueError,TypeError) as e:raise Blocked('invalid observation source') from e
+                require(isinstance(binding,dict) and set(binding)==required|{'cut','source'}
+                        and all(binding[k]==spec[k] for k in required) and binding['cut']=='trigger-entry'
+                        and isinstance(binding['source'],str) and binding['source'].strip(),
+                        'observation witness source scope mismatch '+name)
+                inventory.add(name)
+        elif token==observation.TOKEN:
+            require(scope.startswith(observation.PREFIX),'invalid observation constraint scope')
+            cut,sep,expr=scope[len(observation.PREFIX):].partition(' ')
+            require(sep and expr,'invalid observation constraint scope')
+            if cut!=trigger:continue
+            verified(proof);constraints.append(parse_expr_text(expr));constraint_ids.append(proof['rule_id'])
+    check=model.get('coverage_checks',{}).get(trigger,{})
+    require(set(constraint_ids)==set(check.get('observation_relation_rule_ids',[])),
+            'observation constraint inventory differs from proved coverage')
+    exprs=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(proofs).values(),*constraints]
+    for row in model['rules']:
+        if row['trigger']==trigger:
+            exprs.append(row['when'])
+            exprs.extend(w['expr'] for out in row['allowed'] for w in out['write'])
+    refs=set().union(*(used_refs(expr,defs) for expr in exprs)) if exprs else set()
+    needed={n for n in refs if fields.get(n,{}).get('role')=='observation'}
+    require(needed<=inventory and (not constraints or inventory),
+            'observation relation requires explicit proved finite observation binding for vectors')
+    if inventory:
+        require(model.get('status')=='confirmed' and model.get('coverage_requirement')=='closed' and check.get('result')=='proved',
+                'observation witness requires proved closed trigger')
+    return sorted(inventory),constraints
 
 
 def expand_cases(model, vectors):
@@ -2361,14 +2669,20 @@ def expand_cases(model, vectors):
     states={f for f in fields if fields[f]['role']=='state'}
     cases=[]
     for test in vectors['cases']:
-        check_keys(test,['id','trigger','input','state'],optional=('operation','output_operation'),where='test vector')
+        check_keys(test,['id','trigger','input','state'],optional=('operation','output_operation','output_operations','observations'),where='test vector')
         ident(test['id'],'test ID');require(test['trigger'] in {t['id'] for t in model['triggers']},'unknown vector trigger')
         require(isinstance(test['input'],dict) and isinstance(test['state'],dict),'vector input/state must be objects')
         operation=_vector_operation(model,test)
-        output_operation=_vector_output_operation(model,test,fields)
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
+        observation_ids,observation_constraints=_vector_observation_context(model,test['trigger'],fields)
+        payload=test.get('observations',{})
+        require(isinstance(payload,dict) and set(payload)==set(observation_ids) and ('observations' not in test or observation_ids),
+                'vector observations must match the proved trigger inventory')
         env={}
+        for name,val in payload.items():
+            require(in_domain(fields[name]['domain'],val),'observation out of domain '+name)
+            env[name]=val
         # An explicit vector.operation resolves an otherwise ambiguous accept
         # operation without altering Source-level coverage/closure proofs.
         # The selected operation's Presence overrides must be used for this
@@ -2395,23 +2709,36 @@ def expand_cases(model, vectors):
                 f'{test["id"]}: violates PI combination constraint')
         require(all(eval_expr(c,env,defs) for c in _guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()),
                 f'{test["id"]}: violates proved state invariant')
+        require(all(eval_expr(c,env,defs) is True for c in observation_constraints),
+                f'{test["id"]}: violates proved observation relation')
         rule=match_rules(model,test['trigger'],env)
+        explicit=bool(model.get('output_frames'))
+        if explicit:
+            alternative_frames=_explicit_vector_frames(model,fields,rule)
+            inventory=sorted({op['id'] for frame in alternative_frames for op in frame.values()})
+            require('output_operation' not in test and test.get('output_operations')==inventory,
+                    'vector.output_operations must equal explicit source-bound provider inventory (including empty)')
+        else:output_frames=_vector_output_operations(model,test,fields,rule)
         defs={d['id']:d for d in model['definitions']}
         allowed=[]
-        for out in rule['allowed']:
+        for index,out in enumerate(rule['allowed']):
+            if explicit:output_frames=alternative_frames[index]
             after=deepcopy(test['state']); emitted={}
             for write in out['write']:
                 target=write['target'];val=eval_expr(write['expr'],env,defs)
                 require(in_domain(fields[target]['domain'],val),f'{test["id"]}: output {target} out of declared domain')
                 if fields[target]['role']=='state':after[target]=val
                 else:emitted[target]=val
-            if output_operation is not None:
-                require(all(fields[target].get('source_pi')==output_operation['source_pi']
+            if model.get('output_frames') or output_frames or _provided_output_frames(fields,model.get('pi_operations',[]),
+                    model.get('operation_presence',[]),test['trigger']) == {}:
+                require(all(fields[target].get('source_pi') in output_frames
                             for target in emitted if fields[target]['role']=='output'),
                         'output Effect belongs to another provided PI')
                 for field in fields.values():
-                    if field['role']!='output' or field.get('source_pi')!=output_operation['source_pi']:
+                    owner=field.get('source_pi')
+                    if field['role']!='output' or owner not in output_frames:
                         continue
+                    output_operation=output_frames[owner]
                     pres=_vector_field_presence(model,output_operation,field)
                     require(pres!='undefined',
                             'undefined output effect requires explicit technology transport')
@@ -2419,11 +2746,17 @@ def expand_cases(model, vectors):
                             'required output missing for operation '+output_operation['id']+': '+field['id'])
                     require(pres!='absent' or field['id'] not in emitted,
                             'absent output emitted by operation '+output_operation['id']+': '+field['id'])
-            allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs']})
+            allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs'],
+                            **({'output_operations':sorted(op['id'] for op in output_frames.values())} if explicit else {})})
         case_data={'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                    'input':test['input'],'initial_state':test['state'],'allowed':allowed}
-        if output_operation is not None:
-            case_data['output_operation']=output_operation['id']
+        if observation_ids:case_data['observations']=payload
+        if explicit:
+            case_data['output_operations']=inventory
+        elif len(output_frames)==1:
+            case_data['output_operation']=next(iter(output_frames.values()))['id']
+        elif output_frames:
+            case_data['output_operations']=sorted(op['id'] for op in output_frames.values())
         cases.append(case_data)
     unique([t['id'] for t in cases],'vector IDs')
     return cases
@@ -2431,8 +2764,6 @@ def expand_cases(model, vectors):
 def selection_vectors(model, strategy='rule-witness/v1'):
     require(strategy == 'rule-witness/v1','unsupported test-selection rule: '+str(strategy))
     require(model.get('status')=='confirmed','normative vector selection requires confirmed TestModel')
-    require(not any(p.get('requirement')=='@cat:trigger-observation-relation/v1' for p in model.get('intrinsic_rule_proofs',[])),
-            'observation relation requires explicit technology observation binding for vectors')
     fields={f['id']:f for f in model['fields']}
     presence_inputs=[f['id'] for f in fields.values() if f['role']=='input'
                      and f.get('presence','required')!='required']
@@ -2465,20 +2796,22 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         }
         output_overrides=[x for x in model.get('operation_presence',[])
                           if fields[x['field']]['role']=='output']
-        provide_operation=None
-        if output_overrides or output_special:
-            provide_operation=_provided_output_operation(
+        provide_frames=None
+        if not model.get('output_frames') and (output_overrides or output_special):
+            provide_frames=_provided_output_frames(
                 fields,model.get('pi_operations',[]),
                 model.get('operation_presence',[]),trigger)
-            require(provide_operation is not None,
+            require(provide_frames is not None,
                     'ambiguous provided output operation for deterministic vectors')
+        observation_ids,observation_constraints=_vector_observation_context(model,trigger,fields)
         variable_ids=([name for name in all_variable_ids
                        if fields[name]['role']=='state' or operation is None
                        or 'pi_constraint_scopes' not in model
-                       or fields[name].get('source_pi') in bindings])
+                       or fields[name].get('source_pi') in bindings])+observation_ids
         domains=[]
         rules_here=[r for r in model['rules'] if r['trigger']==trigger]
-        predicates=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values(),*(r['when'] for r in rules_here)]
+        constraints=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values(),*observation_constraints]
+        predicates=[*constraints,*(r['when'] for r in rules_here)]
         observed=set().union(*(used_refs(expr,defs) for expr in predicates)) if predicates else set()
         for rule in rules_here:
             for outcome in rule['allowed']:
@@ -2497,6 +2830,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         real_range=_real_reference_range_values(fields,guard_names,predicates,presence,defs)
         linear_range=_linear_order_values(fields,guard_names,predicates,presence,defs)
         string_pair=_string_reference_values(fields,guard_names,predicates,presence)
+        from catlib.semantic_structural_copy import witness_values
+        copy_values=witness_values(model,trigger,fields,guard_names,observed,presence)
         for field_id in variable_ids:
             if projected:
                 domains.append(projected[field_id]);continue
@@ -2523,6 +2858,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 values=semantic_string_partition.string_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
             if values is None and (field_id not in presence or presence[field_id]=='required'):
+                values=semantic_string_partition.nullable_string_null_partition(field['domain'],field_id,predicates)
+            if values is None and (field_id not in presence or presence[field_id]=='required'):
                 values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates,allow_unused=True)
             if values is None and presence.get(field_id)=='optional':
                 present=semantic_interval_partition.integer_partition_values(
@@ -2533,20 +2870,49 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 if present is not None:values=[typed.MISSING,*present]
             if field_id in integer_pair and (values is None or raw_count>65536):
                 values=integer_pair[field_id]
+            if values is None and field_id in copy_values:
+                values=copy_values[field_id]
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)
             domains.append(values)
-        require(__import__('math').prod(len(x) for x in domains)<=65536,
-                'test-selection exceeds configured 65536 combinations')
-        for values in itertools.product(*domains):
-            env=dict(zip(variable_ids,values))
-            if not all(eval_expr(c,env,defs) for c in [*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()]):
-                continue
-            hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
+        combinations=__import__('math').prod(len(x) for x in domains)
+        cache=None
+        if combinations>65536:
+            require(model.get('coverage_requirement')=='closed'
+                    and model.get('coverage_checks',{}).get(trigger,{}).get('result')=='proved',
+                    'large test-selection requires proved source-bound Guard coverage')
+            cache=_large_finite_predicate_cache(variable_ids,domains,predicates,defs)
+            if cache is None:
+                from catlib.finite_truth_masks import truth_masks, row_indices, first_indices
+                masks=truth_masks(variable_ids,domains,constraints,[r['when'] for r in rules_here],
+                                  defs,eval_expr,used_refs,Blocked)
+                require(masks is not None,'test-selection exceeds configured 65536 combinations and factorized proof budget')
+                accepted,hits=masks;seen=0
+                for hit in hits:
+                    require(hit and not (seen&hit),'confirmed TestModel has empty or overlapping Guard region')
+                    seen|=hit
+                require(seen==accepted,'confirmed TestModel has uncovered Guard region')
+                indices=sorted(next(first_indices(hit,1)) for hit in hits)
+                selected=[tuple(d[j] for d,j in zip(domains,row_indices(i,domains))) for i in indices]
+            else:selected=None
+        else:selected=None
+        rows=(selected if selected is not None else
+              itertools.product(*(range(len(d)) for d in domains)) if cache is not None
+              else itertools.product(*domains))
+        for values in rows:
+            if cache is not None:
+                if not all(fn(values) for fn in cache[:len(constraints)]):continue
+                hit=[r for r,fn in zip(rules_here,cache[len(constraints):]) if fn(values)]
+                env=None
+            else:
+                env=dict(zip(variable_ids,values))
+                if not all(eval_expr(c,env,defs) for c in constraints):continue
+                hit=[r for r in rules_here if eval_expr(r['when'],env,defs)]
             require(len(hit)==1,f'confirmed TestModel selection found {len(hit)} rules at {trigger}')
             rule=hit[0]
             if rule['id'] in witnesses:continue
+            if env is None:env={k:d[i] for k,d,i in zip(variable_ids,domains,values)}
             sample={
                 'id':'case.'+rule['id'],'trigger':trigger,
                 'input':{key:({'$cat_presence':'undefined'} if env[key] is typed.UNDEFINED else env[key])
@@ -2554,10 +2920,16 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                          and env[key] is not typed.MISSING},
                 'state':{key:env[key] for key in variable_ids if fields[key]['role']=='state'}
             }
+            if observation_ids:sample['observations']={key:env[key] for key in observation_ids}
             if operation is not None and any(value!='required' for value in presence.values()):
                 sample['operation']=operation['id']
-            if provide_operation is not None:
-                sample['output_operation']=provide_operation['id']
+            if model.get('output_frames'):
+                sample['output_operations']=sorted({op['id'] for frame in _explicit_vector_frames(model,fields,rule) for op in frame.values()})
+            elif provide_frames:
+                if len(provide_frames)==1:
+                    sample['output_operation']=next(iter(provide_frames.values()))['id']
+                else:
+                    sample['output_operations']=sorted(op['id'] for op in provide_frames.values())
             witnesses[rule['id']]=sample
     missing=[r['id'] for r in model['rules'] if r['id'] not in witnesses]
     require(not missing,'test-selection produced no witness for TestModel rule(s): '+str(missing))
@@ -2575,22 +2947,52 @@ def _vitest_renderer():
     return module.render_vitest
 
 
+def _check_observation_transport(model, binding, expected):
+    """Admit only proved finite trigger-entry observations to a test adapter.
+
+    The driver reports what it actually observed in its controlled execution;
+    this is not independent runtime/provider evidence for implementation closure.
+    """
+    transport=binding.get('observation_transport')
+    require(transport in (None,expected),'unsupported observation transport binding')
+    if transport is None:return False
+    fields={f['id']:f for f in model['fields']}
+    observations={f['id'] for f in fields.values() if f['role']=='observation'}
+    require(observations and not any(f['role']=='action' for f in fields.values()),
+            'observation transport requires finite observations and no unsupported action capabilities')
+    inventory=set()
+    for trigger in model['triggers']:
+        ids,_=_vector_observation_context(model,trigger['id'],fields)
+        inventory.update(ids)
+    require(inventory==observations,'observation transport requires proved source-bound inventory for every declared observation')
+    require(binding.get('capability_scope') is None,
+            'observation transport cannot be combined with PI-only-unverified scope')
+    return True
+
+
 def emit_vitest(model,vectors,binding_path):
     require(not any(typed.has_semantic_domain(f['domain']) for f in model.get('fields',[])), 'Vitest renderer requires explicit JSON/instant binding')
-    require(not any(f['role'] in ('observation','action') for f in model['fields']),
-            'test-code generation for explicit observation/action capabilities requires a technology binding extension; TestModel remains valid')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','driver'],
-               optional=('undefined_transport','output_operation_transport'),
+               optional=('undefined_transport','output_operation_transport','observation_transport'),
                where='driver binding')
     require(binding['schema']==D and binding['process']==model['process'],'driver binding incompatible')
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
+    observed=_check_observation_transport(model,binding,'js-driver-observed/v1')
+    require(observed or not any(f['role'] in ('observation','action') for f in model['fields']),
+            'test-code generation for explicit observation/action capabilities requires a technology binding extension; TestModel remains valid')
     cases=expand_cases(model,vectors)
-    uses_output_operation=any(x.get('output_operation') for x in cases)
-    if binding.get('output_operation_transport') not in (None,'js-driver-provide/v1'):
+    uses_output_operation=any('output_operation' in x or 'output_operations' in x for x in cases)
+    multiple=any('output_operations' in x for x in cases)
+    transport=binding.get('output_operation_transport')
+    if transport not in (None,'js-driver-provide/v1','js-driver-provides/v1'):
         raise Blocked('unsupported output-operation transport binding')
-    if uses_output_operation and binding.get('output_operation_transport')!='js-driver-provide/v1':
+    if multiple and transport!='js-driver-provides/v1':
+        raise Blocked('Vitest renderer requires multi-output-operation identity transport')
+    if observed and any('observations' in c and ('output_operation' in c or 'output_operations' in c) for c in cases):
+        require(transport=='js-driver-provides/v1','observed operation frames require js-driver-provides/v1')
+    if uses_output_operation and transport not in ('js-driver-provide/v1','js-driver-provides/v1'):
         raise Blocked('Vitest renderer lacks output-operation identity transport; cannot assert provider operation')
     uses_undefined=any(any(v=={'$cat_presence':'undefined'} for v in c['input'].values()) for c in cases)
     if binding.get('undefined_transport') not in (None,'js-undefined/v1'):
@@ -2617,13 +3019,17 @@ def emit_junit(model, vectors, binding_path):
     import importlib.util
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','test_package','test_class','driver_class'],
-               optional=('capability_scope',), where='JUnit driver binding')
+               optional=('capability_scope','output_operation_transport','observation_transport'), where='JUnit driver binding')
     require(binding['schema']=='cat-junit-driver-binding/v1'
             and binding['process']==model['process'], 'JUnit driver binding incompatible')
     observations=[f['id'] for f in model['fields'] if f['role']=='observation']
     actions=[f['id'] for f in model['fields'] if f['role']=='action']
     capability_scope=binding.get('capability_scope')
-    if observations or actions:
+    observed=_check_observation_transport(model,binding,'java-driver-observed/v1')
+    transport=binding.get('output_operation_transport')
+    require(transport in (None,'java-driver-provides/v1'),'unsupported JUnit output-operation transport binding')
+    framed=transport=='java-driver-provides/v1'
+    if not observed and (observations or actions):
         # The scalar driver tests only the declared PI inputs/outputs.
         # Process observation/action capabilities must be explicitly listed
         # as NOT TESTED, never silently dropped or claimed as verified.
@@ -2639,7 +3045,7 @@ def emit_junit(model, vectors, binding_path):
                     and len(declared)==len(set(declared))
                     and set(declared)==set(actual),
                     'JUnit PI-only scope must exactly enumerate unverified '+role)
-    else:
+    elif not observed:
         require(capability_scope is None,
                 'JUnit capability exclusions require declared Process capabilities')
     # Eligibility is a property of the tested PI/state/output contract.
@@ -2650,12 +3056,19 @@ def emit_junit(model, vectors, binding_path):
     require(not any(typed.has_semantic_domain(f['domain']) for f in tested_fields),
             'JUnit renderer requires explicit structured/instant transport binding')
     require(all(f['domain']['type'] in ('boolean','enum','integer')
-                and f.get('presence','required')=='required' for f in tested_fields),
+                and (f.get('presence','required')=='required' or
+                     (framed and f['role']=='output' and f.get('presence') in ('optional','absent')))
+                for f in tested_fields),
             'JUnit scalar renderer supports only required boolean/enum/integer fields')
-    require(not model.get('operation_presence'),
-            'JUnit scalar renderer does not carry operation-scoped Presence')
+    field_roles={f['id']:f['role'] for f in model['fields']}
+    require(not model.get('operation_presence') or (framed and all(
+            field_roles[item['field']]=='output' and item['presence'] in ('required','optional','absent')
+            for item in model['operation_presence'])),
+            'JUnit scalar renderer does not carry unsupported operation-scoped Presence')
     cases=expand_cases(model,vectors)
-    require(not any('output_operation' in c for c in cases),
+    require(observed or not any('observations' in c for c in cases),
+            'JUnit renderer cannot transport observed test environment witnesses')
+    require(framed or not any('output_operation' in c or 'output_operations' in c for c in cases),
             'JUnit scalar renderer cannot carry output-operation identity')
     path=ROOT / 'skills' / 'tech-junit' / 'scripts' / 'cat_junit_renderer.py'
     require(path.is_file(), 'JUnit generation requires installed tech-junit Skill renderer')
@@ -2861,6 +3274,9 @@ def render_model_markdown(model):
     for entry in model.get('operation_presence',[]):
         lines.append('| '+' | '.join(_md(entry[key]) for key in
             ('operation','field','presence','source_pi'))+' |')
+    if model.get('output_frames'):
+        lines += ['',('## 提供出力フレーム' if ja else '## Output frames'),'','```json',
+                  json.dumps(model['output_frames'],ensure_ascii=False,sort_keys=True,indent=2),'```']
     lines += ['',('## 観測利用可能時点' if ja else '## Observation availability'),'',
               ('| 観測ID | 出典 | 利用可能な起点(JSON) |' if ja else
                '| Observation ID | Source | Available on (JSON) |'),

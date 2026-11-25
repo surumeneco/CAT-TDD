@@ -60,6 +60,7 @@ def _fresh_output_scope(scope, fields, triggers, rules, operations, overrides, e
     if not field or field['role']!='output' or field.get('source_pi')!=pi:return False
     if not _resolved(field.get('domain')):return False
     candidates=[op for op in operations if op['direction']=='provide'
+                and op.get('source_pi')==pi
                 and op.get('trigger') in (None,trigger)]
     if len(candidates)!=1:return False
     op=candidates[0]
@@ -124,7 +125,7 @@ def _state_equality_scope(scope, fields, triggers, rules, effect_checks):
     return True
 
 
-def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=(),effect_checks=None,guard_invariants=(),transition_proofs=(),observation_proofs=()):
+def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=(),effect_checks=None,guard_invariants=(),transition_proofs=(),observation_proofs=(),output_frames=()):
     """Return verified proofs; each certificate is bound to exact source bytes."""
     proofs=[]
     for doc in rule_documents:
@@ -135,12 +136,13 @@ def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=()
             if rule.get('verification_contract')!=CONTRACT:continue
             scope=rule.get('condition')
             if requirement==OUTCOME_PRESENCE:
-                proved=_fresh_output_scope(scope,fields,triggers,tce_rules,operations,overrides,effect_checks or {})
+                proved=not any(isinstance(scope,str) and scope.split(' ')[1:2]==[row['source_pi']] for row in output_frames) and _fresh_output_scope(scope,fields,triggers,tce_rules,operations,overrides,effect_checks or {})
             elif requirement==STATE_EQUALITY:
                 proved=_state_equality_scope(scope,fields,triggers,tce_rules,effect_checks or {})
             elif requirement=='@cat:finite-state-guard-invariant/v1':
                 proved=rule['id'] in guard_invariants
-            elif requirement=='@cat:finite-transition-relation/v1':
+            elif requirement in ('@cat:finite-transition-relation/v1','@cat:observed-transition-relation/v1',
+                                 '@cat:finite-structural-transition-relation/v1','@cat:structural-copy-relation/v1'):
                 proved=rule['id'] in transition_proofs
             elif requirement=='@cat:trigger-observation-relation/v1':
                 proved=rule['id'] in observation_proofs

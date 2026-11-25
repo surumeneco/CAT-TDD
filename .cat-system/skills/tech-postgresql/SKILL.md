@@ -9,7 +9,7 @@ description: "Review and test PostgreSQL schema, SQL, migrations and transaction
 2. PIの型・null/欠損・一意性・参照整合性とTCEの永続化Effectを、schema・SQL・API境界へ対応付ける。DBでしか保証できない不変条件を抽出する。
 3. migrationは既存データ、backfill、default、制約追加、rollback可否、複数componentへの波及を確認。実データを勝手に消去しない。
 4. transaction/競合/失敗後の状態を、規範に含まれる場合にテストする。実DBとmockの検証範囲を混同しない。
-5. 実行したmigration/testと対象DBを証拠化する。成功したschema変更だけでアプリ全体の仕様適合とみなさない。
+5. 実行したmigration/testと対象DBを証拠化する。成功したschema変更だけでアプリ全体の仕様適合とみなさない。 `cat_node_service_technology.py` はNode/pgを採用した使い捨てloopback DBに限り、実接続・server version・read-only migration一覧と、Workに紐づく実HTTP/DB試験の証拠を照合する。個別のSQL意味・トランザクション不変条件・外部作用の普遍証明には流用しない。
 
 ## DB性能・I/O・競合のレビュー
 

@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import fnmatch
 import hashlib
+import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -19,6 +20,9 @@ from pathlib import Path, PurePath
 from catlib.common import Blocked, json_bytes, read_json, require, sha
 from catlib.work import ALL_GATES, CONFORMANCE_GATES, EXTERNAL_GATES, ID, STAGES, read_work_markdown, render_work_markdown, validate, work_file
 import cat_queue
+import cat_project_typecheck as project_typecheck
+import cat_test_technology as test_technology
+import cat_node_service_technology as node_service_technology
 import cat_queue_evidence as queue_evidence
 import cat_scope_order
 import cat_implementation_obligations as obligation_runtime
@@ -27,6 +31,7 @@ import cat_model_conformance as source_model_runtime
 import cat_process_composition as composition_runtime
 import cat_effect_trace_correlation as effect_correlation_runtime
 import cat_external_effect_receipts as effect_receipts_runtime
+import cat_runtime_boundary as runtime_boundary
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / 'config' / 'routing.json'
@@ -272,7 +277,19 @@ def compile_work(wpath, w, kind, check):
             if kind == 'tests':
                 for key in ('binding', 'queue', 'tests_output'):
                     require(conf.get(key), f'compilation.{key} missing')
-                argv += [loc('binding'), '--queue', loc('queue')]
+                binding_path = loc('binding')
+                binding = read_json(binding_path)
+                require(isinstance(binding, dict), 'driver binding must be an object')
+                schema = binding.get('schema')
+                frameworks = {'cat-test-driver/v2': 'vitest',
+                              'cat-junit-driver-binding/v1': 'junit'}
+                require(isinstance(schema, str) and schema in frameworks,
+                        'unsupported test driver binding schema')
+                framework = frameworks[schema]
+                declared = set(w.get('technologies', [])) & {'Vitest', 'JUnit'}
+                require(not declared or {'vitest': 'Vitest', 'junit': 'JUnit'}[framework] in declared,
+                        'test driver binding contradicts Work test technology')
+                argv += [binding_path, '--queue', loc('queue'), '--framework', framework]
         process = loc('process')
         pis = compilation_pi_paths(wpath, w, conf, check)
         tces = compilation_tce_paths(wpath, w, conf, check)
@@ -332,10 +349,23 @@ def technology_conformance(wpath, w, conf):
     if 'Java' in technologies:
         results.append({'technology': 'Java', 'status': 'inconclusive',
                         'reason': 'no source-bound Java implementation inspector available'})
+    if conf.get('technology_constraints'):
+        binding_path = Path(compilation_path(wpath, w, conf, 'technology_constraints', True))
+        binding = read_json(binding_path)
+        repo_name = binding.get('repository')
+        declared_repo = next((r for r in w['repositories'] if r['name'] == repo_name), None)
+        require(declared_repo is not None, 'project typecheck binding repository not declared')
+        # v1 deliberately covers a single production repository; it cannot
+        # silently claim another repository's source files were checked.
+        require(not any(r.get('production_paths') for r in w['repositories'] if r is not declared_repo),
+                'project typecheck v1 requires all production scope in the bound repository')
+        results.extend(project_typecheck.inspect(resolve_dir(wpath, w, '@repo:' + repo_name),
+                        binding_path, declared_repo.get('production_paths', []), technologies))
     if 'TypeScript' in technologies:
         if not conf.get('conformance_binding'):
-            results.append({'technology': 'TypeScript', 'status': 'inconclusive',
-                            'reason': 'Compilation Conformance binding missing'})
+            if not conf.get('technology_constraints'):
+                results.append({'technology': 'TypeScript', 'status': 'inconclusive',
+                                'reason': 'Compilation Conformance binding missing'})
         else:
             binding_path = Path(compilation_path(wpath, w, conf, 'conformance_binding', True))
             binding = read_json(binding_path)
@@ -344,6 +374,10 @@ def technology_conformance(wpath, w, conf):
             repo_name = binding.get('repository')
             require(isinstance(repo_name, str) and repo_name, 'TypeScript conformance binding repository required')
             repo_root = resolve_dir(wpath, w, '@repo:' + repo_name)
+            if binding.get('capability_analysis') == 'typed-data-functions/v1':
+                declared = next((r for r in w['repositories'] if r['name'] == repo_name), None)
+                require(declared is not None and set(binding.get('source_globs', [])) <= set(declared.get('production_paths', [])),
+                        'typed data proof requires explicit Work production paths')
             pis=compilation_pi_paths(wpath,w,conf,True)
             argv = [sys.executable,
                     str(ROOT / 'skills/tech-typescript/scripts/cat_typescript_conformance.py'),
@@ -362,6 +396,9 @@ def technology_conformance(wpath, w, conf):
             if not isinstance(payload, dict):
                 payload = {'status': 'inconclusive', 'error': 'technology inspector produced no structured result'}
             results.append({'technology': 'TypeScript', **payload})
+    if conf.get('runtime_constraints') and len(w['repositories'])==1:
+        runtime_binding=Path(compilation_path(wpath,w,conf,'runtime_constraints',True)).resolve()
+        results.extend(node_service_technology.inspect(wpath,w,resolve_dir(wpath,w,'@repo:'+w['repositories'][0]['name']),runtime_binding))
     # A passing Inspector for one technology does not cover other declared
     # technologies. In particular, JUnit runs tests but is not itself an
     # implementation Inspector; a successful TypeScript check cannot cover it.
@@ -386,10 +423,17 @@ def conformance_context_sha(w):
         'flow': infer_flow(w),
         'specification': w['specification'],
         'scope': w['scope'],
+        'technologies': w.get('technologies', []),
         'compilation': w.get('compilation'),
         'repositories': w.get('repositories', []),
     }
     return sha(json_bytes(payload))
+
+
+def _runtime_boundary_repositories(wpath,w):
+    return {repo['name']:{'root':resolve_dir(wpath,w,'@repo:'+repo['name']),
+                          'production_paths':repo.get('production_paths',[]),
+                          'test_paths':repo.get('test_paths',[])} for repo in w['repositories']}
 
 
 def conformance_input_hashes(wpath, w, kind):
@@ -401,6 +445,12 @@ def conformance_input_hashes(wpath, w, kind):
         keys.extend(['model','vectors','queue','obligations'])
         if conf.get('conformance_binding'):
             keys.append('conformance_binding')
+        if conf.get('technology_constraints'):
+            keys.append('technology_constraints')
+        if conf.get('runtime_constraints'):
+            keys.append('runtime_constraints')
+        if conf.get('runtime_boundary_binding'):
+            keys.append('runtime_boundary_binding')
         keys.extend(key for key in ('effect_trace','effect_packet','effect_driver')
                     if conf.get(key))
     # Runtime rule verification must be invalidated when its registered
@@ -422,6 +472,13 @@ def conformance_input_hashes(wpath, w, kind):
     for index, raw in enumerate(compilation_tce_paths(wpath, w, conf, True), 1):
         path = Path(raw)
         result['tce:' + str(index)] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+    if kind=='implementation-conformance' and conf.get('runtime_boundary_binding'):
+        try:
+            deps=runtime_boundary.input_hashes(result['runtime_boundary_binding']['path'],
+                    _runtime_boundary_repositories(wpath,w))
+        except (ValueError, OSError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+            raise Blocked('runtime boundary dependencies invalid: '+str(exc)) from exc
+        result.update({'runtime-boundary:'+k:v for k,v in deps.items()})
     if kind=='implementation-conformance' and conf.get('effect_packet'):
         packet_path=Path(compilation_path(wpath,w,conf,'effect_packet',True))
         packet=read_json(packet_path)
@@ -506,7 +563,7 @@ def conformance_runtime_fingerprint():
 
     A Source/Work/implementation HEAD may be unchanged while a new compiler,
     verifier, inspector, or Gate implementation would reach another result.
-    Pin the complete shipped Python runtime (including Technology Skills) and
+    Pin the complete shipped Python and JavaScript runtime (including Technology Skills) and
     routing config; the conservative inventory may invalidate evidence after
     unrelated runtime changes, but cannot silently retain an old Gate result.
     This is *not* an authenticity attestation or proof of Provider execution.
@@ -515,7 +572,8 @@ def conformance_runtime_fingerprint():
     routing = ROOT / 'config' / 'routing.json'
     require((scripts / 'cat_flow.py').is_file() and routing.is_file(),
             'CAT Gate runtime scripts/routing missing')
-    files = [*scripts.rglob('*.py'), *((ROOT / 'skills').rglob('*.py')), routing]
+    files = [*scripts.rglob('*.py'), *((ROOT / 'skills').rglob('*.py')),
+             *scripts.rglob('*.mjs'), *((ROOT / 'skills').rglob('*.mjs')), routing]
     inventory = []
     for path in sorted(files, key=lambda x: x.relative_to(ROOT).as_posix()):
         require(path.is_file() and not path.is_symlink(),
@@ -547,6 +605,10 @@ def record_conformance_evidence(wpath, w, kind, result):
     }
     if kind == 'implementation-conformance':
         payload['repo_state_sha256'] = _implementation_repository_fingerprint(wpath, w)
+        payload['technology_results'] = result.get('technology_results', [])
+        if result.get('runtime_boundary_evidence'):
+            path=Path(result['runtime_boundary_evidence'])
+            payload['runtime_boundary_evidence']={'path':str(path),'sha256':sha(path.read_bytes())}
     path = runtime / (kind + '.json')
     path.write_bytes(json_bytes(payload))
     output = dict(result)
@@ -586,6 +648,12 @@ def conformance_evidence_status(wpath, w, kind):
         if kind == 'implementation-conformance':
             if e.get('repo_state_sha256') != _implementation_repository_fingerprint(wpath, w):
                 return {'status': 'stale', 'evidence': str(path), 'reason': 'implementation repository state changed'}
+            if e.get('runtime_boundary_evidence'):
+                obs=wpath.parent/'.cat-flow'/'cache'/'implementation-runtime-boundary.json'
+                if not obs.is_file() or obs.is_symlink() or e['runtime_boundary_evidence']!={'path':str(obs),'sha256':sha(obs.read_bytes())}:
+                    return {'status':'stale','evidence':str(path),'reason':'runtime boundary observation changed'}
+            elif (w.get('compilation') or {}).get('runtime_boundary_binding') and e.get('verdict')=='passed':
+                return {'status':'stale','evidence':str(path),'reason':'runtime boundary observation missing'}
         return {'status': e.get('verdict', 'inconclusive'), 'evidence': str(path), 'reason': e.get('reason', '')}
     except (OSError, KeyError, Blocked):
         return {'status': 'stale', 'evidence': str(path), 'reason': 'conformance evidence cannot be revalidated'}
@@ -790,6 +858,13 @@ def conformance_work(wpath, w, kind):
             except (Blocked,ValueError,KeyError,OSError,TypeError) as exc:
                 return {'gate':kind,'status':'blocked',
                         'reason':'Queue Green evidence invalid: '+str(exc)}
+    if queue and any(x in w.get('technologies',[]) for x in ('Vitest','Playwright')) and conf.get('binding') and conf.get('tests_output') and len(w['repositories'])==1:
+        evidence=test_technology.inspect(wpath,w,resolve_dir(wpath,w,'@repo:'+w['repositories'][0]['name']),
+            read_json(compilation_path(wpath,w,conf,'model',True)),read_json(compilation_path(wpath,w,conf,'vectors',True)),queue,
+            Path(compilation_path(wpath,w,conf,'binding',True)).resolve(),Path(compilation_path(wpath,w,conf,'tests_output',True)).resolve())
+        for result in evidence:
+            tech['results']=[x for x in tech['results'] if x['technology']!=result['technology']]+[result]
+        tech['status']='passed' if all(x['status']=='passed' for x in tech['results']) else 'inconclusive'
     model_gate=conformance_evidence_status(wpath,w,'model-conformance')
     rule_verification=None
     if any(x.get('method')=='normative-rule-verifier' for x in skeleton['items']):
@@ -800,9 +875,28 @@ def conformance_work(wpath, w, kind):
                 rule_verification=verifier_runtime.evaluate(model_path,registry_path)
             except (verifier_runtime.VerifierError,Blocked,ValueError,OSError,KeyError,TypeError) as exc:
                 return {'gate':kind,'status':'blocked','reason':'invalid normative rule verifier: '+str(exc)}
-    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate,rule_verification,verified_green)
     runtime=wpath.parent/'.cat-flow'/'cache'
     runtime.mkdir(parents=True,exist_ok=True)
+    boundary=None
+    boundary_path=None
+    if conf.get('runtime_boundary_binding'):
+        try:
+            # Never retain a prior observation as evidence of this execution.
+            (runtime/'implementation-runtime-boundary.json').unlink(missing_ok=True)
+            require(conf.get('model'),'runtime boundary verification requires current Model')
+            binding_path=compilation_path(wpath,w,conf,'runtime_boundary_binding',True)
+            repo_roots=_runtime_boundary_repositories(wpath,w)
+            before=_implementation_repository_fingerprint(wpath,w)
+            boundary=runtime_boundary.evaluate(binding_path,repo_roots,
+                      compilation_path(wpath,w,conf,'model',True),skeleton['source_sha256'])
+            require(before==_implementation_repository_fingerprint(wpath,w),'implementation repository changed during runtime boundary observation')
+            require(set(boundary.get('covered_obligation_ids',[]))<={o['id'] for o in skeleton['items'] if o['method']=='integration-contract'},
+                    'runtime boundary evidence targets undeclared obligation')
+            boundary_path=runtime/'implementation-runtime-boundary.json'
+            boundary_path.write_bytes(json_bytes(boundary))
+        except (Blocked,ValueError,OSError,KeyError,TypeError,subprocess.TimeoutExpired) as exc:
+            return {'gate':kind,'status':'blocked','reason':'runtime boundary observation rejected: '+str(exc)}
+    data=obligation_runtime.aggregate(skeleton,queue,tech['results'],model_gate,rule_verification,verified_green,boundary)
     evaluated=runtime/'implementation-obligations-evaluated.json'
     evaluated.write_bytes(json_bytes(data))
     items=data.get('items')
@@ -826,6 +920,8 @@ def conformance_work(wpath, w, kind):
           'evaluated_obligations':str(evaluated)}
     if effect_correlation is not None:
         base['effect_correlation_evidence']=effect_correlation['path']
+    if boundary_path is not None:
+        base['runtime_boundary_evidence']=str(boundary_path)
     if any(x['status']=='failed' for x in items):
         return {'gate':kind,'status':'blocked','reason':'one or more implementation obligations failed',**base}
     if missing or any(x['status'] in ('inconclusive','not-run') for x in items):
@@ -1248,12 +1344,18 @@ def command_work(wpath, w, key, execute=False):
         source = (cwd / name).resolve()
         require(under(source, cwd) and source.is_file(), f'check input not found under cwd: {name}')
         inputs[name] = sha(source.read_bytes())
+    runner_identity=test_technology.identity(cwd,argv,w.get('technologies',[]))
+    env=os.environ.copy()
+    if runner_identity and 'playwright' in runner_identity:
+        env['DEBUG']='pw:browser'
+    runner_observation=None
     started = dt.datetime.now(dt.timezone.utc).isoformat()
     outcome = 'inconclusive'
     reason = ''
     try:
         p = subprocess.run(argv, cwd=cwd, text=True, errors='replace', capture_output=True,
-                           timeout=check.get('timeout_seconds', 120), check=False)
+                           timeout=check.get('timeout_seconds', 120), check=False, env=env)
+        runner_observation=test_technology.observation(runner_identity,test_technology.identity(cwd,argv,w.get('technologies',[])),p.stdout,p.stderr,report)
         code = p.returncode
         stdout_hash, stderr_hash = sha(p.stdout.encode()), sha(p.stderr.encode())
         if check['runner'] == 'exit-zero':
@@ -1303,7 +1405,8 @@ def command_work(wpath, w, key, execute=False):
                 'input_sha256': inputs, 'output_sha256': outputs, 'context_sha256': context_sha,
                 'junit_sha256': sha(report.read_bytes()) if check['runner'] == 'junit' and report.exists() else None,
                 'observed_targets': named, 'verdict': outcome, 'reason': reason,
-                'queue_context': queue_context, 'semantics_approved': False}
+                'queue_context': queue_context, 'semantics_approved': False,
+                'test_technology':runner_observation}
     evpath = runtime / 'evidence' / (key + '.json')
     evpath.parent.mkdir(parents=True, exist_ok=True)
     evpath.write_bytes(json_bytes(evidence))

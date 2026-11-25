@@ -9,9 +9,11 @@ capability use or public exports outside that binding are violations.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
+import subprocess
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[3]
@@ -76,7 +78,9 @@ def files_for(repo: Path, globs):
         safe_rel(pattern, 'source_glob')
         for path in repo.glob(pattern):
             if path.is_file() and not any(x in path.parts for x in ('node_modules', 'dist', 'build', '.git')):
-                result.add(path.resolve())
+                resolved = path.resolve()
+                require(resolved.is_relative_to(repo), "source path outside repository: " + str(path))
+                result.add(resolved)
     return sorted(result)
 
 
@@ -96,6 +100,225 @@ def exports_from(path: Path):
                 exports.add(item.split()[0].strip())
     wildcard = bool(EXPORT_STAR.search(text))
     return exports, wildcard
+
+
+# This is a deliberately closed *subset* of TypeScript, not a lexer for
+# arbitrary TypeScript. Every non-trivia character must be consumed by its
+# grammar. No calls, member access, imports, statements other than return,
+# computed keys, object parameters, default values, or ambient names exist
+# in the grammar. A successful parse proves only the absence of additional
+# capability use in these module bodies, not the callers or the build system.
+PURE_CONTRACT = 'primitive-pure-functions/v1'
+TYPED_DATA_CONTRACT = 'typed-data-functions/v1'
+PURE_TOKEN = re.compile(
+    r"(?P<trivia>[ \t\r\n\f\v]+|//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/)"
+    r"|(?P<word>[A-Za-z_$][A-Za-z0-9_$]*)"
+    r"|(?P<string>'[A-Za-z0-9_ -]*'|\"[A-Za-z0-9_ -]*\")"
+    r"|(?P<number>0|[1-9][0-9]*)"
+    r"|(?P<operator>===|!==|&&|\|\||[(){}:;,?!|])"
+)
+PURE_IDENTIFIER = re.compile(r'[A-Za-z_$][A-Za-z0-9_$]*\Z')
+PURE_RESERVED = set('export function return const as true false null undefined boolean string number '
+                    'await yield this super class new import default let var enum implements interface '
+                    'public private protected static package arguments eval'.split())
+
+
+class UnsupportedPureSource(ValueError):
+    pass
+
+
+class PrimitivePureModule:
+    """Exhaustive recognition of the explicit pure-source grammar."""
+    def __init__(self, source):
+        if len(source) > 65536:
+            raise UnsupportedPureSource('source exceeds pure grammar bound')
+        self.tokens = []
+        at = 0
+        while at < len(source):
+            match = PURE_TOKEN.match(source, at)
+            if not match:
+                raise UnsupportedPureSource('unsupported token at character ' + str(at))
+            if match.lastgroup != 'trivia':
+                self.tokens.append((match.group(), match.lastgroup))
+            at = match.end()
+        if len(self.tokens) > 4096:
+            raise UnsupportedPureSource('source exceeds pure token bound')
+        self.pos = 0
+        self.parameters = set()
+
+    def peek(self):
+        return self.tokens[self.pos][0] if self.pos < len(self.tokens) else None
+
+    def take(self, expected=None):
+        if self.pos == len(self.tokens) or (expected is not None and self.peek() != expected):
+            raise UnsupportedPureSource('expected ' + str(expected) + ' at token ' + str(self.pos))
+        token = self.tokens[self.pos]
+        self.pos += 1
+        return token
+
+    def maybe(self, token):
+        if self.peek() == token:
+            self.take(token)
+            return True
+        return False
+
+    def identifier(self):
+        name, kind = self.take()
+        if kind != 'word' or not PURE_IDENTIFIER.fullmatch(name) or name in PURE_RESERVED:
+            raise UnsupportedPureSource('unsupported identifier: ' + name)
+        return name
+
+    def primitive_type(self):
+        value, kind = self.take()
+        if value in ('boolean', 'string', 'number'):
+            return
+        if kind != 'string':
+            raise UnsupportedPureSource('only primitive parameters/return types or string literal unions are supported')
+        while self.maybe('|'):
+            if self.take()[1] != 'string':
+                raise UnsupportedPureSource('only string literals in the union are supported')
+
+    def atom(self):
+        if self.maybe('('):
+            self.expression()
+            self.take(')')
+        elif self.maybe('{'):
+            names = set()
+            if self.peek() != '}':
+                while True:
+                    name = self.identifier()
+                    if name == '__proto__' or name in names:
+                        raise UnsupportedPureSource('unsupported object key: ' + name)
+                    names.add(name)
+                    self.take(':')
+                    self.expression()
+                    if not self.maybe(',') or self.peek() == '}':
+                        break
+            self.take('}')
+            if self.maybe('as'):
+                self.take('const')
+        else:
+            value, kind = self.take()
+            if not (kind in ('string', 'number') or value in ('true', 'false') or value in self.parameters):
+                raise UnsupportedPureSource('undeclared value or unsupported expression: ' + value)
+
+    def unary(self):
+        while self.maybe('!'):
+            pass
+        self.atom()
+
+    def equality(self):
+        self.unary()
+        while self.peek() in ('===', '!=='):
+            self.take()
+            self.unary()
+
+    def conjunction(self):
+        self.equality()
+        while self.maybe('&&'):
+            self.equality()
+
+    def expression(self):
+        self.conjunction()
+        while self.maybe('||'):
+            self.conjunction()
+        if self.maybe('?'):
+            self.expression()
+            self.take(':')
+            self.expression()
+
+    def module(self):
+        names = set()
+        while self.peek() is not None:
+            self.take('export')
+            self.take('function')
+            name = self.identifier()
+            if name in names:
+                raise UnsupportedPureSource('duplicate function: ' + name)
+            names.add(name)
+            self.parameters = set()
+            self.take('(')
+            if self.peek() != ')':
+                while True:
+                    param = self.identifier()
+                    if param in self.parameters:
+                        raise UnsupportedPureSource('duplicate parameter: ' + param)
+                    self.parameters.add(param)
+                    self.take(':')
+                    self.primitive_type()
+                    if not self.maybe(','):
+                        break
+            self.take(')')
+            if self.maybe(':'):
+                self.primitive_type()
+            self.take('{')
+            self.take('return')
+            self.expression()
+            self.take(';')
+            self.take('}')
+        if not names:
+            raise UnsupportedPureSource('no public functions')
+        return names
+
+
+def primitive_capability_analysis(repo, binding, sources, entrypoints, operations,
+                                  process, interface_symbols):
+    report = {'contract': PURE_CONTRACT, 'status': 'inconclusive',
+              'scope': 'explicit public TypeScript source modules; excludes callers, loader and build transforms'}
+    try:
+        if process.get('closed_world') is not True or process.get('observations') or process.get('actions'):
+            raise UnsupportedPureSource('requires a closed Process with no declared additional observations/actions')
+        if binding.get('capabilities'):
+            raise UnsupportedPureSource('requires no external capability bindings')
+        paths = [Path(p).as_posix() for p in binding.get('source_globs', [])]
+        observed_paths = {p.relative_to(repo).as_posix() for p in sources}
+        if (len(paths) != len(set(paths)) or set(paths) != observed_paths or
+                {Path(p).as_posix() for p in entrypoints} != observed_paths):
+            raise UnsupportedPureSource('requires exact source files equal to public entrypoints')
+        names = set()
+        hashes = {}
+        for path in sources:
+            data = path.read_bytes()
+            found = PrimitivePureModule(data.decode('utf-8-sig')).module()
+            if names & found:
+                raise UnsupportedPureSource('duplicate public symbol across modules')
+            names.update(found)
+            hashes[path.relative_to(repo).as_posix()] = hashlib.sha256(data).hexdigest()
+        if names != set(interface_symbols) or set(interface_symbols.values()) != operations:
+            raise UnsupportedPureSource('pure module public symbols do not exactly cover the PI operations')
+        report.update(status='passed', source_sha256=hashes, public_symbols=sorted(names))
+    except (UnsupportedPureSource, UnicodeError, RecursionError) as exc:
+        report['reason'] = str(exc) or 'unsupported grammar depth'
+    return report
+
+
+def typed_data_capability_analysis(repo, binding, sources, entrypoints, operations,
+                                   process, interface_symbols):
+    report = {'contract': TYPED_DATA_CONTRACT, 'status': 'inconclusive',
+              'scope': 'typed data arguments and standard intrinsics; excludes callers and build transforms'}
+    try:
+        if process.get('closed_world') is not True or process.get('observations') or process.get('actions') or binding.get('capabilities'):
+            raise UnsupportedPureSource('requires a closed Process with no additional capabilities')
+        paths = [Path(p).as_posix() for p in binding.get('source_globs', [])]
+        actual = {p.relative_to(repo).as_posix() for p in sources}
+        if len(paths) != len(set(paths)) or set(paths) != actual or {Path(p).as_posix() for p in entrypoints} != actual:
+            raise UnsupportedPureSource('requires exact source files equal to public entrypoints')
+        checker = Path(__file__).resolve().with_name('cat_typed_data_capabilities.mjs')
+        result = subprocess.run(['node', str(checker), str(repo), *map(str, sources)],
+                                cwd=repo, capture_output=True, encoding="utf-8", timeout=45, check=False)
+        payload = json.loads(result.stdout)
+        if result.returncode != 0 or payload.get('status') != 'passed':
+            raise UnsupportedPureSource(payload.get('reason', 'typed data inspector did not pass'))
+        if set(payload.get('public_symbols', [])) != set(interface_symbols) or set(interface_symbols.values()) != operations:
+            raise UnsupportedPureSource('typed data exports do not exactly cover the PI operations')
+        hashes = payload.get('source_sha256', {})
+        if not actual.issubset(hashes) or any((repo / name).resolve().is_relative_to(repo) is False or
+              hashlib.sha256((repo / name).read_bytes()).hexdigest() != digest for name,digest in hashes.items()):
+            raise UnsupportedPureSource('typed data source evidence missing or changed')
+        report.update(payload)
+    except (UnsupportedPureSource, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        report['reason'] = str(exc) or 'typed data inspector unavailable'
+    return report
 
 
 def inspect(repo, binding_path, process_path, pi_path, pi_extras=()):
@@ -164,6 +387,7 @@ def inspect(repo, binding_path, process_path, pi_path, pi_extras=()):
         rel = safe_rel(raw, 'public_entrypoint')
         path = (repo / rel).resolve()
         require(path.is_file() and path.is_relative_to(repo), 'public entrypoint missing or outside repository: ' + rel)
+        require(path in sources, "public entrypoint not included in inspected source: " + rel)
         found, wildcard = exports_from(path)
         observed_exports |= found
         if wildcard:
@@ -175,16 +399,39 @@ def inspect(repo, binding_path, process_path, pi_path, pi_extras=()):
         else:
             checks.append({'kind': 'interface', 'item': symbol,
                            'semantic_ref': interface_symbols[symbol], 'status': 'passed'})
-    missing_ops = sorted(operations - set(interface_symbols.values())) if entrypoints else sorted(operations)
+    observed_operations = {interface_symbols[symbol] for symbol in observed_exports
+                           if symbol in interface_symbols}
+    missing_ops = sorted(operations - observed_operations)
+    missing_symbols = sorted(set(interface_symbols) - observed_exports)
     incomplete = []
     if wildcard_exports:
         incomplete.append('wildcard exports cannot be enumerated deterministically: ' + ', '.join(wildcard_exports))
     if missing_ops:
-        incomplete.append('PI operations without public symbol mapping: ' + ', '.join(missing_ops))
+        incomplete.append('PI operations without observed public symbol: ' + ', '.join(missing_ops))
+    if missing_symbols:
+        incomplete.append('bound public symbols not observed: ' + ', '.join(missing_symbols))
     if operations and not entrypoints:
         incomplete.append('public_entrypoints not declared')
 
     status = 'blocked' if violations else ('inconclusive' if incomplete else 'passed')
+    analysis = None
+    if 'capability_analysis' in binding:
+        require(binding['capability_analysis'] in (PURE_CONTRACT, TYPED_DATA_CONTRACT), 'unknown capability analysis contract')
+        if status == 'passed':
+            analyzer = primitive_capability_analysis if binding['capability_analysis'] == PURE_CONTRACT else typed_data_capability_analysis
+            analysis = analyzer(repo, binding, sources, entrypoints, operations, process, interface_symbols)
+        else:
+            analysis = {'contract': binding['capability_analysis'], 'status': 'inconclusive',
+                        'reason': 'base inspector is not passing'}
+    covered = ({
+        'interface.'+x['semantic_ref'] for x in checks
+        if x['kind']=='interface' and x['status']=='passed'
+    } | {
+        'capability.'+x['semantic_ref'] for x in checks
+        if x['kind']=='capability' and x['status']=='passed'
+    }) if status == 'passed' else set()
+    if analysis and analysis['status'] == 'passed':
+        covered.add('capability.closed-set')
     return {
         'schema': 'cat-typescript-conformance-evidence/v1',
         'status': status,
@@ -194,13 +441,8 @@ def inspect(repo, binding_path, process_path, pi_path, pi_extras=()):
         'detected_capabilities': detected,
         'source_files': [str(x.relative_to(repo)) for x in sources],
         'public_exports': sorted(observed_exports),
-        'covered_obligation_ids': sorted({
-            'interface.'+x['semantic_ref'] for x in checks
-            if x['kind']=='interface' and x['status']=='passed'
-        } | {
-            'capability.'+x['semantic_ref'] for x in checks
-            if x['kind']=='capability' and x['status']=='passed'
-        }) if status=='passed' else [],
+        'covered_obligation_ids': sorted(covered),
+        **({'capability_analysis': analysis} if analysis is not None else {}),
     }
 
 

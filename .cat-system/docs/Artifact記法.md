@@ -209,11 +209,26 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 操作IDと項目IDは同じPIに属していなければならず、重複した組を宣言してはならない。Compilerはこの表をTestModelの`operation_presence`へ出典PI付きで保存し、独立したModel Conformanceで照合する。
 
-明示的なテストベクトルでは、受付操作を`operation`で特定し、任意項目の欠落は`input`のキーを省略し、`undefined`は`{"$cat_presence":"undefined"}`と表す。提供操作に応じた出力Presenceがある場合は`output_operation`も必須となる。これらは値の同一性の規則であって、実装の動作確認結果ではない。
+明示的なテストベクトルでは、受付操作を`operation`で特定し、任意項目の欠落は`input`のキーを省略し、`undefined`は`{"$cat_presence":"undefined"}`と表す。提供操作に応じた出力Presenceがある場合は、所有PIごとに一意に定まる全提供Operationを特定する。単一なら`output_operation`、異なる複数PIで当該Triggerに明示的に束縛される複数なら`output_operations`（重複なしのOperation ID配列）を使う。両者の同時指定、欠落・余剰・別Triggerの操作IDは拒否する。配列の順序は処理順を意味せず、決定論的selectorはIDをソートする。これらは値の同一性の規則であって、実装の動作確認結果ではない。
 
-現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作が明示されたVectorsは、Driver Bindingの`output_operation_transport: "js-driver-provide/v1"`を必須とし、生成VitestはDriverの`outputOperationTransport`と`triggerProvidedOperation(operationId, triggerId, input)`の実在を検証して、指定された提供操作を呼び出す。宣言がない・未知の方法・曖昧な提供操作はblockedを維持する。`undefined`入力も明示的な`js-undefined/v1` Bindingがなければ拒否する。**これらのBindingは検査可能なDriver契約であり、現実の外部送信や複数Processの相互作用の証明ではない。**補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
+現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。単一の出力操作が明示されたVectorsは従来のDriver Binding `output_operation_transport: "js-driver-provide/v1"`を使用できる。生成VitestはDriverの`outputOperationTransport`と`triggerProvidedOperation(operationId, triggerId, input)`の実在を検証する。複数PIの出力を含む場合は`js-driver-provides/v1`を明示し、`triggerProvidedOperations(operationIds, triggerId, input)`で**1回の論理Trigger実行**からOperation ID→そのPIの観測出力項目record（全出力不在の場合も空record）の写像を受け取る。同Bindingでは単一提供操作も同じ写像で扱う。生成テストは全Operation IDの完全一致・各出力の所有PIを検査した後、一つの許容Outcomeとして全state/outputを照合する。操作毎の別実行・別Outcomeの結果の合成を認めない。このDriverはテストアダプターであり、製品の公開API・呼出方式・同期／非同期・出力順を指定するものではない。宣言がない・未知の方法・曖昧な提供操作はblockedを維持する。`undefined`入力も明示的な`js-undefined/v1` Bindingがなければ拒否する。**これらのBindingは検査可能なDriver契約であり、現実の外部送信や複数Processの相互作用の証明ではない。**補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
 
-複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。単一Triggerに対して提供操作が1件であり、`## Operation presence`で出力の操作が明示され、出力がrequiredである範囲のみ、決定論的Vectorsの`output_operation`を導出する。非required出力の意味的証明は依然として未対応。
+複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。`## Operation presence`等で所有PIごとの提供Operationと`required`・`optional`・`absent`の全結果frameが局所証明された範囲に限り、決定論的Vectorsの出力操作を導出する。同一PI内の複数提供操作は下記の明示フレームがない限り未証明。未束縛の提供操作、`undefined`出力は未対応。JUnitのscalar transportは明示 `java-driver-provides/v1` により対応可能な値域で出力Operation identityを扱う。
+
+### Outcomeごとの提供出力フレームと評価断面
+
+同じPIで正常・例外等の提供Operationが排他的である場合、または提供Operationの送信と受信の評価Triggerが異なる場合に、`## 提供出力フレーム`（`## Output frames`）を明示できる。例（`request`は受付、`ok`・`fail`は同じPIの提供操作）:
+
+| 起点 | 振る舞い | 結果 | 操作 | 活性 |
+| --- | --- | --- | --- | --- | --- |
+| lookup | found | 1 | ok | one |
+| lookup | not-found | 1 | fail | one |
+
+英語列は `Trigger / Behavior / Outcome / Operation / Mode`。Outcome番号はTCEの1始まりの番号。活性は `one`（必ず一つ）、`zero-or-one`（零または一つ）、`none`（非活性）。非活性は操作列を `—` とする。同じPI・Triggerでは同一Modeで全Behavior/Outcomeを一度ずつ宣言する。他PIの操作、受付操作、未宣言Trigger、重複・欠落、Modeに反する活性を拒否する。各提供操作は1個の出力評価Triggerに活性として現れ、宣言済み提供操作の入力評価Triggerも表の対象に含める。他のTriggerでは当該PIの提供出力は非活性。既存のOperation Triggerは受信項目を評価できる起点を保持し、送信項目の評価Triggerだけをこの表から導く。分割cutの送信引数を終端で再送しない。
+
+操作別Presenceは活性な提供Operationの送信項目に適用し、非活性なPIの送信項目は不在を要求する。全結果に対して required 欠落、absent 出力、他PI/非活性の出力を検査する。この限定契約は同一PIで同時に複数の提供Operationを要求する世界や、同じOperationを複数の出力cutで活性化する世界を表す一般契約ではない。そのような表現は未対応として扱う。処理方式・時間順序・実配送・同じ要求の相関を証明するものではなく、PI/Trigger/Outcomeの仕様上の帰属を保存する。
+
+`output_frames`を持つTestModelからは、Vectorの`output_operations`に選択Behaviorの全許容Outcomeで活性になり得る操作の和集合（空も可）を保持する。展開された各許容Outcomeには当該Outcomeの操作集合を保持する。生成テストは1回の実行で観測したOperation ID集合・所有PI・state/outputを同じ許容Outcomeへ照合する。未知・欠落・余剰・別Outcomeからの合成を拒否する。Vitestは`js-driver-provides/v1`、JUnitは`java-driver-provides/v1`の明示Bindingが必要。Driverに渡す操作ID集合は観測候補であって、実装への操作発動指示ではない。
 
 ### 必須input recordの型付きmember参照
 
@@ -404,9 +419,12 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 | `@cat:finite-state-guard-invariant/v1` | 明示された有限State初期関係の非空性と全宣言Outcomeでの帰納的保存に基づく有効Guard領域 |
 | `@cat:trigger-observation-relation/v1` | 明示Triggerで利用可能な有限観測とStateの入力関係の非空性・全Stateへの射影 |
 | `@cat:finite-transition-relation/v1` | 指定Operation・Trigger・peerにおける全許容Outcomeの有限射影と、明示したbefore/after関係の完全一致 |
+| `@cat:observed-transition-relation/v1` | 同一実行の宣言済み取得観測を含む有限before/afterの許容結果関係の完全一致 |
+| `@cat:finite-structural-transition-relation/v1` | 厳密に有限列挙できる型付き構造のbefore/after射影と全許容結果関係の完全一致 |
+| `@cat:structural-copy-relation/v1` | 同一型のrequired構造値の任意長sequence/recordについて、全許容Outcomeの直接等値射影を象徴的に証明 |
 
 - 最初の3述語の `Condition` は **`assembled-process`**、`Verification` は **`cat:intrinsic-model/v1`**、`Requirement` は上表の対応する値と完全一致する必要がある。本文の自然言語要求や他のVerifier契約をこの文字列に置き換えて無断で意味変更してはならない。
-- 出力Presence述語の `Condition` は厳密に `fresh-output <PI ID> <provide Operation ID> <Trigger ID> <output Field ID>` とする。これは当該応答の出力を各Outcome開始時に未生成とする明示的な規範宣言であり、永続状態・以前の応答・外部配信を初期化する意味ではない。提供Operationを一意に解決でき、所有PI・Trigger・Fieldが一致し、Domainが解決済みで、全宣言Outcomeについて代入が高々1回かつ型／値域証明済みである場合だけ証明する。Operation別Presence（なければ基本Presence）が required なら全Outcomeで代入、absent なら全Outcomeで非代入、optional なら両方を許す。undefined、曖昧な提供Operation、宣言Outcomeが空のものは未証明とする。非代入は当該fresh outputの不在に限り、外部送信・到達可能性・Guardの網羅性は別に検査する。
+- 出力Presence述語の `Condition` は厳密に `fresh-output <PI ID> <provide Operation ID> <Trigger ID> <output Field ID>` とする。これは当該応答の出力を各Outcome開始時に未生成とする明示的な規範宣言であり、永続状態・以前の応答・外部配信を初期化する意味ではない。所有PI内の提供Operationを一意に解決でき、所有PI・Trigger・Fieldが一致し、Domainが解決済みで、全宣言Outcomeについて代入が高々1回かつ型／値域証明済みである場合だけ証明する。Operation別Presence（なければ基本Presence）が required なら全Outcomeで代入、absent なら全Outcomeで非代入、optional なら両方を許す。undefined、曖昧な提供Operation、宣言Outcomeが空のものは未証明とする。非代入は当該fresh outputの不在に限り、外部送信・到達可能性・Guardの網羅性は別に検査する。
 - 状態等値保存述語の `Condition` は厳密に `initial-state-equality <State ID> <State ID>` とする。これは規範上の初期状態を等値に限定する明示宣言であり、実装が初期化を行った証拠ではない。同一Processの相異なるStateで、同じboolean/integer/string/enum Domainを持つ2項に限定する。全宣言TriggerにOutcomeが存在し、各Outcomeについて型・値域証明済みの直接参照または定数を代入するか、非代入ならFrameでbefore値を維持し、両項のafter値がbefore等値の下で一致することを証明する。Effectの読取りは同時代入前の値であり、Guardによる例外・演算式による等値・未知の初期条件を推測しない。この証明をGuardの有効領域縮小には使用せず、実行相関・到達可能性・実Providerの検証とも分離する。
 - 有効Guard領域述語の `Condition` は `initial-state-relation <CAT boolean expression>`。同一ProcessのConfirmed Domain Specificationから、参照がStateのみで有限直積4096組以下、関係を満たす初期状態が非空、全Outcomeの関連代入が型・値域証明済みで関係内のbefore値のみを参照し、全関係内状態で同時代入後も関係が成立する場合に限り有効領域を制限する。未代入StateはFrameに従う。Guardに依存した例外や未宣言初期条件を推測しない。Compilerと独立Source検査で再計算し、`guard_invariant_rule_ids` をCoverage証拠に記録する。選択・展開するVectorにも関係を適用する。初期化実装、任意の実行経路、外部観測の真正性は証明しない。複数の関係の共通領域が空ならClosureは未証明とする。
 - 観測領域述語の `Condition` は `observation-relation <Trigger ID> <CAT boolean expression>`。同一ProcessのConfirmed Domain Specificationが、指定Triggerに明示的に `Available on` を持つ観測とStateのみを参照して有効な観測値領域を定義する。有限直積4096組以下で、同じTriggerの全宣言観測関係を結合しても、全State値組に対して少なくとも1つの観測値組が存在することをCompilerと独立検査で証明する。これにより実到達Stateを観測値の矛盾で勝手に排除しない。成立した関係だけ当該TriggerのGuard領域に適用し `observation_relation_rule_ids` を記録する。将来観測・時点未宣言・未知関係は利用しない。観測値の実Provider真正性や技術別観測Vector/Driverは別責務であり、この証明によるテスト生成の無断補完は禁止する。
@@ -417,6 +435,17 @@ transition-relation {"trigger":"receive","pi":"example.pi","operation":"accept-r
 ~~~
 
 - 同一ProcessのConfirmed Domain Specification、boolean/enum/有限integerの完全なbefore×after領域、または制約なしstringのbefore/after最大5参照の厳密な等値類（直接等値・不等値、文字列定数、コピー代入に限定、全体で最大65536組）、有効PI制約・証明済み有限初期不変条件、型・値域証明済みEffectを前提に、指定 `when` の非空な各状態で一意なTCE Ruleの全Outcomeを同時代入・非代入Frameで計算し、`relation` が許容する全射影結果の集合と両方向に一致することを検査する。許容される値を1つだけ列挙すること、または過大なFrameで独立した作用まで禁止することは集合欠落として未証明となる。複数Triggerの相関は、明示State上の相関IDと順序を各Triggerの関係で保持する。実際の相関ID、実Provider、全実行の進行性・公平性、限定等値類以外の無界ID関係や未来観測は証明しない。独立Source検査が同じ関係を全域で再構成し、出典SHAとScopeが一致したときだけ正式Gateが受理する。対象を明示せず自由文や部分fixtureを渡す契約ではない。
+- `@cat:observed-transition-relation/v1` は `observed-transition-relation <JSON object>` とし、上記有限遷移関係のキーに `observations`（参照するObservation IDの重複なし非空配列）を追加する。Observationはboolean/enumで、Processの `Available on` が当該Triggerのみ、`Source` が `same-execution-observation <JSON object>` であることを要求する。Source objectのキーは `trigger`, `pi`, `operation`, `peer`, `cut`（`trigger-entry`）, `source`（空でない意味上の観測元）。前4項は規範関係のScopeに一致させる。例：
+
+~~~text
+same-execution-observation {"trigger":"receive","pi":"example.pi","operation":"accept-request","peer":"example.client","cut":"trigger-entry","source":"declared-result"}
+observed-transition-relation {"trigger":"receive","pi":"example.pi","operation":"accept-request","peer":"example.client","provide":"reply","when":"true","fields":["output.result"],"observations":["observation.received"],"relation":"after.output.result == observation.received"}
+~~~
+
+  当該Triggerに適用される証明済み観測領域・初期不変条件・有効PI制約と `when` の非空な共通領域で、全許容Outcomeと規範関係の双方向一致を厳密に検査する。未取得・未来・別実行・別受付・別peerを同じ値として補完しない。これは取得済み値の**仕様上の評価断面**を宣言する契約で、実Providerからの取得、同期的な呼出し、永続相関ID等を実装に要求または証明するものではない。
+- `@cat:finite-structural-transition-relation/v1` は `finite-structural-transition-relation <JSON object>` とし、既存有限遷移関係のScope・Frame・required Presenceを維持した上で、既存型registryが完全列挙できるrecord/nullable/union/resolved reference/nullを認める。recordの不在とnullを区別し、項目順は意味上の差としない。既存のrequired scalar member記法を関係式中の `after.<field ID>.<member>` にも使用できる（Scope内のrequired after値のみ）。全record等値と、全required memberの等値を表す同値な関係は同じ許容結果集合で判定する。optional memberを省略した不完全な関係、未定義member、無限Domain、任意長sequence、未束縛型は証明しない。構造値のEffectは既存の型・値域証明を経る。
+- `@cat:structural-copy-relation/v1` は `structural-copy-relation <JSON object>` とし、有限遷移関係と同じScopeキーを使用する。初期profileでは、固定peer・一意accept/provide・同一Trigger、解決済み同一Domainのrequired before/after、`when: "true"`、制約なしの1個の無条件Ruleと非空の全Outcomeを対象とする。`relation` は各対象afterとbeforeの直接等値（等式の左右は任意）の論理積で、各after対象が一意に定義されることを要求する。少なくとも1対象はsequenceまたはrecordであり、入れ子型のrecord Presence・nullable・boolean・integer・string・enum・null・解決済み参照を保持する。全Outcomeで型／値域証明済みの同一before参照か、Stateの明示された不変Frameを照合する。任意長sequenceの空列・順序・重複は値として保存し、有限長の列挙や入力同型のみで証明しない。set・JSON/instant・未知型・条件付き／演算付き関係はこのprofileでは未証明とする。これは観測可能な値の関係であり、実装でのコピー関数、メモリ表現、同期方式を要求しない。Compilerと独立Source検査は各Outcomeから関係を再構成し、出典SHAを保持する。
+- 上記の有限observed/structural profileは厳密な有限before×after領域（最大65536組）を対象にし、Compilerと独立Source検査がそれぞれ同じ規範関係を再構成する。有限性や証明予算は検査器の対応範囲であって、プロダクト仕様の値域を狭める要件ではない。実装の関数・class・SQL/ORM・同期方式・データ配置は、明示された仕様上の差や実装制約がない限り検証条件にしない。証明できないものは未証明とし、意味を保存する別の健全な証明方式を排除しない。既存有限遷移関係v1の記法・意味は維持する。
 - 正当にConfirmedとなった規範Artifactの出典ID・SHA-256と決定根拠が揃い、モデル条件が実証された場合だけ、Compilerが `intrinsic_rule_proofs` を生成する。独立 `model-conformance` は元Artifactから同じ性質を再検査し、結果・出典を比較する。
 - 未承認Artifact、未知の述語、条件の変更、自由記述、外部通信・DOM・データベース・Discord送信等の実装・複数実行に関するRuleは**未証明**である。登録済みfixtureやrunnerの単なる `passed` を自然言語要求の証明に代用しない。
 - この限定語彙を超える意味は、別の規範上の意味定義・Verifierの責任範囲・正当な承認と結合した機械証明手段が成立するまで `inconclusive/blocked` のまま扱う。
@@ -553,7 +582,7 @@ Gate statusの日本語aliasは `成功 / 対象外 / 未実行 / 停止 / 不�
 
 ### Compilation
 
-決定論的コンパイルを使用するWorkだけ `Compilation / 変換` を追加する。TCEセルは`;`区切りで同一Processの複数confirmed TCEを列挙でき、closure/model生成ではassembled specificationとして扱う。`Conformance binding / 適合接続`は技術固有Inspectorが実装境界を仕様IDへ結び付ける機械設定であり、仕様そのものではない。
+決定論的コンパイルを使用するWorkだけ `Compilation / 変換` を追加する。TCEセルは`;`区切りで同一Processの複数confirmed TCEを列挙でき、closure/model生成ではassembled specificationとして扱う。`Conformance binding / 適合接続`は技術固有Inspectorが実装境界を仕様IDへ結び付ける機械設定であり、仕様そのものではない。 `Technology constraints / 技術制約接続` は採用済みのコンパイラ等の実装制約の検査設定への参照であり、PI適合証明とは独立する。 `Runtime constraints / 実行基盤制約接続` は採用済みNode/NestJS/PostgreSQLの限定された実runtime検査Bindingを参照する。 `Runtime boundary binding / 実境界接続` は、実装の両端を起動して実データを観測する限定profileのBindingを参照する。`cat-runtime-boundary-binding/v1` の適用条件・実行証拠・非保証範囲は機械的変換の「実境界の独立観測」を参照する。仕様上の通信方式を追加するものではない。
 
 ~~~md
 ## 変換
