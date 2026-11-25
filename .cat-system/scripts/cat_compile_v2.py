@@ -2189,6 +2189,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         real_range=_real_reference_range_values(fields,ordered,predicates,input_presence,definitions)
         linear_range=_linear_order_values(fields,ordered,predicates,input_presence,definitions)
         string_pair=_string_reference_values(fields,ordered,predicates,input_presence)
+        nullable_pair=semantic_string_partition.nullable_reference_cells({n:fields[n]['domain'] for n in ordered},predicates,input_presence)
         for field_id in ordered:
             if projected:
                 domainvalues.append(projected[field_id]);partition_fields.append(field_id);partition_kinds.add('record_member');continue
@@ -2199,6 +2200,10 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 values=string_pair[field_id]
                 partition_fields.append(field_id)
                 partition_kinds.add('string_ref')
+            if field_id in nullable_pair:
+                values=nullable_pair[field_id]
+                if field_id not in partition_fields:partition_fields.append(field_id)
+                partition_kinds.add('nullable_ref_equality')
             if field_id in linear_range:
                 values=linear_range[field_id]
                 partition_fields.append(field_id)
@@ -2365,6 +2370,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
                     else 'nullable-string-null-partition/v1' if partition_kinds=={'nullable_string_null'}
+                    else 'nullable-reference-equality-partition/v1' if partition_kinds=={'nullable_ref_equality'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
@@ -2830,6 +2836,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         real_range=_real_reference_range_values(fields,guard_names,predicates,presence,defs)
         linear_range=_linear_order_values(fields,guard_names,predicates,presence,defs)
         string_pair=_string_reference_values(fields,guard_names,predicates,presence)
+        nullable_pair=semantic_string_partition.nullable_reference_cells({n:fields[n]['domain'] for n in guard_names},predicates,presence)
         from catlib.semantic_structural_copy import witness_values
         copy_values=witness_values(model,trigger,fields,guard_names,observed,presence)
         for field_id in variable_ids:
@@ -2839,6 +2846,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             values=(_presence_cases(field['domain'],presence[field_id])
                     if field_id in presence else typed.finite_values(field['domain']))
             if field_id in string_pair:values=string_pair[field_id]
+            if field_id in nullable_pair:values=nullable_pair[field_id]
             if field_id in integer_range:
                 values=integer_range[field_id]
             if field_id in real_range:

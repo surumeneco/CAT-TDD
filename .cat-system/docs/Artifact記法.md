@@ -393,6 +393,10 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 
 `Verification`はその規則をどのTestModel・静的検査・領域別検証へ接続するかを示す。
 
+### nullable参照の等値Guard分割
+
+`nullable-reference-equality-partition/v1` は同一の非null基底Domain（制約なしstringまたは同じ整数区間）のrequired参照とそのnullable参照の直接 `==` / `!=` に限定する。Boolean結合の下で、参照比較による連結成分ごとに最大5参照、少なくとも1つnullable参照を含む場合、全比較定数・null（nullableのみ）・参照数以下の相異なる非null代表を用いて全等値パターンを保存する。有限基底区間は実在値を超えて代表を作らない。nullableの単独参照と非null定数の比較も同じ分割で扱う（既存のnullのみの文字列分割は維持）。別連結成分は独立に分割し、通常の証明予算を適用する。これは任意のIDや改訂値の具体列挙ではない。optional/absent/undefinedとの混同、異種基底型間比較、順序・加工・非対応関数の混在はこのprofileでは証明しない。独立Source検査が同じ許容真理値類を再導出する。局所Guardの証明に限定し、観測元の真正性、Effectの全域適合、任意の外部作用、到達可能性を証明しない。
+
 ### CommonRule / DomainSpecで証明できる機械規則の限定語彙
 
 任意の自然言語Ruleを機械証明へ変換しない。規範Artifactを正当にConfirmedにした上で、次の**完全一致の表現**だけを `cat:intrinsic-model/v1` の意味として扱う。これはあくまで**組み立て済みCATモデルに関する性質**であり、外部システムが実際に送信・反映・表示を行った証明ではない。
