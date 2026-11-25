@@ -44,13 +44,13 @@ def _supported_value(domain):
         return domain.get('resolved') is True and _supported_value(domain['of'])
     if domain.get('type') == 'set':
         return _supported(domain['element'])
-    return _supported(domain)
+    return domain.get('type') in ('json', 'instant') or _supported(domain)
 
 def _structural(domain):
     kind = domain.get('type')
     if kind == 'reference':
         return domain.get('resolved') is True and _structural(domain['of'])
-    return kind in ('sequence', 'record', 'set')
+    return kind in ('sequence', 'record', 'set', 'json', 'instant')
 
 
 def resolve(scope, fields, pi_docs, invariants=()):
@@ -193,6 +193,12 @@ def _example(domain, variant=0, empty=False):
         a,b=(_example(domain['element'],i) for i in (0,1))
         return [a] if typed.same(a,b) else [a,b]
     if kind=='nullable':return None if variant==0 else _example(domain['of'],variant,empty)
+    if kind=='json':
+        from decimal import Decimal
+        return {} if empty else {'amount': Decimal('9007199254740993.125'), 'example':[1,True,None,1]}
+    if kind=='instant':
+        from catlib.semantic_json_instant import decode_offset_datetime
+        return decode_offset_datetime('1970-01-01T00:00:00Z' if empty else '1970-01-02T00:00:00.000000123Z')
     if kind=='null':return None
     if kind=='boolean':return bool(variant)
     if kind=='integer':
