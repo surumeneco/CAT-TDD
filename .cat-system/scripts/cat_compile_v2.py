@@ -1574,31 +1574,43 @@ def _nonrequired_output_ids(fields,overrides):
         if fields[item['field']]['role']=='output' and item['presence']!='required'}
 
 
-def _provided_output_operation(fields,operations,overrides,trigger):
-    """A single source-owned provider is required for optional output proof."""
+def _provided_output_frames(fields,operations,overrides,trigger):
+    """Resolve fresh result frames by PI, not by a global provider count.
+
+    Multiple frames require explicit Trigger bindings and distinct owners.
+    The legacy singular unscoped operation is retained; no ordering or
+    transport protocol is inferred from the frame map.
+    """
     special=_nonrequired_output_ids(fields,overrides)
     declared=any(fields[item['field']]['role']=='output' for item in overrides)
     if not special and not declared:
         return None
     candidates=[op for op in operations if op['direction']=='provide'
                 and (op.get('trigger') is None or op['trigger']==trigger)]
-    if len(candidates)!=1:
+    frames={op['source_pi']:op for op in candidates}
+    if not candidates or len(frames)!=len(candidates):
         return None
-    operation=candidates[0]
+    if len(candidates)>1 and any(op.get('trigger')!=trigger for op in candidates):
+        return None
     # Overrides of explicitly distinct response Triggers belong to those
-    # fresh frames, even when they share a PI and Field. Do not ignore an
-    # accept, unscoped, unknown or differently owned operation.
+    # fresh frames. Reject accept, unscoped, unknown or ambiguous operations.
     for item in overrides:
-        if (fields[item['field']]['role']!='output'
-                or fields[item['field']]['source_pi']!=operation['source_pi']
-                or item['operation']==operation['id']):
+        field=fields[item['field']]
+        operation=frames.get(field.get('source_pi'))
+        if field['role']!='output' or operation is None or item['operation']==operation['id']:
             continue
         other=[op for op in operations if op['id']==item['operation']
                and op['source_pi']==operation['source_pi']]
         if (len(other)!=1 or other[0]['direction']!='provide'
                 or other[0].get('trigger') in (None,trigger)):
             return None
-    return operation
+    return frames
+
+
+def _provided_output_operation(fields,operations,overrides,trigger):
+    """The existing deterministic vector transport selects one provide."""
+    frames=_provided_output_frames(fields,operations,overrides,trigger)
+    return next(iter(frames.values())) if frames and len(frames)==1 else None
 
 
 def _unproved_output_presence(fields,operations,overrides,rules,triggers):
@@ -1612,27 +1624,27 @@ def _unproved_output_presence(fields,operations,overrides,rules,triggers):
     errors=set()
     covered_owners=set()
     for trigger in triggers:
-        operation=_provided_output_operation(fields,operations,overrides,trigger)
-        if operation is not None:
-            covered_owners.add(operation['source_pi'])
-        if operation is None:
+        frames=_provided_output_frames(fields,operations,overrides,trigger)
+        if frames is not None:
+            covered_owners.update(frames)
+        if frames is None:
             errors.update(special)
             scoped_outputs=outputs
         else:
             scoped_outputs=[f for f in outputs
-                            if f['source_pi']==operation['source_pi']]
+                            if f['source_pi'] in frames]
         scoped_ids={f['id'] for f in scoped_outputs}
         for rule in (r for r in rules if r['trigger']==trigger):
             for outcome in rule['allowed']:
                 emitted={w['target'] for w in outcome['write']}
-                if operation is not None:
+                if frames is not None:
                     # An unrelated PI may not silently be declared emitted
-                    # under the selected provider for this trigger.
+                    # under a selected provider for this trigger.
                     errors.update(emitted & ({f['id'] for f in outputs}-scoped_ids))
                 for field in scoped_outputs:
                     name=field['id']
-                    presence=(_presence_for_field(field,operation,overrides)
-                              if operation is not None else field.get('presence','required'))
+                    presence=(_presence_for_field(field,frames[field['source_pi']],overrides)
+                              if frames is not None else field.get('presence','required'))
                     if (presence=='undefined'
                             or (presence=='required' and name not in emitted)
                             or (presence=='absent' and name in emitted)):

@@ -474,7 +474,8 @@ def _source_fresh_output(scope, triggers, pi_docs, tces, effect_checks, rejected
     _,owner,operation,trigger,field_id=words
     if trigger not in triggers:return False
     provided=[(fm['id'],op) for _,fm,pi in pi_docs for op in pi.get('operations',[])
-              if op['direction']=='provide' and op.get('trigger') in (None,trigger)]
+              if fm['id']==owner and op['direction']=='provide'
+              and op.get('trigger') in (None,trigger)]
     if len(provided)!=1:return False
     actual_owner,op=provided[0]
     if actual_owner!=owner or op['id']!=operation or op.get('trigger')!=trigger:return False
