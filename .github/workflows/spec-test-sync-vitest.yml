@@ -15,6 +15,7 @@ on:
       - 'tests/test_multi_owner_output_presence.py'
       - 'tests/test_observed_transport.py'
       - 'tests/test_observed_structural_relations.py'
+      - 'tests/test_structural_copy_relation.py'
   workflow_dispatch:
 
 permissions:
@@ -129,4 +130,25 @@ jobs:
                   if mode in ('wrong-observation','missing','extra'):
                       assert all('CAT observed coordinates differ' in (c.find('failure').get('message','')+(c.find('failure').text or '')) for c in failures)
                   print('actual Vitest:', fixture, mode, 'validated')
+          PY
+      - name: Generate exact structural copy tests from confirmed source
+        env:
+          CAT_STRUCTURAL_COPY_VITEST_SMOKE_DIR: ${{ github.workspace }}/.cat-vitest-smoke/tests/structural-copy
+        run: python -m unittest discover -s tests -p test_structural_copy_relation.py -v
+      - name: Verify structural values using real Vitest
+        working-directory: .cat-vitest-smoke
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          import xml.etree.ElementTree as ET
+          for mode in ('direct','alternate','other','reverse','drop','missing'):
+              report = 'structural-copy-' + mode + '.xml'
+              run = subprocess.run(['npx','vitest','run','tests/structural-copy','--reporter=junit','--outputFile='+report], env={**os.environ,'CAT_COPY_MODE':mode})
+              cases = ET.parse(report).getroot().findall('.//testcase')
+              assert len(cases) == 1 and not any(c.find('skipped') is not None or c.find('error') is not None for c in cases)
+              failures = [c.find('failure') for c in cases if c.find('failure') is not None]
+              good = mode in ('direct','alternate')
+              assert (run.returncode == 0) == good and len(failures) == (0 if good else 1), (mode,run.returncode,failures)
+              if not good: assert 'expected false to be true' in (failures[0].get('message','') + (failures[0].text or ''))
+              print('real Vitest structural copy:', mode, 'validated')
           PY

@@ -2767,6 +2767,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         real_range=_real_reference_range_values(fields,guard_names,predicates,presence,defs)
         linear_range=_linear_order_values(fields,guard_names,predicates,presence,defs)
         string_pair=_string_reference_values(fields,guard_names,predicates,presence)
+        from catlib.semantic_structural_copy import witness_values
+        copy_values=witness_values(model,trigger,fields,guard_names,observed,presence)
         for field_id in variable_ids:
             if projected:
                 domains.append(projected[field_id]);continue
@@ -2805,6 +2807,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 if present is not None:values=[typed.MISSING,*present]
             if field_id in integer_pair and (values is None or raw_count>65536):
                 values=integer_pair[field_id]
+            if values is None and field_id in copy_values:
+                values=copy_values[field_id]
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)

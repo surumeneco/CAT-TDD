@@ -1,12 +1,14 @@
 """Recompute exact transition projection from Source, never a Model certificate."""
 from itertools import product
 
-from catlib import semantic_types as typed
+from catlib import semantic_types as typed, semantic_structural_copy as copy_relation
 from catlib.semantic_transition_relation import prepare
 
 
 def verify(scope,fields,pi_docs,tces,checks,rejected,invariants=(),observation_relations=None):
     from cat_compile_v2 import eval_expr, Blocked
+    if scope.startswith(copy_relation.PREFIX):
+        return copy_relation.verify(scope,fields,pi_docs,tces,checks,rejected,invariants)
     rules=[{**r,'source_artifact':fm['id']} for _,fm,tce in tces for r in tce['rules']]
     resolved=prepare(scope,fields,pi_docs,rules,checks,rejected,invariants,independent=True,observation_relations=observation_relations)
     if resolved is None:return False
