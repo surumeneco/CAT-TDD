@@ -209,11 +209,11 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 操作IDと項目IDは同じPIに属していなければならず、重複した組を宣言してはならない。Compilerはこの表をTestModelの`operation_presence`へ出典PI付きで保存し、独立したModel Conformanceで照合する。
 
-明示的なテストベクトルでは、受付操作を`operation`で特定し、任意項目の欠落は`input`のキーを省略し、`undefined`は`{"$cat_presence":"undefined"}`と表す。提供操作に応じた出力Presenceがある場合は`output_operation`も必須となる。これらは値の同一性の規則であって、実装の動作確認結果ではない。
+明示的なテストベクトルでは、受付操作を`operation`で特定し、任意項目の欠落は`input`のキーを省略し、`undefined`は`{"$cat_presence":"undefined"}`と表す。提供操作に応じた出力Presenceがある場合は、所有PIごとに一意に定まる全提供Operationを特定する。単一なら`output_operation`、異なる複数PIで当該Triggerに明示的に束縛される複数なら`output_operations`（重複なしのOperation ID配列）を使う。両者の同時指定、欠落・余剰・別Triggerの操作IDは拒否する。配列の順序は処理順を意味せず、決定論的selectorはIDをソートする。これらは値の同一性の規則であって、実装の動作確認結果ではない。
 
-現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。出力操作が明示されたVectorsは、Driver Bindingの`output_operation_transport: "js-driver-provide/v1"`を必須とし、生成VitestはDriverの`outputOperationTransport`と`triggerProvidedOperation(operationId, triggerId, input)`の実在を検証して、指定された提供操作を呼び出す。宣言がない・未知の方法・曖昧な提供操作はblockedを維持する。`undefined`入力も明示的な`js-undefined/v1` Bindingがなければ拒否する。**これらのBindingは検査可能なDriver契約であり、現実の外部送信や複数Processの相互作用の証明ではない。**補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
+現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。単一の出力操作が明示されたVectorsは従来のDriver Binding `output_operation_transport: "js-driver-provide/v1"`を使用できる。生成VitestはDriverの`outputOperationTransport`と`triggerProvidedOperation(operationId, triggerId, input)`の実在を検証する。複数PIの出力を含む場合は`js-driver-provides/v1`を明示し、`triggerProvidedOperations(operationIds, triggerId, input)`で**1回の論理Trigger実行**からOperation ID→そのPIの観測出力項目record（全出力不在の場合も空record）の写像を受け取る。同Bindingでは単一提供操作も同じ写像で扱う。生成テストは全Operation IDの完全一致・各出力の所有PIを検査した後、一つの許容Outcomeとして全state/outputを照合する。操作毎の別実行・別Outcomeの結果の合成を認めない。このDriverはテストアダプターであり、製品の公開API・呼出方式・同期／非同期・出力順を指定するものではない。宣言がない・未知の方法・曖昧な提供操作はblockedを維持する。`undefined`入力も明示的な`js-undefined/v1` Bindingがなければ拒否する。**これらのBindingは検査可能なDriver契約であり、現実の外部送信や複数Processの相互作用の証明ではない。**補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
 
-複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。単一Triggerに対して提供操作が1件であり、`## Operation presence`で出力の操作が明示され、出力がrequiredである範囲のみ、決定論的Vectorsの`output_operation`を導出する。非required出力の意味的証明は依然として未対応。
+複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。`## Operation presence`等で所有PIごとの提供Operationと`required`・`optional`・`absent`の全結果frameが局所証明された範囲に限り、決定論的Vectorsの出力操作を導出する。同一PI内の複数提供操作、複数のうち未束縛の提供操作、`undefined`出力は未対応。現行JUnitのscalar transportは出力Operation identityを扱わないため明示出力操作を持つVectorのJUnit生成はblocked。
 
 ### 必須input recordの型付きmember参照
 

@@ -63,6 +63,28 @@ def render_vitest(model, cases, binding):
             "}",
             "",
         ]
+    multi_transport=binding.get('output_operation_transport')=='js-driver-provides/v1'
+    uses_frames=multi_transport and any('output_operation' in c or 'output_operations' in c for c in cases)
+    if uses_frames:
+        lines[-1:-1]=[
+            "function flattenProvidedOperations(observed: unknown, fields: Record<string,string[]>): Record<string,unknown> {",
+            "  const isRecord = (value: unknown): value is Record<string,unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);",
+            "  const own = (value: Record<string,unknown>, id: string) => Object.prototype.hasOwnProperty.call(value,id);",
+            "  if (!isRecord(observed) || Object.keys(observed).length !== Object.keys(fields).length) throw new Error('CAT provider operation set mismatch');",
+            "  const entries: Array<[string,unknown]> = [];",
+            "  for (const operation of Object.keys(fields)) {",
+            "    if (!own(observed,operation)) throw new Error('CAT provider operation missing: '+operation);",
+            "    const frame = observed[operation];",
+            "    if (!isRecord(frame)) throw new Error('CAT provider frame must be a field record: '+operation);",
+            "    for (const [id,value] of Object.entries(frame)) {",
+            "      if (!fields[operation].includes(id)) throw new Error('CAT output belongs to a different or undeclared PI: '+id);",
+            "      entries.push([id,value]);",
+            "    }",
+            "  }",
+            "  return Object.fromEntries(entries);",
+            "}",
+            "",
+        ]
     declared=[f["id"] for f in model["fields"] if f["role"]=="state"]
     def is_set_domain(domain):
         # A source-bound named alias and nullable wrapper preserve the same
@@ -94,7 +116,22 @@ def render_vitest(model, cases, binding):
         else:
             input_lines=["    const input = " + _ts(c["input"]) + " as Record<string,unknown>"]
         provide_operation=c.get('output_operation')
-        if provide_operation is not None:
+        provide_operations=c.get('output_operations') or ([provide_operation] if provide_operation is not None else [])
+        if provide_operations and multi_transport:
+            owners={op['id']:op['source_pi'] for op in model.get('pi_operations',[]) if op['direction']=='provide'}
+            fields={operation:sorted(f['id'] for f in model['fields']
+                                     if f['role']=='output' and f.get('source_pi')==owners[operation])
+                    for operation in provide_operations}
+            output_lines=[
+                '    expect((driver as {outputOperationTransport?: string}).outputOperationTransport).toBe("js-driver-provides/v1")',
+                '    expect(typeof (driver as {triggerProvidedOperations?: unknown}).triggerProvidedOperations).toBe("function")',
+                "    const observed = await (driver as {triggerProvidedOperations:(operations: string[], trigger: string, input: Record<string,unknown>) => Promise<unknown>}).triggerProvidedOperations(" +
+                _ts(provide_operations) + "," + _ts(c["trigger"]) + ",input)",
+                "    const output = flattenProvidedOperations(observed, " + _ts(fields) + ")",
+            ]
+        elif 'output_operations' in c:
+            raise ValueError('multiple provider operations require js-driver-provides/v1')
+        elif provide_operation is not None:
             output_lines=[
                 '    expect((driver as {outputOperationTransport?: string}).outputOperationTransport).toBe("js-driver-provide/v1")',
                 '    expect(typeof (driver as {triggerProvidedOperation?: unknown}).triggerProvidedOperation).toBe("function")',
