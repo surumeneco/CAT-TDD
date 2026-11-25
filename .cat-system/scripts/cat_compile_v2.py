@@ -2599,7 +2599,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                        or fields[name].get('source_pi') in bindings])
         domains=[]
         rules_here=[r for r in model['rules'] if r['trigger']==trigger]
-        predicates=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values(),*(r['when'] for r in rules_here)]
+        constraints=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()]
+        predicates=[*constraints,*(r['when'] for r in rules_here)]
         observed=set().union(*(used_refs(expr,defs) for expr in predicates)) if predicates else set()
         for rule in rules_here:
             for outcome in rule['allowed']:
@@ -2660,16 +2661,30 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)
             domains.append(values)
-        require(__import__('math').prod(len(x) for x in domains)<=65536,
-                'test-selection exceeds configured 65536 combinations')
-        for values in itertools.product(*domains):
-            env=dict(zip(variable_ids,values))
-            if not all(eval_expr(c,env,defs) for c in [*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()]):
-                continue
-            hit=[r for r in model['rules'] if r['trigger']==trigger and eval_expr(r['when'],env,defs)]
+        combinations=__import__('math').prod(len(x) for x in domains)
+        cache=None
+        if combinations>65536:
+            require(model.get('coverage_requirement')=='closed'
+                    and model.get('coverage_checks',{}).get(trigger,{}).get('result')=='proved',
+                    'large test-selection requires proved source-bound Guard coverage')
+            cache=_large_finite_predicate_cache(variable_ids,domains,predicates,defs)
+            require(cache is not None,
+                    'test-selection exceeds configured 65536 combinations and factorized proof budget')
+        rows=(itertools.product(*(range(len(d)) for d in domains)) if cache is not None
+              else itertools.product(*domains))
+        for values in rows:
+            if cache is not None:
+                if not all(fn(values) for fn in cache[:len(constraints)]):continue
+                hit=[r for r,fn in zip(rules_here,cache[len(constraints):]) if fn(values)]
+                env=None
+            else:
+                env=dict(zip(variable_ids,values))
+                if not all(eval_expr(c,env,defs) for c in constraints):continue
+                hit=[r for r in rules_here if eval_expr(r['when'],env,defs)]
             require(len(hit)==1,f'confirmed TestModel selection found {len(hit)} rules at {trigger}')
             rule=hit[0]
             if rule['id'] in witnesses:continue
+            if env is None:env={k:d[i] for k,d,i in zip(variable_ids,domains,values)}
             sample={
                 'id':'case.'+rule['id'],'trigger':trigger,
                 'input':{key:({'$cat_presence':'undefined'} if env[key] is typed.UNDEFINED else env[key])
