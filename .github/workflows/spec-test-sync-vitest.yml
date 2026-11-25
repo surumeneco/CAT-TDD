@@ -11,6 +11,8 @@ on:
       - '.cat-system/skills/tech-vitest/scripts/**'
       - 'tests/test_spec_test_sync_integration.py'
       - 'tests/test_multi_owner_output_presence.py'
+      - 'tests/test_observed_transport.py'
+      - 'tests/test_observed_structural_relations.py'
   workflow_dispatch:
 
 permissions:
@@ -98,3 +100,31 @@ jobs:
           print('real Vitest multi-owner mode:', mode, 'validated')
           PY
           done
+      - name: Produce observation and combined observation/frame tests
+        env:
+          CAT_OBS_VITEST_SMOKE_DIR: ${{ github.workspace }}/.cat-vitest-smoke/tests/observation
+          CAT_COMBINED_VITEST_SMOKE_DIR: ${{ github.workspace }}/.cat-vitest-smoke/tests/combined
+        run: python -m unittest discover -s tests -p test_observed_transport.py -v
+      - name: Execute actual observed Vitest positive and negative cases
+        working-directory: .cat-vitest-smoke
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          import xml.etree.ElementTree as ET
+          plans = {
+              'observation': ('CAT_OBS_MODE', {'direct': 0, 'wrong-observation': 2, 'missing': 2, 'extra': 2, 'wrong-output': 2}),
+              'combined': ('CAT_COMBINED_MODE', {'direct': 0, 'alternate': 0, 'wrong-observation': 1, 'wrong-owner': 1, 'wrong-pair': 1, 'wrong-state': 1})
+          }
+          for fixture, (key, modes) in plans.items():
+              for mode, count in modes.items():
+                  report = fixture + '-' + mode + '.xml'
+                  run = subprocess.run(['npx','vitest','run','tests/'+fixture,'--reporter=junit','--outputFile='+report], env={**os.environ,key:mode})
+                  cases = ET.parse(report).getroot().findall('.//testcase')
+                  assert len(cases)==2 and not any(c.find('skipped') is not None or c.find('error') is not None for c in cases), (fixture, mode, cases)
+                  failures = [c for c in cases if c.find('failure') is not None]
+                  assert len(failures)==count and (run.returncode!=0)==bool(count), (fixture,mode,run.returncode,failures)
+                  if fixture=='combined' and count: assert 'case.first.reply' in failures[0].get('name',''), failures
+                  if mode in ('wrong-observation','missing','extra'):
+                      assert all('CAT observed coordinates differ' in (c.find('failure').get('message','')+(c.find('failure').text or '')) for c in failures)
+                  print('actual Vitest:', fixture, mode, 'validated')
+          PY

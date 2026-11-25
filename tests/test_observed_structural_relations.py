@@ -162,7 +162,7 @@ class ExactRelationTests(unittest.TestCase):
                     else:
                         self.assertEqual({a['output']['output.answer'] for a in c['allowed']},{value})
                     if variant=='restricted':self.assertEqual(value,c['initial_state']['state.version'])
-                vitest=root/'VitestBinding.json';vitest.write_text(json.dumps({'schema':'cat-driver-binding/v1','process':m['process'],'driver':'./driver'}))
+                vitest=root/'VitestBinding.json';vitest.write_text(json.dumps({'schema':'cat-test-driver/v2','process':m['process'],'driver':'./driver'}))
                 junit=root/'JUnitBinding.json';junit.write_text(json.dumps({'schema':'cat-junit-driver-binding/v1','process':m['process'],'test_package':'probe','test_class':'ProbeTest','driver_class':'probe.Driver','capability_scope':{'kind':'pi-only-unverified','observations':['observation.received'],'actions':[]}}))
                 with self.assertRaisesRegex(Blocked,'observation/action'):emit_vitest(m,v,vitest)
                 with self.assertRaisesRegex(Blocked,'observed test environment'):emit_junit(m,v,junit)

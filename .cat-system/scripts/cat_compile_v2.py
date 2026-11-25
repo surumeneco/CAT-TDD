@@ -2813,17 +2813,41 @@ def _vitest_renderer():
     return module.render_vitest
 
 
+def _check_observation_transport(model, binding, expected):
+    """Admit only proved finite trigger-entry observations to a test adapter.
+
+    The driver reports what it actually observed in its controlled execution;
+    this is not independent runtime/provider evidence for implementation closure.
+    """
+    transport=binding.get('observation_transport')
+    require(transport in (None,expected),'unsupported observation transport binding')
+    if transport is None:return False
+    fields={f['id']:f for f in model['fields']}
+    observations={f['id'] for f in fields.values() if f['role']=='observation'}
+    require(observations and not any(f['role']=='action' for f in fields.values()),
+            'observation transport requires finite observations and no unsupported action capabilities')
+    inventory=set()
+    for trigger in model['triggers']:
+        ids,_=_vector_observation_context(model,trigger['id'],fields)
+        inventory.update(ids)
+    require(inventory==observations,'observation transport requires proved source-bound inventory for every declared observation')
+    require(binding.get('capability_scope') is None,
+            'observation transport cannot be combined with PI-only-unverified scope')
+    return True
+
+
 def emit_vitest(model,vectors,binding_path):
     require(not any(typed.has_semantic_domain(f['domain']) for f in model.get('fields',[])), 'Vitest renderer requires explicit JSON/instant binding')
-    require(not any(f['role'] in ('observation','action') for f in model['fields']),
-            'test-code generation for explicit observation/action capabilities requires a technology binding extension; TestModel remains valid')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','driver'],
-               optional=('undefined_transport','output_operation_transport'),
+               optional=('undefined_transport','output_operation_transport','observation_transport'),
                where='driver binding')
     require(binding['schema']==D and binding['process']==model['process'],'driver binding incompatible')
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
+    observed=_check_observation_transport(model,binding,'js-driver-observed/v1')
+    require(observed or not any(f['role'] in ('observation','action') for f in model['fields']),
+            'test-code generation for explicit observation/action capabilities requires a technology binding extension; TestModel remains valid')
     cases=expand_cases(model,vectors)
     uses_output_operation=any('output_operation' in x or 'output_operations' in x for x in cases)
     multiple=any('output_operations' in x for x in cases)
@@ -2832,6 +2856,8 @@ def emit_vitest(model,vectors,binding_path):
         raise Blocked('unsupported output-operation transport binding')
     if multiple and transport!='js-driver-provides/v1':
         raise Blocked('Vitest renderer requires multi-output-operation identity transport')
+    if observed and any('observations' in c and ('output_operation' in c or 'output_operations' in c) for c in cases):
+        require(transport=='js-driver-provides/v1','observed operation frames require js-driver-provides/v1')
     if uses_output_operation and transport not in ('js-driver-provide/v1','js-driver-provides/v1'):
         raise Blocked('Vitest renderer lacks output-operation identity transport; cannot assert provider operation')
     uses_undefined=any(any(v=={'$cat_presence':'undefined'} for v in c['input'].values()) for c in cases)
@@ -2859,13 +2885,17 @@ def emit_junit(model, vectors, binding_path):
     import importlib.util
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','test_package','test_class','driver_class'],
-               optional=('capability_scope',), where='JUnit driver binding')
+               optional=('capability_scope','output_operation_transport','observation_transport'), where='JUnit driver binding')
     require(binding['schema']=='cat-junit-driver-binding/v1'
             and binding['process']==model['process'], 'JUnit driver binding incompatible')
     observations=[f['id'] for f in model['fields'] if f['role']=='observation']
     actions=[f['id'] for f in model['fields'] if f['role']=='action']
     capability_scope=binding.get('capability_scope')
-    if observations or actions:
+    observed=_check_observation_transport(model,binding,'java-driver-observed/v1')
+    transport=binding.get('output_operation_transport')
+    require(transport in (None,'java-driver-provides/v1'),'unsupported JUnit output-operation transport binding')
+    framed=transport=='java-driver-provides/v1'
+    if not observed and (observations or actions):
         # The scalar driver tests only the declared PI inputs/outputs.
         # Process observation/action capabilities must be explicitly listed
         # as NOT TESTED, never silently dropped or claimed as verified.
@@ -2881,7 +2911,7 @@ def emit_junit(model, vectors, binding_path):
                     and len(declared)==len(set(declared))
                     and set(declared)==set(actual),
                     'JUnit PI-only scope must exactly enumerate unverified '+role)
-    else:
+    elif not observed:
         require(capability_scope is None,
                 'JUnit capability exclusions require declared Process capabilities')
     # Eligibility is a property of the tested PI/state/output contract.
@@ -2892,14 +2922,19 @@ def emit_junit(model, vectors, binding_path):
     require(not any(typed.has_semantic_domain(f['domain']) for f in tested_fields),
             'JUnit renderer requires explicit structured/instant transport binding')
     require(all(f['domain']['type'] in ('boolean','enum','integer')
-                and f.get('presence','required')=='required' for f in tested_fields),
+                and (f.get('presence','required')=='required' or
+                     (framed and f['role']=='output' and f.get('presence') in ('optional','absent')))
+                for f in tested_fields),
             'JUnit scalar renderer supports only required boolean/enum/integer fields')
-    require(not model.get('operation_presence'),
-            'JUnit scalar renderer does not carry operation-scoped Presence')
+    field_roles={f['id']:f['role'] for f in model['fields']}
+    require(not model.get('operation_presence') or (framed and all(
+            field_roles[item['field']]=='output' and item['presence'] in ('required','optional','absent')
+            for item in model['operation_presence'])),
+            'JUnit scalar renderer does not carry unsupported operation-scoped Presence')
     cases=expand_cases(model,vectors)
-    require(not any('observations' in c for c in cases),
+    require(observed or not any('observations' in c for c in cases),
             'JUnit renderer cannot transport observed test environment witnesses')
-    require(not any('output_operation' in c or 'output_operations' in c for c in cases),
+    require(framed or not any('output_operation' in c or 'output_operations' in c for c in cases),
             'JUnit scalar renderer cannot carry output-operation identity')
     path=ROOT / 'skills' / 'tech-junit' / 'scripts' / 'cat_junit_renderer.py'
     require(path.is_file(), 'JUnit generation requires installed tech-junit Skill renderer')
