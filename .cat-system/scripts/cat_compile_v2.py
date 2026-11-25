@@ -1588,7 +1588,14 @@ def _provided_output_frames(fields,operations,overrides,trigger):
     candidates=[op for op in operations if op['direction']=='provide'
                 and (op.get('trigger') is None or op['trigger']==trigger)]
     frames={op['source_pi']:op for op in candidates}
-    if not candidates or len(frames)!=len(candidates):
+    if not candidates:
+        # An explicitly Trigger-bound provider inventory can be inactive.
+        # Do not infer an empty frame for legacy/undeclared output owners.
+        owners={f['source_pi'] for f in fields.values() if f['role']=='output'}
+        scoped={op['source_pi'] for op in operations if op['direction']=='provide'
+                and op.get('trigger') is not None}
+        return {} if owners and owners<=scoped else None
+    if len(frames)!=len(candidates):
         return None
     if len(candidates)>1 and any(op.get('trigger')!=trigger for op in candidates):
         return None
@@ -2455,6 +2462,9 @@ def _vector_output_operations(model,test,fields):
         return frames
     require(frames is None or len(frames)<=1,
             'multiple source-bound providers require vector.output_operations')
+    if frames == {}:
+        require(chosen is None, 'inactive provided output frame cannot select an operation')
+        return {}
     if declared or _nonrequired_output_ids(fields,overrides):
         require(chosen is not None,
                 'nonrequired/operation-scoped output Presence requires vector.output_operation')
@@ -2618,7 +2628,8 @@ def expand_cases(model, vectors):
                 require(in_domain(fields[target]['domain'],val),f'{test["id"]}: output {target} out of declared domain')
                 if fields[target]['role']=='state':after[target]=val
                 else:emitted[target]=val
-            if output_frames:
+            if output_frames or _provided_output_frames(fields,model.get('pi_operations',[]),
+                    model.get('operation_presence',[]),test['trigger']) == {}:
                 require(all(fields[target].get('source_pi') in output_frames
                             for target in emitted if fields[target]['role']=='output'),
                         'output Effect belongs to another provided PI')
