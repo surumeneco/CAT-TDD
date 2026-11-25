@@ -20,6 +20,7 @@ import tokenize
 
 from catlib.markdown import parse_frontmatter
 from catlib import semantic_types as typed
+from catlib import semantic_json_instant as json_time
 from catlib import semantic_rules
 from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
@@ -671,6 +672,14 @@ def _member_parents(expr):
     return set().union(*(_member_parents(a) for a in expr.get('args',[]))) if expr.get('args') else set()
 
 
+def _comparison_value_refs(expr, definitions):
+    # A validated scalar member reads its own Domain, not the parent record's
+    # sibling values. Keep used_refs unchanged for provenance and ownership.
+    if expr.get('op')=='member':return set()
+    if 'ref' in expr or expr.get('op')=='call':return used_refs(expr,definitions)
+    return set().union(*(_comparison_value_refs(a,definitions) for a in expr.get('args',[])))
+
+
 def inspect_expr(expr, fields, definitions, params=(), stack=()):
     """Conservative AST type checker; unsupported conversions fail, never coerce."""
     require(isinstance(expr,dict),'expression must be AST object')
@@ -728,7 +737,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
                 return t
             require(comparable(args[0],types[0])==comparable(args[1],types[1]),'member comparison type mismatch')
         require(not any(ref in fields and typed.has_semantic_domain(fields[ref]['domain'])
-                        for ref in used_refs(expr,definitions)),
+                        for ref in _comparison_value_refs(expr,definitions)),
                 'typed JSON/instant expression requires explicit domain binding')
         return 'boolean'
     if op in ('lt','le','gt','ge'):
@@ -1356,7 +1365,7 @@ def _has_pair_order_comparison(node):
             or any(_has_pair_order_comparison(x) for x in node.get('args',[])))
 
 
-def _record_projection_values(fields,names,predicates,presence,definitions,member_exprs=()):
+def _record_projection_values(fields,names,predicates,presence,definitions,member_exprs=(),*,guard_only=False):
     """Exact Cartesian cells of projected scalar members; reassemble wire record.
 
     Temporary analysis IDs never escape into the Model or vector payload.
@@ -1381,7 +1390,7 @@ def _record_projection_values(fields,names,predicates,presence,definitions,membe
             if member['presence']!='required':return {}
             d=member['domain']
             while d.get('type')=='reference' and d.get('resolved'):d=d['of']
-            if d.get('type') not in ('boolean','integer','real','string','enum'):return {}
+            if d.get('type') not in ('boolean','integer','real','string','enum') and not (guard_only and d.get('type') in ('json','instant')):return {}
             keys[parent,mid]=key;groups[parent].append((mid,key))
             flat[key]={'id':key,'domain':d,'role':'input','presence':'required'}
             flat_presence[key]='required'
@@ -1426,6 +1435,11 @@ def _record_projection_values(fields,names,predicates,presence,definitions,membe
         if candidates is None:
             candidates=_presence_cases(domain,pr) if name in flat_presence else typed.finite_values(domain)
         if candidates is None and name not in used and pr=='optional':candidates=[typed.MISSING]
+        if guard_only and candidates is None and name not in used and pr=='required':
+            # Whole-record reads/calls have already been rejected. These
+            # representatives witness nonempty unread sibling Domains only.
+            if domain.get('type')=='json':candidates=[{} if domain['root']=='object' else None]
+            elif domain.get('type')=='instant':candidates=[json_time.decode_offset_datetime('1970-01-01T00:00:00Z')]
         if candidates is None and pr=='required':
             for solver in (semantic_interval_partition.integer_partition_values,semantic_string_partition.string_partition_values,semantic_interval_partition.real_partition_values):
                 candidates=solver(domain,name,clauses,allow_unused=name not in used)
@@ -1629,9 +1643,14 @@ def _unproved_output_presence(fields,operations,overrides,rules,triggers):
 
 
 def _debug_presence_env(env):
+    def transport(value):
+        if type(value) is json_time.InstantValue:return json_time.encode_instant_transport(value)
+        if isinstance(value,dict):return {k:transport(v) for k,v in value.items()}
+        if isinstance(value,list):return [transport(v) for v in value]
+        return value
     return {key:({'$cat_presence':'missing'} if value is typed.MISSING else
                  {'$cat_presence':'undefined'} if value is typed.UNDEFINED else
-                 {'$cat_presence':'present'} if value is _PRESENT_GUARD_VALUE else value)
+                 {'$cat_presence':'present'} if value is _PRESENT_GUARD_VALUE else transport(value))
             for key,value in env.items()}
 
 
@@ -2040,7 +2059,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         partition_fields=[]
         partition_kinds=set()
         predicates=[*scoped_constraints,*(r['when'] for r in rr)]
-        projected=_record_projection_values(fields,ordered,predicates,input_presence,definitions)
+        projected=_record_projection_values(fields,ordered,predicates,input_presence,definitions,guard_only=True)
         integer_pair=_integer_reference_equality_values(
             fields,ordered,predicates,input_presence,definitions)
         integer_range=({} if integer_pair else _integer_reference_range_values(

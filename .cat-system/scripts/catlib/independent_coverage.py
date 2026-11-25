@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 import math
 from catlib import semantic_types as types
+from catlib import semantic_json_instant as json_time
 from cat_compile_v2 import eval_expr,used_refs,Blocked
 
 LIMIT=65536
@@ -419,7 +420,7 @@ def _independent_record_cells(names,domains,roles,inputs,current_presence,clause
             if m['presence']!='required':return {}
             domain=m['domain']
             while domain.get('type')=='reference' and domain.get('resolved'):domain=domain['of']
-            if domain.get('type') not in ('boolean','integer','real','string','enum'):return {}
+            if domain.get('type') not in ('boolean','integer','real','string','enum') and not (domain.get('type') in ('json','instant') and (p,member) not in pairs):return {}
             ident='@member:'+p+':'+member
             if ident in domains or ident in scalar_domains:return {}
             mapping[p,member]=ident;record.append((member,ident));scalar_domains[ident]=domain
@@ -474,6 +475,8 @@ def _independent_record_cells(names,domains,roles,inputs,current_presence,clause
                 if d.get('type')=='integer':v=[min(d.get('max',max(0,d.get('min',0))),max(0,d.get('min',0)))]
                 elif d=={'type':'string'}:v=['']
                 elif d.get('type')=='real':v=[d.get('min',d.get('max',0))]
+                elif d.get('type')=='json':v=[{} if d['root']=='object' else None]
+                elif d.get('type')=='instant':v=[json_time.decode_offset_datetime('1970-01-01T00:00:00Z')]
         if v is None and pr=='required':
             for derive in (_independent_integer_cells,_independent_string_cells,_independent_real_cells):
                 v=derive(d,n,predicates)
@@ -714,9 +717,14 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
         admissible=0
         uncovered_examples=[];overlap_examples=[]
         def snapshot(env):
+            def transport(value):
+                if type(value) is json_time.InstantValue:return json_time.encode_instant_transport(value)
+                if isinstance(value,dict):return {k:transport(v) for k,v in value.items()}
+                if isinstance(value,list):return [transport(v) for v in value]
+                return value
             return {name:({'$cat_presence':'missing'} if value is types.MISSING else
                           {'$cat_presence':'undefined'} if value is types.UNDEFINED else
-                          {'$cat_presence':'present'} if value is _PRESENT_CLASS else value)
+                          {'$cat_presence':'present'} if value is _PRESENT_CLASS else transport(value))
                     for name,value in env.items()}
         for items in itertools.product(*dimensions):
             env=dict(zip(sorted(names),items))
