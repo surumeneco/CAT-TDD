@@ -1571,12 +1571,19 @@ def _provided_output_operation(fields,operations,overrides,trigger):
     if len(candidates)!=1:
         return None
     operation=candidates[0]
-    # A distinct PI may provide outputs for a *different* trigger. Only
-    # output-Presence overrides owned by this PI bind this operation.
-    if any(item['operation']!=operation['id'] for item in overrides
-           if fields[item['field']]['role']=='output'
-           and fields[item['field']]['source_pi']==operation['source_pi']):
-        return None
+    # Overrides of explicitly distinct response Triggers belong to those
+    # fresh frames, even when they share a PI and Field. Do not ignore an
+    # accept, unscoped, unknown or differently owned operation.
+    for item in overrides:
+        if (fields[item['field']]['role']!='output'
+                or fields[item['field']]['source_pi']!=operation['source_pi']
+                or item['operation']==operation['id']):
+            continue
+        other=[op for op in operations if op['id']==item['operation']
+               and op['source_pi']==operation['source_pi']]
+        if (len(other)!=1 or other[0]['direction']!='provide'
+                or other[0].get('trigger') in (None,trigger)):
+            return None
     return operation
 
 
