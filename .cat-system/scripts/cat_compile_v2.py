@@ -1642,6 +1642,40 @@ def _unproved_output_presence(fields,operations,overrides,rules,triggers):
     return errors
 
 
+def _large_finite_predicate_cache(ordered, dimensions, predicates, definitions):
+    """Bounded exact factorization; retain native ordered evaluation semantics.
+
+    Keys are axis indices, not serialized values. Only dependencies identified
+    by the full AST (including called definitions) enter each cache. Full
+    Cartesian traversal is still exact; the expensive evaluator is memoized.
+    """
+    import math
+    from operator import itemgetter
+    product=math.prod(map(len,dimensions))
+    if product>2_000_000 or product*len(predicates)>64_000_000:return None
+    if any(any(v is _PRESENT_GUARD_VALUE for v in dim) for dim in dimensions):return None
+    plans=[];budget=0
+    for expr in predicates:
+        refs=used_refs(expr,definitions)
+        if not refs<=set(ordered):return None
+        axes=tuple(i for i,n in enumerate(ordered) if n in refs)
+        cells=math.prod(len(dimensions[i]) for i in axes)
+        budget+=cells
+        if cells>65536 or budget>1_000_000:return None
+        def plan(expr,axes):
+            cache={}
+            get=itemgetter(*axes) if len(axes)>1 else (lambda row:(row[axes[0]],)) if axes else (lambda row:())
+            def evaluate(row):
+                key=get(row)
+                if key not in cache:
+                    env={ordered[i]:dimensions[i][j] for i,j in zip(axes,key)}
+                    cache[key]=eval_expr(expr,env,definitions)
+                return cache[key]
+            return evaluate
+        plans.append(plan(expr,axes))
+    return plans
+
+
 def _debug_presence_env(env):
     def transport(value):
         if type(value) is json_time.InstantValue:return json_time.encode_instant_transport(value)
@@ -2117,6 +2151,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     partition_kinds.add('string')
             if values is None and (field_id not in input_presence
                                    or input_presence[field_id]=='required'):
+                values=semantic_string_partition.nullable_string_null_partition(field['domain'],field_id,predicates)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('nullable_string_null')
+            if values is None and (field_id not in input_presence
+                                   or input_presence[field_id]=='required'):
                 values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates)
                 if values is not None:
                     partition_fields.append(field_id)
@@ -2151,30 +2191,44 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             presence_unproven.update(special & relevant)
             continue
         combinations=__import__('math').prod(len(x) for x in domainvalues)
-        if combinations>65536:
+        cache=(_large_finite_predicate_cache(ordered,domainvalues,predicates,definitions)
+               if combinations>65536 and not partition_fields else None)
+        if combinations>65536 and cache is None:
             # Solver capacity is an absence of proof, not a domain mismatch.
             # Shadow/partial models retain the source-bound reason; normative
             # compilation still blocks unless an independent proof is supplied.
             per_trigger[trigger]={'result':'unproven',
-                                  'reason':'finite closure exceeds configured 65536 combinations',
+                                  'reason':'finite closure exceeds configured 65536 combinations and factorized proof budget',
                                   'combination_count':combinations,
                                   'guard_refs':ordered}
             presence_unproven.update(special & relevant)
             continue
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr);unknown=None
-        admissible=0
-        for values in itertools.product(*domainvalues):
-            env=dict(zip(ordered,values))
+        admissible=0;gap_count=overlap_count=0
+        rows=(itertools.product(*(range(len(d)) for d in domainvalues)) if cache is not None
+              else itertools.product(*domainvalues))
+        for values in rows:
+            env=None if cache is not None else dict(zip(ordered,values))
             try:
-                if not all(eval_expr(c,env,definitions) for c in scoped_constraints):
-                    continue
-                admissible+=1
-                hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
+                if cache is not None:
+                    if not all(fn(values) for fn in cache[:len(scoped_constraints)]):continue
+                    admissible+=1
+                    hit=[r['id'] for r,fn in zip(rr,cache[len(scoped_constraints):]) if fn(values)]
+                else:
+                    if not all(eval_expr(c,env,definitions) for c in scoped_constraints):continue
+                    admissible+=1
+                    hit=[r['id'] for r in rr if eval_expr(r['when'],env,definitions)]
             except Blocked as exc:
                 unknown=str(exc)
                 break
-            if not hit:gaps.append(_debug_presence_env(env))
-            if len(hit)>1:overlaps.append({'state':_debug_presence_env(env),'rules':hit})
+            if not hit or len(hit)>1:
+                if env is None:env={k:d[i] for k,d,i in zip(ordered,domainvalues,values)}
+                if not hit:
+                    gap_count+=1
+                    if len(gaps)<64:gaps.append(_debug_presence_env(env))
+                else:
+                    overlap_count+=1
+                    if len(overlaps)<16:overlaps.append({'state':_debug_presence_env(env),'rules':hit})
             unreachable-=set(hit)
         if unknown:
             per_trigger[trigger]={'result':'unproven','reason':unknown,
@@ -2193,9 +2247,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             continue
         require(allow_draft or not overlaps,'overlapping TCE behaviors: '+json.dumps(overlaps[:4],ensure_ascii=False))
         check={'result':'conflict' if overlaps else 'proved' if not gaps else 'uncovered',
-               'guard_refs':ordered,'overlap_count':len(overlaps) if not partition_fields else None,
+               'guard_refs':ordered,'overlap_count':overlap_count if not partition_fields else None,
                'overlaps':overlaps[:16],'uncovered':gaps[:64],
-               'uncovered_count':len(gaps) if not partition_fields else None,
+               'uncovered_count':gap_count if not partition_fields else None,
                'unreachable_rules':sorted(unreachable),
                'excluded_by_pi_constraints':has_pi_constraints}
         if guard_invariants:check['guard_invariant_rule_ids']=sorted(guard_invariants)
@@ -2204,6 +2258,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
+                    else 'nullable-string-null-partition/v1' if partition_kinds=={'nullable_string_null'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
@@ -2548,6 +2603,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                                    or presence[field_id]=='required'):
                 values=semantic_string_partition.string_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and (field_id not in presence or presence[field_id]=='required'):
+                values=semantic_string_partition.nullable_string_null_partition(field['domain'],field_id,predicates)
             if values is None and (field_id not in presence or presence[field_id]=='required'):
                 values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates,allow_unused=True)
             if values is None and presence.get(field_id)=='optional':
