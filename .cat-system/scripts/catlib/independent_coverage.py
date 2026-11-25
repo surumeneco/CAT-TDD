@@ -235,20 +235,30 @@ def _finite_truth_tables(names,dimensions,clauses,definitions):
     n=math.prod(map(len,dimensions))
     if n>2_000_000 or n*len(clauses)>64_000_000:return None
     if any(any(x is _PRESENT_CLASS for x in dim) for dim in dimensions):return None
-    plans=[];total=0
-    for expr in clauses:
+    total=0;leaves=0
+    def describe(expr):
+        nonlocal total,leaves
         deps=used_refs(expr,definitions)
-        if not deps<=set(names):return None
+        if not deps<=set(names):raise ValueError('unknown Source dependency')
         pos=tuple(i for i,name in enumerate(names) if name in deps)
         axes=[range(len(dimensions[i])) for i in pos]
-        size=math.prod(map(len,axes));total+=size
-        if size>LIMIT or total>1_000_000:return None
-        plans.append((expr,pos,axes))
+        size=math.prod(map(len,axes))
+        if size>LIMIT:
+            op=expr.get('op')
+            if op not in ('and','or','not'):raise ValueError('large atomic Source predicate')
+            return (op,[describe(child) for child in expr['args']])
+        total+=size;leaves+=1
+        if total>1_000_000 or n*leaves>64_000_000:raise ValueError('Source proof budget exceeded')
+        return ('table',(expr,pos,axes))
+    try:plans=[describe(expr) for expr in clauses]
+    except ValueError:return None
     def table(expr,pos,axes):
         values={}
         for key in itertools.product(*axes):
             env={names[i]:dimensions[i][j] for i,j in zip(pos,key)}
-            try:values[key]=bool(eval_expr(expr,env,definitions))
+            try:
+                value=eval_expr(expr,env,definitions)
+                values[key]=value if type(value) is bool else None
             except (Blocked,TypeError,ValueError,KeyError):values[key]=None
         pick=itemgetter(*pos) if len(pos)>1 else (lambda row:(row[pos[0]],)) if pos else (lambda row:())
         def evaluate(row):
@@ -256,7 +266,14 @@ def _finite_truth_tables(names,dimensions,clauses,definitions):
             if value is None:raise Blocked('undefined Source predicate')
             return value
         return evaluate
-    return [table(*plan) for plan in plans]
+    def compile_plan(plan):
+        op,body=plan
+        if op=='table':return table(*body)
+        children=[compile_plan(child) for child in body]
+        if op=='and':return lambda row:all(child(row) for child in children)
+        if op=='or':return lambda row:any(child(row) for child in children)
+        return lambda row:not children[0](row)
+    return [compile_plan(plan) for plan in plans]
 
 
 def _independent_null_cells(domain,field,clauses):
@@ -774,7 +791,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
             dimensions.append(values)
         size=math.prod(map(len,dimensions))
         table=(_finite_truth_tables(sorted(names),dimensions,clauses,definitions)
-               if possible and size>LIMIT and not partition_fields else None)
+               if possible and size>LIMIT else None)
         if not possible or (size>LIMIT and table is None):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue

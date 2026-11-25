@@ -1654,26 +1654,42 @@ def _large_finite_predicate_cache(ordered, dimensions, predicates, definitions):
     product=math.prod(map(len,dimensions))
     if product>2_000_000 or product*len(predicates)>64_000_000:return None
     if any(any(v is _PRESENT_GUARD_VALUE for v in dim) for dim in dimensions):return None
-    plans=[];budget=0
-    for expr in predicates:
+    budget=0;lookups=0
+    def plan(expr):
+        nonlocal budget,lookups
         refs=used_refs(expr,definitions)
-        if not refs<=set(ordered):return None
+        if not refs<=set(ordered):raise ValueError('unknown predicate dependency')
         axes=tuple(i for i,n in enumerate(ordered) if n in refs)
         cells=math.prod(len(dimensions[i]) for i in axes)
-        budget+=cells
-        if cells>65536 or budget>1_000_000:return None
-        def plan(expr,axes):
-            cache={}
-            get=itemgetter(*axes) if len(axes)>1 else (lambda row:(row[axes[0]],)) if axes else (lambda row:())
+        if cells>65536:
+            # Split only a typed boolean connective. Retain source ordering
+            # and short-circuit semantics; never evaluate an unreachable read.
+            op=expr.get('op')
+            if op not in ('and','or','not'):raise ValueError('large atomic predicate')
+            children=[plan(child) for child in expr['args']]
             def evaluate(row):
-                key=get(row)
-                if key not in cache:
-                    env={ordered[i]:dimensions[i][j] for i,j in zip(axes,key)}
-                    cache[key]=eval_expr(expr,env,definitions)
-                return cache[key]
+                for child in children:
+                    value=child(row)
+                    require(type(value) is bool,op+' requires boolean')
+                    if op=='not':return not value
+                    if op=='and' and not value:return False
+                    if op=='or' and value:return True
+                return op=='and'
             return evaluate
-        plans.append(plan(expr,axes))
-    return plans
+        budget+=cells;lookups+=1
+        if budget>1_000_000 or product*lookups>64_000_000:
+            raise ValueError('predicate proof budget exceeded')
+        cache={}
+        get=itemgetter(*axes) if len(axes)>1 else (lambda row:(row[axes[0]],)) if axes else (lambda row:())
+        def evaluate(row):
+            key=get(row)
+            if key not in cache:
+                env={ordered[i]:dimensions[i][j] for i,j in zip(axes,key)}
+                cache[key]=eval_expr(expr,env,definitions)
+            return cache[key]
+        return evaluate
+    try:return [plan(expr) for expr in predicates]
+    except ValueError:return None
 
 
 def _debug_presence_env(env):
@@ -2192,7 +2208,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             continue
         combinations=__import__('math').prod(len(x) for x in domainvalues)
         cache=(_large_finite_predicate_cache(ordered,domainvalues,predicates,definitions)
-               if combinations>65536 and not partition_fields else None)
+               if combinations>65536 else None)
         if combinations>65536 and cache is None:
             # Solver capacity is an absence of proof, not a domain mismatch.
             # Shadow/partial models retain the source-bound reason; normative
