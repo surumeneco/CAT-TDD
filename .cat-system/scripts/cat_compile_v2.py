@@ -25,6 +25,7 @@ from catlib import semantic_rules
 from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
 from catlib import semantic_subtyping
+from catlib import semantic_collection_relation as collection_relation
 from catlib import semantic_interval_partition
 from catlib import semantic_string_partition
 from catlib import decimal_integer
@@ -43,7 +44,7 @@ INT = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')
 SAFE_INT = 9007199254740991
 OPS = {'eq','ne','lt','le','gt','ge','and','or','not','add','sub','mul',
        'div','floor','abs','length','concat','to-int','set-add','set-remove','call',
-       'is-missing','is-undefined','is-present','member'}
+       'is-missing','is-undefined','is-present','member','filter-by','stable-sort-by'}
 
 _PRESENT_GUARD_VALUE=object()
 
@@ -264,7 +265,8 @@ def parse_expr_text(text, params=()):
     except SyntaxError as exc:raise Blocked('invalid CAT expression '+repr(text)) from exc
     builtin={'length':'length','len':'length','abs':'abs','floor':'floor','to_int':'to-int',
              'concat':'concat','set_add':'set-add','set_remove':'set-remove','not_fn':'not',
-             'is_missing':'is-missing','is_undefined':'is-undefined','is_present':'is-present'}
+             'is_missing':'is-missing','is_undefined':'is-undefined','is_present':'is-present',
+             'filter_by':'filter-by','stable_sort_by':'stable-sort-by'}
     compare={ast.Eq:'eq',ast.NotEq:'ne',ast.Lt:'lt',ast.LtE:'le',ast.Gt:'gt',ast.GtE:'ge'}
     binary={ast.Add:'add',ast.Sub:'sub',ast.Mult:'mul',ast.Div:'div'}
     def cv(n):
@@ -712,6 +714,10 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     op=expr['op']; require(op in OPS,'unsupported operator '+str(op))
     args=expr['args']; require(isinstance(args,list),'operator args must be array')
     if op=='member':return _member_domain(expr,fields)['type']
+    if op in collection_relation.OPERATORS:
+        result=collection_relation.operator_domain(expr,fields)
+        require(result is not None,'unsupported or ill-typed collection relation')
+        return result['type']
     if op in ('is-missing','is-undefined','is-present'):
         require(len(args)==1 and isinstance(args[0],dict) and set(args[0])=={'ref'},
                 op+' requires exactly one direct PI field reference')
@@ -905,6 +911,7 @@ def eval_expr(expr, env, definitions, params=None):
         return {'lt':lambda:left<right,'le':lambda:left<=right,
                 'gt':lambda:left>right,'ge':lambda:left>=right}[op]()
     xs=[eval_expr(x,env,definitions,params) for x in expr['args']]
+    if op in collection_relation.OPERATORS:return collection_relation.evaluate(op,xs)
     if op=='member':
         require(len(xs)==2 and isinstance(xs[0],dict) and isinstance(xs[1],str) and xs[1] in xs[0]
                 and xs[0][xs[1]] is not typed.MISSING and xs[0][xs[1]] is not typed.UNDEFINED,
@@ -1032,6 +1039,9 @@ def _symbolic_effect_containment(expr, target_domain, fields):
     """
     op=expr.get('op')
     args=expr.get('args',[])
+    if op in collection_relation.OPERATORS:
+        domain=collection_relation.operator_domain(expr,fields)
+        return domain is not None and semantic_subtyping.subset(domain,target_domain) is True
     if op=='member':
         try:return semantic_subtyping.subset(_member_domain(expr,fields),target_domain) is True
         except Blocked:return None
@@ -2031,6 +2041,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                     typed.same(source_domain,target_domain['of'])))
                         require(inclusion is True,
                                 f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    elif expression.get('op') in collection_relation.OPERATORS:
+                        require(semantic_subtyping.subset(collection_relation.operator_domain(expression,fields),target_domain) is True,
+                                f'Effect {e["target"]}: collection Domain mismatch')
                     elif expression.get('op')=='member':
                         require(semantic_subtyping.subset(_member_domain(expression,fields),target_domain) is True,
                                 f'Effect {e["target"]}: projected member Domain mismatch')
@@ -3250,6 +3263,7 @@ def format_expr(expr, params=(), language='en'):
     funcs_en={'floor':'floor','abs':'abs','length':'length','concat':'concat','to-int':'to_int','set-add':'set_add','set-remove':'set_remove'}
     funcs_ja={'floor':'floor','abs':'abs','length':'長さ','concat':'連結','to-int':'整数化','set-add':'集合追加','set-remove':'集合削除'}
     if op=='call':return expr['name']+'('+', '.join(args)+')'
+    if op in collection_relation.OPERATORS:return op.replace('-','_')+'('+', '.join(args)+')'
     funcs=funcs_ja if language=='ja' else funcs_en
     if op in funcs:return funcs[op]+'('+', '.join(args)+')'
     raise Blocked('unknown expression for rendering '+op)
