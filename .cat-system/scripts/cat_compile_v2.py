@@ -2222,7 +2222,13 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         combinations=__import__('math').prod(len(x) for x in domainvalues)
         cache=(_large_finite_predicate_cache(ordered,domainvalues,predicates,definitions)
                if combinations>65536 else None)
-        if combinations>65536 and cache is None:
+        masks=None
+        if combinations>65536 and cache is None and not any(
+                any(v is _PRESENT_GUARD_VALUE for v in dim) for dim in domainvalues):
+            from catlib.finite_truth_masks import truth_masks
+            masks=truth_masks(ordered,domainvalues,scoped_constraints,[r['when'] for r in rr],
+                              definitions,eval_expr,used_refs,Blocked)
+        if combinations>65536 and cache is None and masks is None:
             # Solver capacity is an absence of proof, not a domain mismatch.
             # Shadow/partial models retain the source-bound reason; normative
             # compilation still blocks unless an independent proof is supplied.
@@ -2234,7 +2240,22 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
             continue
         gaps=[];overlaps=[];unreachable=set(r['id'] for r in rr);unknown=None
         admissible=0;gap_count=overlap_count=0
-        rows=(itertools.product(*(range(len(d)) for d in domainvalues)) if cache is not None
+        if masks is not None:
+            from catlib.finite_truth_masks import row_indices, first_indices
+            accepted,hits=masks
+            admissible=accepted.bit_count();seen=collision=0
+            for rule,hit in zip(rr,hits):
+                if hit:unreachable.discard(rule['id'])
+                collision|=seen&hit;seen|=hit
+            missing=accepted^seen
+            gap_count=missing.bit_count();overlap_count=collision.bit_count()
+            def env_at(i):return {k:d[j] for k,d,j in zip(ordered,domainvalues,row_indices(i,domainvalues))}
+            gaps=[_debug_presence_env(env_at(i)) for i in first_indices(missing,64)]
+            overlaps=[{'state':_debug_presence_env(env_at(i)),
+                       'rules':[r['id'] for r,hit in zip(rr,hits) if (hit>>i)&1]}
+                      for i in first_indices(collision,16)]
+        rows=(() if masks is not None else
+              itertools.product(*(range(len(d)) for d in domainvalues)) if cache is not None
               else itertools.product(*domainvalues))
         for values in rows:
             env=None if cache is not None else dict(zip(ordered,values))
@@ -2775,9 +2796,22 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                     and model.get('coverage_checks',{}).get(trigger,{}).get('result')=='proved',
                     'large test-selection requires proved source-bound Guard coverage')
             cache=_large_finite_predicate_cache(variable_ids,domains,predicates,defs)
-            require(cache is not None,
-                    'test-selection exceeds configured 65536 combinations and factorized proof budget')
-        rows=(itertools.product(*(range(len(d)) for d in domains)) if cache is not None
+            if cache is None:
+                from catlib.finite_truth_masks import truth_masks, row_indices, first_indices
+                masks=truth_masks(variable_ids,domains,constraints,[r['when'] for r in rules_here],
+                                  defs,eval_expr,used_refs,Blocked)
+                require(masks is not None,'test-selection exceeds configured 65536 combinations and factorized proof budget')
+                accepted,hits=masks;seen=0
+                for hit in hits:
+                    require(hit and not (seen&hit),'confirmed TestModel has empty or overlapping Guard region')
+                    seen|=hit
+                require(seen==accepted,'confirmed TestModel has uncovered Guard region')
+                indices=sorted(next(first_indices(hit,1)) for hit in hits)
+                selected=[tuple(d[j] for d,j in zip(domains,row_indices(i,domains))) for i in indices]
+            else:selected=None
+        else:selected=None
+        rows=(selected if selected is not None else
+              itertools.product(*(range(len(d)) for d in domains)) if cache is not None
               else itertools.product(*domains))
         for values in rows:
             if cache is not None:
