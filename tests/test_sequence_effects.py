@@ -10,14 +10,14 @@ from unittest.mock import patch
 class SequenceEffects(unittest.TestCase):
     def fixture(self,root,expr,target='sequence<record<id:string,name:string>>',item='record<id:string,name:string>',presence='required'):
         p,pi,tce=write_v2(root,False)
-        pi.write_text(pi.read_text().replace('| output.accepted | send | boolean | required |',
+        pi.write_text(pi.read_text(encoding='utf-8').replace('| output.accepted | send | boolean | required |',
             '| input.items | receive | sequence<record<id:string,name:string>> | required |\n'
             '| input.item | receive | '+item+' | '+presence+' |\n'
             '| input.index | receive | integer | required |\n'
-            '| output.accepted | send | '+target+' | required |'))
-        tce.write_text(tce.read_text().replace('output.accepted = true','output.accepted = '+expr).replace('output.accepted = false','output.accepted = '+expr))
+            '| output.accepted | send | '+target+' | required |'),encoding='utf-8')
+        tce.write_text(tce.read_text(encoding='utf-8').replace('output.accepted = true','output.accepted = '+expr).replace('output.accepted = false','output.accepted = '+expr),encoding='utf-8')
         for f in (p,pi,tce):
-            f.write_text(f.read_text().replace('status: draft','status: confirmed').replace("decision_ref: ''",'decision_ref: https://example.org/decision'))
+            f.write_text(f.read_text(encoding='utf-8').replace('status: draft','status: confirmed').replace("decision_ref: ''",'decision_ref: https://example.org/decision'),encoding='utf-8')
         return p,pi,tce
     def test_semantics(self):
         rows=[{'id':'a','name':'A'},{'id':'b','name':'B'},{'id':'c','name':'C'}]
@@ -59,12 +59,12 @@ class SequenceEffects(unittest.TestCase):
         for gap in (False,True):
             with self.subTest(gap=gap), tempfile.TemporaryDirectory() as td:
                 root=Path(td);p,pi,tce=fixture(root,'string',guard='length(input.request) < 50',gap=gap)
-                pi.write_text(pi.read_text().replace('record<version:integer,metadata:string>','sequence<record<id:string,name:string>>'))
+                pi.write_text(pi.read_text(encoding='utf-8').replace('record<version:integer,metadata:string>','sequence<record<id:string,name:string>>'),encoding='utf-8')
                 m=load(p,pi,tce,allow_partial=True);check=m['coverage_checks']['compare']
                 self.assertEqual(check['result'],'uncovered' if gap else 'proved')
                 self.assertEqual(check['proof_method'],'sequence-length-literal-partition/v1')
                 self.assertEqual(check['abstract_state_count'],4)
-                path=root/'Model.json';path.write_text(json.dumps(m));self.assertEqual(validate(p,pi,tce,path)['status'],'passed')
+                path=root/'Model.json';path.write_text(json.dumps(m),encoding='utf-8');self.assertEqual(validate(p,pi,tce,path)['status'],'passed')
                 self.assertEqual(closure(root)=='passed',not gap)
                 if not gap:
                     self.assertEqual({len(c['input']['input.request']) for c in expand_cases(m,selection_vectors(m))},{0,50})
@@ -72,13 +72,13 @@ class SequenceEffects(unittest.TestCase):
         from test_projection_unused_typed_sibling import fixture
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);p,pi,tce=fixture(root,'string',guard='length(input.request) == state.version')
-            pi.write_text(pi.read_text().replace('record<version:integer,metadata:string>','sequence<record<id:string,name:string>>'))
+            pi.write_text(pi.read_text(encoding='utf-8').replace('record<version:integer,metadata:string>','sequence<record<id:string,name:string>>'),encoding='utf-8')
             self.assertEqual(load(p,pi,tce,allow_partial=True)['coverage_checks']['compare']['result'],'unproven')
     def test_independent_rejects_false_positive(self):
         with tempfile.TemporaryDirectory() as td:
             p,pi,tce=self.fixture(Path(td),'sequence_append(input.items,input.item)',item='record<id:string,name:integer>');m=load(p,pi,tce,allow_partial=True)
             self.assertTrue(m['unverified_effect_ids']); forged={k:{'result':'proved'} for k in m['effect_checks']}
-            m.update(status='confirmed',effect_checks=forged,unverified_effect_ids=[]);dest=Path(td)/'model.json';dest.write_text(json.dumps(m))
+            m.update(status='confirmed',effect_checks=forged,unverified_effect_ids=[]);dest=Path(td)/'model.json';dest.write_text(json.dumps(m),encoding='utf-8')
             with patch('cat_model_conformance._effect_totality_checks',return_value=forged):
                 r=validate(p,pi,tce,dest)
             self.assertEqual(r['status'],'blocked');self.assertIn('effect_totality_independent',r['mismatches'])
