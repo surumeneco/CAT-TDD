@@ -2470,6 +2470,93 @@ def _vector_output_operations(model,test,fields):
     return {op['source_pi']:op}
 
 
+def _vector_observation_context(model, trigger, fields):
+    """Concrete test environment witnesses, not caller input or runtime evidence.
+
+    Normative CLI independently checks the model against Source before selection.
+    Retain the approved finite trigger-entry scope and proved restrictions here.
+    """
+    from catlib import semantic_transition_relation as relation
+    from catlib import semantic_observation_relation as observation
+    proofs=model.get('intrinsic_rule_proofs',[])
+    if not any(f.get('role')=='observation' for f in fields.values()) and not any(
+            p.get('requirement') in (relation.OBS_TOKEN,observation.TOKEN) for p in proofs):
+        return [],[]
+    defs={d['id']:d for d in model['definitions']}
+    inventory=set();constraints=[];constraint_ids=[]
+    def verified(proof):
+        require(proof.get('status')=='passed' and proof.get('verification_contract')=='cat:intrinsic-model/v1'
+                and proof.get('proof_method')=='cat:intrinsic-model/v1',
+                'observation witness requires passed intrinsic proof')
+        require(any(x.get('id')==proof.get('rule_id') and x.get('condition')==proof.get('scope')
+                    and x.get('requirement')==proof.get('requirement')
+                    and x.get('verification_contract')==proof.get('verification_contract')
+                    and x.get('verification_status')=='intrinsic-proved'
+                    and x.get('source_artifact')==proof.get('source_artifact')
+                    and x.get('source_sha256')==proof.get('source_sha256')
+                    and x.get('source_kind')=='domain-spec'
+                    for x in model.get('rule_obligations',[]))
+                and any(x.get('id')==proof.get('source_artifact') and x.get('kind')=='domain-spec'
+                        and x.get('sha256')==proof.get('source_sha256')
+                        and x.get('process')==model.get('process')
+                        for x in model.get('normative_rule_inputs',[])),
+                'observation proof is not bound to normative Source')
+    for proof in proofs:
+        token=proof.get('requirement');scope=proof.get('scope','')
+        if token==relation.OBS_TOKEN:
+            require(scope.startswith(relation.OBS_PREFIX),'invalid observed relation scope')
+            try:spec=json.loads(scope[len(relation.OBS_PREFIX):],object_pairs_hook=relation._unique_object)
+            except (ValueError,TypeError) as e:raise Blocked('invalid observed relation scope') from e
+            require(isinstance(spec,dict),'invalid observed relation scope')
+            if spec.get('trigger')!=trigger:continue
+            verified(proof)
+            required={'trigger','pi','operation','peer'}
+            require(required<=spec.keys(),'incomplete observed relation scope')
+            accept=[op for op in model.get('pi_operations',[]) if op.get('direction')=='accept' and op.get('trigger')==trigger]
+            require(len(accept)==1 and accept[0].get('id')==spec['operation'] and accept[0].get('source_pi')==spec['pi'],
+                    'observation witness accept scope mismatch')
+            boundary=[b for b in model.get('pi_boundaries',[]) if b.get('artifact')==spec['pi']]
+            require(len(boundary)==1 and peer_binding.match_operation(boundary[0].get('peers',[boundary[0].get('peer')]),accept[0].get('peer'),spec['peer'])=='static',
+                    'observation witness peer scope mismatch')
+            names=spec.get('observations')
+            require(isinstance(names,list) and names and all(isinstance(n,str) for n in names) and len(set(names))==len(names),'invalid observation witness inventory')
+            for name in names:
+                field=fields.get(name,{})
+                require(field.get('role')=='observation' and field.get('available_on')==[trigger] and field['domain']['type'] in ('boolean','enum'),
+                        'unsupported observation witness domain or availability '+name)
+                origin=field.get('source','');prefix='same-execution-observation '
+                require(origin.startswith(prefix),'observation witness lacks explicit source '+name)
+                try:binding=json.loads(origin[len(prefix):],object_pairs_hook=relation._unique_object)
+                except (ValueError,TypeError) as e:raise Blocked('invalid observation source') from e
+                require(isinstance(binding,dict) and set(binding)==required|{'cut','source'}
+                        and all(binding[k]==spec[k] for k in required) and binding['cut']=='trigger-entry'
+                        and isinstance(binding['source'],str) and binding['source'].strip(),
+                        'observation witness source scope mismatch '+name)
+                inventory.add(name)
+        elif token==observation.TOKEN:
+            require(scope.startswith(observation.PREFIX),'invalid observation constraint scope')
+            cut,sep,expr=scope[len(observation.PREFIX):].partition(' ')
+            require(sep and expr,'invalid observation constraint scope')
+            if cut!=trigger:continue
+            verified(proof);constraints.append(parse_expr_text(expr));constraint_ids.append(proof['rule_id'])
+    check=model.get('coverage_checks',{}).get(trigger,{})
+    require(set(constraint_ids)==set(check.get('observation_relation_rule_ids',[])),
+            'observation constraint inventory differs from proved coverage')
+    exprs=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(proofs).values(),*constraints]
+    for row in model['rules']:
+        if row['trigger']==trigger:
+            exprs.append(row['when'])
+            exprs.extend(w['expr'] for out in row['allowed'] for w in out['write'])
+    refs=set().union(*(used_refs(expr,defs) for expr in exprs)) if exprs else set()
+    needed={n for n in refs if fields.get(n,{}).get('role')=='observation'}
+    require(needed<=inventory and (not constraints or inventory),
+            'observation relation requires explicit proved finite observation binding for vectors')
+    if inventory:
+        require(model.get('status')=='confirmed' and model.get('coverage_requirement')=='closed' and check.get('result')=='proved',
+                'observation witness requires proved closed trigger')
+    return sorted(inventory),constraints
+
+
 def expand_cases(model, vectors):
     check_keys(vectors,['schema','process','cases'],optional=('selection_rule',),where='vectors')
     require(vectors['schema']==V and vectors['process']==model['process'],'vector version/Process mismatch')
@@ -2478,14 +2565,21 @@ def expand_cases(model, vectors):
     states={f for f in fields if fields[f]['role']=='state'}
     cases=[]
     for test in vectors['cases']:
-        check_keys(test,['id','trigger','input','state'],optional=('operation','output_operation','output_operations'),where='test vector')
+        check_keys(test,['id','trigger','input','state'],optional=('operation','output_operation','output_operations','observations'),where='test vector')
         ident(test['id'],'test ID');require(test['trigger'] in {t['id'] for t in model['triggers']},'unknown vector trigger')
         require(isinstance(test['input'],dict) and isinstance(test['state'],dict),'vector input/state must be objects')
         operation=_vector_operation(model,test)
         output_frames=_vector_output_operations(model,test,fields)
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
+        observation_ids,observation_constraints=_vector_observation_context(model,test['trigger'],fields)
+        payload=test.get('observations',{})
+        require(isinstance(payload,dict) and set(payload)==set(observation_ids) and ('observations' not in test or observation_ids),
+                'vector observations must match the proved trigger inventory')
         env={}
+        for name,val in payload.items():
+            require(in_domain(fields[name]['domain'],val),'observation out of domain '+name)
+            env[name]=val
         # An explicit vector.operation resolves an otherwise ambiguous accept
         # operation without altering Source-level coverage/closure proofs.
         # The selected operation's Presence overrides must be used for this
@@ -2512,6 +2606,8 @@ def expand_cases(model, vectors):
                 f'{test["id"]}: violates PI combination constraint')
         require(all(eval_expr(c,env,defs) for c in _guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()),
                 f'{test["id"]}: violates proved state invariant')
+        require(all(eval_expr(c,env,defs) is True for c in observation_constraints),
+                f'{test["id"]}: violates proved observation relation')
         rule=match_rules(model,test['trigger'],env)
         defs={d['id']:d for d in model['definitions']}
         allowed=[]
@@ -2541,6 +2637,7 @@ def expand_cases(model, vectors):
             allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs']})
         case_data={'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                    'input':test['input'],'initial_state':test['state'],'allowed':allowed}
+        if observation_ids:case_data['observations']=payload
         if len(output_frames)==1:
             case_data['output_operation']=next(iter(output_frames.values()))['id']
         elif output_frames:
@@ -2552,8 +2649,6 @@ def expand_cases(model, vectors):
 def selection_vectors(model, strategy='rule-witness/v1'):
     require(strategy == 'rule-witness/v1','unsupported test-selection rule: '+str(strategy))
     require(model.get('status')=='confirmed','normative vector selection requires confirmed TestModel')
-    require(not any(p.get('requirement')=='@cat:trigger-observation-relation/v1' for p in model.get('intrinsic_rule_proofs',[])),
-            'observation relation requires explicit technology observation binding for vectors')
     fields={f['id']:f for f in model['fields']}
     presence_inputs=[f['id'] for f in fields.values() if f['role']=='input'
                      and f.get('presence','required')!='required']
@@ -2593,13 +2688,14 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 model.get('operation_presence',[]),trigger)
             require(provide_frames is not None,
                     'ambiguous provided output operation for deterministic vectors')
+        observation_ids,observation_constraints=_vector_observation_context(model,trigger,fields)
         variable_ids=([name for name in all_variable_ids
                        if fields[name]['role']=='state' or operation is None
                        or 'pi_constraint_scopes' not in model
-                       or fields[name].get('source_pi') in bindings])
+                       or fields[name].get('source_pi') in bindings])+observation_ids
         domains=[]
         rules_here=[r for r in model['rules'] if r['trigger']==trigger]
-        constraints=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values()]
+        constraints=[*_active_pi_constraints(model,trigger),*_guard_invariant_exprs(model.get('intrinsic_rule_proofs',[])).values(),*observation_constraints]
         predicates=[*constraints,*(r['when'] for r in rules_here)]
         observed=set().union(*(used_refs(expr,defs) for expr in predicates)) if predicates else set()
         for rule in rules_here:
@@ -2692,6 +2788,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                          and env[key] is not typed.MISSING},
                 'state':{key:env[key] for key in variable_ids if fields[key]['role']=='state'}
             }
+            if observation_ids:sample['observations']={key:env[key] for key in observation_ids}
             if operation is not None and any(value!='required' for value in presence.values()):
                 sample['operation']=operation['id']
             if provide_frames:
@@ -2800,6 +2897,8 @@ def emit_junit(model, vectors, binding_path):
     require(not model.get('operation_presence'),
             'JUnit scalar renderer does not carry operation-scoped Presence')
     cases=expand_cases(model,vectors)
+    require(not any('observations' in c for c in cases),
+            'JUnit renderer cannot transport observed test environment witnesses')
     require(not any('output_operation' in c or 'output_operations' in c for c in cases),
             'JUnit scalar renderer cannot carry output-operation identity')
     path=ROOT / 'skills' / 'tech-junit' / 'scripts' / 'cat_junit_renderer.py'

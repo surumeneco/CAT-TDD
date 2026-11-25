@@ -13,6 +13,8 @@ def _ts(value):
 
 
 def render_vitest(model, cases, binding):
+    if any('observations' in case for case in cases):
+        raise ValueError('Vitest renderer cannot transport observed test environment witnesses')
     lines=[
         "// Deterministically generated from a symbolic CAT v2 model and explicit test vectors.",
         "// Draft/evidence oracles are NOT user-confirmed specifications." if model["status"] != "confirmed" else "// Based on confirmed CAT specification; implementation still requires testing.",
