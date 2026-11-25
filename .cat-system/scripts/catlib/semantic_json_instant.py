@@ -272,3 +272,52 @@ def decode_instant_transport(value):
             or not re.fullmatch(r'0|-?[1-9][0-9]*', pair['n']) or not re.fullmatch(r'[1-9][0-9]*', pair['d'])):
         raise BindingError('invalid exact instant fraction')
     return InstantValue(Fraction(int(Decimal(pair['n'])), int(Decimal(pair['d']))))
+
+
+# Exact tagged JSON tree for CAT vector/driver interchange, not a product API
+# representation. Every node is tagged, so user keys and scalar strings cannot
+# collide with transport markers. Numeric tokens are never parsed as binary64.
+_JSON_NUMBER = re.compile(r'-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z')
+
+
+def encode_json_transport(value):
+    if not json_contains(value):
+        raise BindingError('JSON transport requires a finite JSON tree')
+    def encode(v):
+        kind=type(v)
+        if v is None:return ['null']
+        if kind is bool:return ['boolean',v]
+        if kind is str:return ['string',v]
+        if kind in (int,float,Decimal):return ['number',str(_number(v))]
+        if kind is list:return ['array',[encode(item) for item in v]]
+        return ['object',[[key,encode(v[key])] for key in sorted(v)]]
+    return {'$cat_json':encode(value)}
+
+
+def decode_json_transport(value):
+    if type(value) is not dict or set(value)!={'$cat_json'}:
+        raise BindingError('explicit tagged JSON transport required')
+    def decode(node):
+        if type(node) is not list or not node or type(node[0]) is not str:
+            raise BindingError('invalid JSON transport node')
+        tag=node[0]
+        if tag=='null' and len(node)==1:return None
+        if len(node)!=2:raise BindingError('invalid JSON transport node arity')
+        item=node[1]
+        if tag=='boolean' and type(item) is bool:return item
+        if tag=='string' and type(item) is str:return item
+        if tag=='number' and type(item) is str and _JSON_NUMBER.fullmatch(item):
+            try:return Decimal(item)
+            except InvalidOperation as exc:raise BindingError('invalid JSON number') from exc
+        if tag=='array' and type(item) is list:return [decode(x) for x in item]
+        if tag=='object' and type(item) is list:
+            result={}
+            for entry in item:
+                if type(entry) is not list or len(entry)!=2 or type(entry[0]) is not str or entry[0] in result:
+                    raise BindingError('invalid or duplicate JSON object member')
+                result[entry[0]]=decode(entry[1])
+            return result
+        raise BindingError('invalid JSON transport node kind/value')
+    result=decode(value['$cat_json'])
+    if not json_contains(result):raise BindingError('invalid decoded JSON value')
+    return result

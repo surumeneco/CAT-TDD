@@ -25,6 +25,7 @@ from catlib import semantic_rules
 from catlib import semantic_intrinsic_rules
 from catlib import semantic_named_types as named_types
 from catlib import semantic_subtyping
+from catlib import semantic_collection_relation as collection_relation
 from catlib import semantic_interval_partition
 from catlib import semantic_string_partition
 from catlib import decimal_integer
@@ -43,7 +44,7 @@ INT = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')
 SAFE_INT = 9007199254740991
 OPS = {'eq','ne','lt','le','gt','ge','and','or','not','add','sub','mul',
        'div','floor','abs','length','concat','to-int','set-add','set-remove','sequence-append','sequence-swap','sequence-replace-member','record-value','call',
-       'is-missing','is-undefined','is-present','member'}
+       'is-missing','is-undefined','is-present','member','filter-by','stable-sort-by'}
 
 _PRESENT_GUARD_VALUE=object()
 
@@ -264,7 +265,8 @@ def parse_expr_text(text, params=()):
     except SyntaxError as exc:raise Blocked('invalid CAT expression '+repr(text)) from exc
     builtin={'length':'length','len':'length','abs':'abs','floor':'floor','to_int':'to-int',
              'concat':'concat','set_add':'set-add','set_remove':'set-remove','sequence_append':'sequence-append','sequence_swap':'sequence-swap','sequence_replace_member':'sequence-replace-member','not_fn':'not',
-             'is_missing':'is-missing','is_undefined':'is-undefined','is_present':'is-present'}
+             'is_missing':'is-missing','is_undefined':'is-undefined','is_present':'is-present',
+             'filter_by':'filter-by','stable_sort_by':'stable-sort-by'}
     compare={ast.Eq:'eq',ast.NotEq:'ne',ast.Lt:'lt',ast.LtE:'le',ast.Gt:'gt',ast.GtE:'ge'}
     binary={ast.Add:'add',ast.Sub:'sub',ast.Mult:'mul',ast.Div:'div'}
     def cv(n):
@@ -718,6 +720,10 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
     op=expr['op']; require(op in OPS,'unsupported operator '+str(op))
     args=expr['args']; require(isinstance(args,list),'operator args must be array')
     if op=='member':return _member_domain(expr,fields)['type']
+    if op in collection_relation.OPERATORS:
+        result=collection_relation.operator_domain(expr,fields)
+        require(result is not None,'unsupported or ill-typed collection relation')
+        return result['type']
     if op=='record-value':
         require(len(args)%2==0 and all(set(x)=={'literal'} and type(x['literal']) is str for x in args[::2]),'record-value keys must be string literals')
         require(len({x['literal'] for x in args[::2]})==len(args)//2,'duplicate record-value key')
@@ -925,6 +931,7 @@ def eval_expr(expr, env, definitions, params=None):
         return {'lt':lambda:left<right,'le':lambda:left<=right,
                 'gt':lambda:left>right,'ge':lambda:left>=right}[op]()
     xs=[eval_expr(x,env,definitions,params) for x in expr['args']]
+    if op in collection_relation.OPERATORS:return collection_relation.evaluate(op,xs)
     if op=='member':
         require(len(xs)==2 and isinstance(xs[0],dict) and isinstance(xs[1],str) and xs[1] in xs[0]
                 and xs[0][xs[1]] is not typed.MISSING and xs[0][xs[1]] is not typed.UNDEFINED,
@@ -1068,6 +1075,9 @@ def _symbolic_effect_containment(expr, target_domain, fields):
     """
     op=expr.get('op')
     args=expr.get('args',[])
+    if op in collection_relation.OPERATORS:
+        domain=collection_relation.operator_domain(expr,fields)
+        return domain is not None and semantic_subtyping.subset(domain,target_domain) is True
     if op=='member':
         try:return semantic_subtyping.subset(_member_domain(expr,fields),target_domain) is True
         except Blocked:return None
@@ -2108,6 +2118,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                                     typed.same(source_domain,target_domain['of'])))
                         require(inclusion is True,
                                 f'Effect {e["target"]}: type mismatch, {produced} -> {expected}')
+                    elif expression.get('op') in collection_relation.OPERATORS:
+                        require(semantic_subtyping.subset(collection_relation.operator_domain(expression,fields),target_domain) is True,
+                                f'Effect {e["target"]}: collection Domain mismatch')
                     elif expression.get('op')=='member':
                         require(semantic_subtyping.subset(_member_domain(expression,fields),target_domain) is True,
                                 f'Effect {e["target"]}: projected member Domain mismatch')
@@ -2596,7 +2609,27 @@ def _vector_field_presence(model,operation,field):
     return matched[0]['presence'] if matched else presence
 
 
-def _vector_input_value(domain,presence,payload,name):
+def _exact_value_kind(domain):
+    while domain.get('type')=='reference' and domain.get('resolved'):
+        domain=domain['of']
+    return domain.get('type') if domain.get('type') in ('json','instant') else None
+
+
+def _encode_vector_value(domain,value):
+    kind=_exact_value_kind(domain)
+    if kind=='json':return json_time.encode_json_transport(value)
+    if kind=='instant':return json_time.encode_instant_transport(value)
+    return value
+
+
+def _decode_vector_value(domain,value):
+    kind=_exact_value_kind(domain)
+    if kind=='json':return json_time.decode_json_transport(value)
+    if kind=='instant':return json_time.decode_instant_transport(value)
+    return value
+
+
+def _vector_input_value(domain,presence,payload,name,exact_values=False):
     if name not in payload:
         require(presence in ('optional','absent'),
                 'vector missing required/undefined input '+name)
@@ -2606,6 +2639,7 @@ def _vector_input_value(domain,presence,payload,name):
         return typed.UNDEFINED
     require(presence not in ('absent','undefined'),
             'value input incompatible with Presence '+name)
+    if exact_values:value=_decode_vector_value(domain,value)
     require(in_domain(domain,value), 'input out of domain '+name)
     return value
 
@@ -2751,7 +2785,9 @@ def _vector_observation_context(model, trigger, fields):
 
 
 def expand_cases(model, vectors):
-    check_keys(vectors,['schema','process','cases'],optional=('selection_rule',),where='vectors')
+    check_keys(vectors,['schema','process','cases'],optional=('selection_rule','semantic_value_transport'),where='vectors')
+    require(vectors.get('semantic_value_transport') in (None,'cat-exact-values/v1'),'unsupported vector semantic value transport')
+    exact_values=vectors.get('semantic_value_transport')=='cat-exact-values/v1'
     require(vectors['schema']==V and vectors['process']==model['process'],'vector version/Process mismatch')
     fields={f['id']:f for f in model['fields']}
     inputs={f for f in fields if fields[f]['role']=='input'}
@@ -2786,9 +2822,10 @@ def expand_cases(model, vectors):
         for name in sorted(active_inputs):
             field=fields[name]
             presence=_trigger_input_presence(field,bindings,model.get('operation_presence',[]))
-            val=_vector_input_value(field['domain'],presence,test['input'],name)
+            val=_vector_input_value(field['domain'],presence,test['input'],name,exact_values)
             if val is not typed.MISSING:env[name]=val
         for name,val in test['state'].items():
+            if exact_values:val=_decode_vector_value(fields[name]['domain'],val)
             require(in_domain(fields[name]['domain'],val),f'{test["id"]}: {name} out of declared domain')
             env[name]=val
         defs={d['id']:d for d in model['definitions']}
@@ -2812,7 +2849,7 @@ def expand_cases(model, vectors):
         allowed=[]
         for index,out in enumerate(rule['allowed']):
             if explicit:output_frames=alternative_frames[index]
-            after=deepcopy(test['state']); emitted={}
+            after={key:deepcopy(env[key]) for key in states}; emitted={}
             for write in out['write']:
                 target=write['target'];val=eval_expr(write['expr'],env,defs)
                 require(in_domain(fields[target]['domain'],val),f'{test["id"]}: output {target} out of declared domain')
@@ -2835,7 +2872,7 @@ def expand_cases(model, vectors):
                             'required output missing for operation '+output_operation['id']+': '+field['id'])
                     require(pres!='absent' or field['id'] not in emitted,
                             'absent output emitted by operation '+output_operation['id']+': '+field['id'])
-            allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs'],
+            allowed.append({'state':{k:(_encode_vector_value(fields[k]['domain'],v) if exact_values else v) for k,v in after.items()},'output':{k:(_encode_vector_value(fields[k]['domain'],v) if exact_values else v) for k,v in emitted.items()},'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs'],
                             **({'output_operations':sorted(op['id'] for op in output_frames.values())} if explicit else {})})
         case_data={'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                    'input':test['input'],'initial_state':test['state'],'allowed':allowed}
@@ -3008,10 +3045,10 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             if env is None:env={k:d[i] for k,d,i in zip(variable_ids,domains,values)}
             sample={
                 'id':'case.'+rule['id'],'trigger':trigger,
-                'input':{key:({'$cat_presence':'undefined'} if env[key] is typed.UNDEFINED else env[key])
+                'input':{key:({'$cat_presence':'undefined'} if env[key] is typed.UNDEFINED else _encode_vector_value(fields[key]['domain'],env[key]))
                          for key in variable_ids if fields[key]['role']=='input'
                          and env[key] is not typed.MISSING},
-                'state':{key:env[key] for key in variable_ids if fields[key]['role']=='state'}
+                'state':{key:_encode_vector_value(fields[key]['domain'],env[key]) for key in variable_ids if fields[key]['role']=='state'}
             }
             if observation_ids:sample['observations']={key:env[key] for key in observation_ids}
             if operation is not None and any(value!='required' for value in presence.values()):
@@ -3027,7 +3064,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
     missing=[r['id'] for r in model['rules'] if r['id'] not in witnesses]
     require(not missing,'test-selection produced no witness for TestModel rule(s): '+str(missing))
     return {'schema':V,'process':model['process'],'selection_rule':strategy,
-            'cases':[witnesses[r['id']] for r in model['rules']]}
+            'cases':[witnesses[r['id']] for r in model['rules']],
+            **({'semantic_value_transport':'cat-exact-values/v1'} if any(_exact_value_kind(f['domain']) for f in fields.values()) else {})}
 
 def _vitest_renderer():
     import importlib.util
@@ -3064,12 +3102,20 @@ def _check_observation_transport(model, binding, expected):
 
 
 def emit_vitest(model,vectors,binding_path):
-    require(not any(typed.has_semantic_domain(f['domain']) for f in model.get('fields',[])), 'Vitest renderer requires explicit JSON/instant binding')
+    require(binding_path is not None,'Vitest renderer requires explicit JSON/instant binding and driver binding')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','driver'],
-               optional=('undefined_transport','output_operation_transport','observation_transport'),
+               optional=('undefined_transport','output_operation_transport','observation_transport','semantic_value_transport'),
                where='driver binding')
     require(binding['schema']==D and binding['process']==model['process'],'driver binding incompatible')
+    semantic=[f for f in model.get('fields',[]) if typed.has_semantic_domain(f['domain'])]
+    require(binding.get('semantic_value_transport') in (None,'cat-exact-values/v1'), 'unsupported semantic value transport')
+    require(not semantic or (binding.get('semantic_value_transport')=='cat-exact-values/v1' and all(
+            f['role'] in ('input','state','output') and _exact_value_kind(f['domain']) for f in semantic)),
+            'Vitest renderer requires explicit JSON/instant binding for supported top-level fields')
+    require(semantic or binding.get('semantic_value_transport') is None, 'semantic transport requires semantic fields')
+    require(not semantic or vectors.get('semantic_value_transport')=='cat-exact-values/v1',
+            'exact semantic driver requires explicitly tagged vectors; regenerate or convert vectors explicitly')
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     observed=_check_observation_transport(model,binding,'js-driver-observed/v1')
@@ -3243,9 +3289,9 @@ def current_vectors(model, vectors, queue, model_bytes, vector_bytes):
     require(current is not None, 'Queue has no current item')
     chosen = [x for x in vectors['cases'] if x['id'] == current['vector_ref']]
     require(len(chosen) == 1, 'current Queue vector must resolve exactly once')
-    probe = expand_cases(model, {'schema': vectors['schema'], 'process': vectors['process'], 'cases': chosen})[0]
+    probe = expand_cases(model, {**vectors, 'cases': chosen})[0]
     require(probe['source_tce'] == current['model_ref'], 'Queue model_ref does not match vector-derived TestModel rule')
-    return {'schema': vectors['schema'], 'process': vectors['process'], 'cases': chosen}
+    return {**vectors, 'cases': chosen}
 
 def format_domain(d, language='en'):
     t=d['type']
@@ -3311,6 +3357,7 @@ def format_expr(expr, params=(), language='en'):
     funcs_en={'floor':'floor','abs':'abs','length':'length','concat':'concat','to-int':'to_int','set-add':'set_add','set-remove':'set_remove','sequence-append':'sequence_append','sequence-swap':'sequence_swap','sequence-replace-member':'sequence_replace_member'}
     funcs_ja={'floor':'floor','abs':'abs','length':'長さ','concat':'連結','to-int':'整数化','set-add':'集合追加','set-remove':'集合削除','sequence-append':'列追加','sequence-swap':'列交換','sequence-replace-member':'列項目更新'}
     if op=='call':return expr['name']+'('+', '.join(args)+')'
+    if op in collection_relation.OPERATORS:return op.replace('-','_')+'('+', '.join(args)+')'
     funcs=funcs_ja if language=='ja' else funcs_en
     if op in funcs:return funcs[op]+'('+', '.join(args)+')'
     raise Blocked('unknown expression for rendering '+op)

@@ -2,11 +2,14 @@
 from itertools import product
 
 from catlib import semantic_types as typed, semantic_structural_copy as copy_relation
+from catlib import semantic_collection_relation as collection_relation
 from catlib.semantic_transition_relation import prepare
 
 
 def verify(scope,fields,pi_docs,tces,checks,rejected,invariants=(),observation_relations=None):
     from cat_compile_v2 import eval_expr, Blocked
+    if scope.startswith(collection_relation.PREFIX):
+        return collection_relation.verify(scope,fields,pi_docs,tces,checks,rejected,invariants)
     if scope.startswith(copy_relation.PREFIX):
         return copy_relation.verify(scope,fields,pi_docs,tces,checks,rejected,invariants)
     rules=[{**r,'source_artifact':fm['id']} for _,fm,tce in tces for r in tce['rules']]

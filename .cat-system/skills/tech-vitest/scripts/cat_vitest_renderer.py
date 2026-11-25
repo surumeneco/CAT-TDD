@@ -12,6 +12,62 @@ def _ts(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+# Generated runner compares explicit exact transport values. It does not impose
+# a JSON object, date class, DB format, or numeric implementation on production.
+_EXACT_HELPERS = r"""function exactNumber(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const m = /^(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/.exec(value);
+  if (!m || m[0] !== value) return undefined;
+  let digits = (m[2]+(m[3]||'')).replace(/^0+/, '');
+  if (!digits) return '0';
+  let exponent = BigInt(m[4]||'0')-BigInt((m[3]||'').length);
+  const tail = /0+$/.exec(digits);
+  if (tail) { digits=digits.slice(0,-tail[0].length); exponent+=BigInt(tail[0].length); }
+  return m[1]+digits+'e'+exponent.toString();
+}
+function exactObject(value: unknown, keys: string[]): value is Record<string,unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === keys.length && keys.every(k => Object.prototype.hasOwnProperty.call(value,k));
+}
+function exactJSON(a: unknown,b: unknown): boolean {
+  if (!exactObject(a,['$cat_json']) || !exactObject(b,['$cat_json'])) return false;
+  const stack: [unknown,unknown][] = [[a.$cat_json,b.$cat_json]];
+  const members = (v: unknown): Map<string,unknown>|undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const map = new Map<string,unknown>();
+    for (const row of v) {
+      if (!Array.isArray(row)||row.length!==2||typeof row[0]!=='string'||map.has(row[0])) return undefined;
+      map.set(row[0],row[1]);
+    }
+    return map;
+  };
+  while(stack.length) {
+    const [x,y]=stack.pop()!;
+    if(!Array.isArray(x)||!Array.isArray(y)||x[0]!==y[0])return false;
+    if(x[0]==='null'){if(x.length!==1||y.length!==1)return false;continue;}
+    if(x.length!==2||y.length!==2)return false;
+    if(x[0]==='number'){const n=exactNumber(x[1]);if(n===undefined||n!==exactNumber(y[1]))return false;}
+    else if(x[0]==='boolean'||x[0]==='string'){if(typeof x[1]!==x[0]||x[1]!==y[1])return false;}
+    else if(x[0]==='array'){
+      if(!Array.isArray(x[1])||!Array.isArray(y[1])||x[1].length!==y[1].length)return false;
+      for(let i=0;i<x[1].length;i++)stack.push([x[1][i],y[1][i]]);
+    } else if(x[0]==='object'){
+      const m=members(x[1]),n=members(y[1]);if(!m||!n||m.size!==n.size)return false;
+      for(const [k,v] of m){if(!n.has(k))return false;stack.push([v,n.get(k)]);}
+    } else return false;
+  }
+  return true;
+}
+function exactInstant(a: unknown,b: unknown): boolean {
+  if(!exactObject(a,['$cat_instant'])||!exactObject(b,['$cat_instant']))return false;
+  const x=a.$cat_instant,y=b.$cat_instant;
+  if(!exactObject(x,['n','d'])||!exactObject(y,['n','d']))return false;
+  const num=(v: unknown): v is string => typeof v==='string' && /^(?:0|-?[1-9][0-9]*)$/.test(v) && !/\s/.test(v);
+  const den=(v: unknown): v is string => typeof v==='string' && /^[1-9][0-9]*$/.test(v) && !/\s/.test(v);
+  return num(x.n)&&num(y.n)&&den(x.d)&&den(y.d)&&BigInt(x.n)*BigInt(y.d)===BigInt(y.n)*BigInt(x.d);
+}"""
+
+
 def render_vitest(model, cases, binding):
     uses_observations=any('observations' in case for case in cases)
     if uses_observations and binding.get('observation_transport')!='js-driver-observed/v1':
@@ -45,6 +101,17 @@ def render_vitest(model, cases, binding):
         "",
         "describe(" + _ts(model["process"] + " CAT symbolic contract") + ", () => {",
     ]
+    if binding.get('semantic_value_transport')=='cat-exact-values/v1':
+        exact_fields={}
+        for field in model['fields']:
+            domain=field['domain']
+            while domain.get('type')=='reference' and domain.get('resolved'):
+                domain=domain['of']
+            if domain['type'] in ('json','instant'):exact_fields[field['id']]=domain['type']
+        lines[5:5]=[_EXACT_HELPERS, 'const exactFields: Record<string,string> = '+_ts(exact_fields), '']
+        index=lines.index('  if (setFields.includes(id) && Array.isArray(observed) && Array.isArray(expected)) return sameCATSet(observed,expected);')
+        lines[index:index]=["  if (exactFields[id]==='json') return exactJSON(observed,expected);",
+                            "  if (exactFields[id]==='instant') return exactInstant(observed,expected);"]
     uses_undefined=any(
         any(v=={'$cat_presence':'undefined'} for v in c['input'].values())
         for c in cases)
@@ -202,6 +269,7 @@ def render_vitest(model, cases, binding):
             "  it(" + _ts(c["id"]) + ", async () => {",
             "    // TCE: " + c["source_tce"],
             "    const driver = createDriver()",
+            *(['    expect((driver as {semanticValueTransport?: string}).semanticValueTransport).toBe("cat-exact-values/v1")'] if binding.get('semantic_value_transport')=='cat-exact-values/v1' else []),
             "    const pre = " + _ts(c["initial_state"]) + " as Record<string,unknown>",
             *input_lines,
             "    await driver.prepare(pre, input)",

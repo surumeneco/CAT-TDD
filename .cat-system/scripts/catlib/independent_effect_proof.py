@@ -192,6 +192,12 @@ def _certifies(rule,write,fields,definitions,presence_map,limit=4096):
             member=matches[0]['domain']
             while member.get('type')=='reference' and member.get('resolved'):member=member['of']
             return subtyping.subset(member,domain) is True
+        if expr.get('op') in ('filter-by','stable-sort-by'):
+            # Independent Source closure: pure selection/permutation never
+            # introduces an element outside the input collection Domain.
+            from catlib.semantic_collection_relation import operator_domain
+            source=operator_domain(expr,fields)
+            return source is not None and subtyping.subset(source,domain) is True
         if _symbolic(expr,domain,fields):return True
         dimensions=[]
         for ref in refs:
