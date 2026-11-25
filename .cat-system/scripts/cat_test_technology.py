@@ -151,7 +151,7 @@ def inspect(wpath, work, cwd, model, vectors, queue, binding, test_path):
             require(check and check['stage']=='green','missing Green check declaration')
             chosen=[x for x in vectors['cases'] if x['id']==item['vector_ref']]
             require(len(chosen)==1,'test technology vector missing')
-            subset={'schema':vectors['schema'],'process':vectors['process'],'cases':chosen}
+            subset={**vectors,'cases':chosen}
             text=compiler.emit_vitest(model,subset,binding)
             expected=model['process']+' CAT symbolic contract > '+item['vector_ref']
             require(check['test_ids']==[expected],'generated test technology target differs')

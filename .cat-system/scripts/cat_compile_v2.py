@@ -2527,7 +2527,7 @@ def _decode_vector_value(domain,value):
     return value
 
 
-def _vector_input_value(domain,presence,payload,name):
+def _vector_input_value(domain,presence,payload,name,exact_values=False):
     if name not in payload:
         require(presence in ('optional','absent'),
                 'vector missing required/undefined input '+name)
@@ -2537,7 +2537,7 @@ def _vector_input_value(domain,presence,payload,name):
         return typed.UNDEFINED
     require(presence not in ('absent','undefined'),
             'value input incompatible with Presence '+name)
-    value=_decode_vector_value(domain,value)
+    if exact_values:value=_decode_vector_value(domain,value)
     require(in_domain(domain,value), 'input out of domain '+name)
     return value
 
@@ -2683,7 +2683,9 @@ def _vector_observation_context(model, trigger, fields):
 
 
 def expand_cases(model, vectors):
-    check_keys(vectors,['schema','process','cases'],optional=('selection_rule',),where='vectors')
+    check_keys(vectors,['schema','process','cases'],optional=('selection_rule','semantic_value_transport'),where='vectors')
+    require(vectors.get('semantic_value_transport') in (None,'cat-exact-values/v1'),'unsupported vector semantic value transport')
+    exact_values=vectors.get('semantic_value_transport')=='cat-exact-values/v1'
     require(vectors['schema']==V and vectors['process']==model['process'],'vector version/Process mismatch')
     fields={f['id']:f for f in model['fields']}
     inputs={f for f in fields if fields[f]['role']=='input'}
@@ -2718,10 +2720,10 @@ def expand_cases(model, vectors):
         for name in sorted(active_inputs):
             field=fields[name]
             presence=_trigger_input_presence(field,bindings,model.get('operation_presence',[]))
-            val=_vector_input_value(field['domain'],presence,test['input'],name)
+            val=_vector_input_value(field['domain'],presence,test['input'],name,exact_values)
             if val is not typed.MISSING:env[name]=val
         for name,val in test['state'].items():
-            val=_decode_vector_value(fields[name]['domain'],val)
+            if exact_values:val=_decode_vector_value(fields[name]['domain'],val)
             require(in_domain(fields[name]['domain'],val),f'{test["id"]}: {name} out of declared domain')
             env[name]=val
         defs={d['id']:d for d in model['definitions']}
@@ -2768,7 +2770,7 @@ def expand_cases(model, vectors):
                             'required output missing for operation '+output_operation['id']+': '+field['id'])
                     require(pres!='absent' or field['id'] not in emitted,
                             'absent output emitted by operation '+output_operation['id']+': '+field['id'])
-            allowed.append({'state':{k:_encode_vector_value(fields[k]['domain'],v) for k,v in after.items()},'output':{k:_encode_vector_value(fields[k]['domain'],v) for k,v in emitted.items()},'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs'],
+            allowed.append({'state':{k:(_encode_vector_value(fields[k]['domain'],v) if exact_values else v) for k,v in after.items()},'output':{k:(_encode_vector_value(fields[k]['domain'],v) if exact_values else v) for k,v in emitted.items()},'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs'],
                             **({'output_operations':sorted(op['id'] for op in output_frames.values())} if explicit else {})})
         case_data={'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                    'input':test['input'],'initial_state':test['state'],'allowed':allowed}
@@ -2956,7 +2958,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
     missing=[r['id'] for r in model['rules'] if r['id'] not in witnesses]
     require(not missing,'test-selection produced no witness for TestModel rule(s): '+str(missing))
     return {'schema':V,'process':model['process'],'selection_rule':strategy,
-            'cases':[witnesses[r['id']] for r in model['rules']]}
+            'cases':[witnesses[r['id']] for r in model['rules']],
+            **({'semantic_value_transport':'cat-exact-values/v1'} if any(_exact_value_kind(f['domain']) for f in fields.values()) else {})}
 
 def _vitest_renderer():
     import importlib.util
@@ -2993,6 +2996,7 @@ def _check_observation_transport(model, binding, expected):
 
 
 def emit_vitest(model,vectors,binding_path):
+    require(binding_path is not None,'Vitest renderer requires explicit JSON/instant binding and driver binding')
     binding=json.loads(Path(binding_path).read_text(encoding='utf-8'))
     check_keys(binding,['schema','process','driver'],
                optional=('undefined_transport','output_operation_transport','observation_transport','semantic_value_transport'),
@@ -3004,6 +3008,8 @@ def emit_vitest(model,vectors,binding_path):
             f['role'] in ('input','state','output') and _exact_value_kind(f['domain']) for f in semantic)),
             'Vitest renderer requires explicit JSON/instant binding for supported top-level fields')
     require(semantic or binding.get('semantic_value_transport') is None, 'semantic transport requires semantic fields')
+    require(not semantic or vectors.get('semantic_value_transport')=='cat-exact-values/v1',
+            'exact semantic driver requires explicitly tagged vectors; regenerate or convert vectors explicitly')
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     observed=_check_observation_transport(model,binding,'js-driver-observed/v1')
@@ -3177,9 +3183,9 @@ def current_vectors(model, vectors, queue, model_bytes, vector_bytes):
     require(current is not None, 'Queue has no current item')
     chosen = [x for x in vectors['cases'] if x['id'] == current['vector_ref']]
     require(len(chosen) == 1, 'current Queue vector must resolve exactly once')
-    probe = expand_cases(model, {'schema': vectors['schema'], 'process': vectors['process'], 'cases': chosen})[0]
+    probe = expand_cases(model, {**vectors, 'cases': chosen})[0]
     require(probe['source_tce'] == current['model_ref'], 'Queue model_ref does not match vector-derived TestModel rule')
-    return {'schema': vectors['schema'], 'process': vectors['process'], 'cases': chosen}
+    return {**vectors, 'cases': chosen}
 
 def format_domain(d, language='en'):
     t=d['type']
