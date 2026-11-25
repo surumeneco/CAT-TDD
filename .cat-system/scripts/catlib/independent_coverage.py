@@ -877,48 +877,43 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
         if outputs:
             providers=[op for op in operations if op['direction']=='provide'
                        and (op.get('trigger') is None or op['trigger']==ident)]
-            # Nonrequired output frames need an explicit, unique provider.
-            # Required fields must be emitted by each alternative regardless
-            # of whether a nonrequired field or a provide operation exists.
-            # A provide Operation only scopes an output frame when the
-            # Source declares nonrequired or operation-specific output Presence.
-            # Otherwise the legacy direct TCE frame covers all required outputs,
-            # even when an unrelated PI declares a provide Operation.
+            # Derive each owning PI's result frame from Source. Legacy direct
+            # output semantics are retained if no scoped Presence is declared.
             needs_provider=(bool(output_special) or any(ov['field'] in outputs for ov in overrides))
-            provider=providers[0] if needs_provider and len(providers)==1 else None
-            if provider is not None:
-                covered_owners.add(provider['source_pi'])
-            scoped_outputs=(outputs if provider is None else {
-                field:info for field,info in outputs.items()
-                if info['owner']==provider['source_pi']})
-            # Derive the current response frame independently from Source.
-            # Only another explicitly Trigger-bound provide of the same PI
-            # can own a distinct override for a shared output field.
-            invalid_override=False
-            if provider is not None:
+            grouped={op['source_pi']:op for op in providers}
+            valid=(needs_provider and bool(providers) and len(grouped)==len(providers)
+                   and (len(providers)==1 or all(op.get('trigger')==ident for op in providers)))
+            if valid:
                 for ov in overrides:
-                    if ov['field'] not in scoped_outputs or ov['operation']==provider['id']:
+                    info=outputs.get(ov['field'])
+                    op=grouped.get(info['owner']) if info is not None else None
+                    if op is None or ov['operation']==op['id']:
                         continue
-                    matches=[op for op in operations if op['id']==ov['operation']
-                             and op['source_pi']==provider['source_pi']]
+                    matches=[item for item in operations if item['id']==ov['operation']
+                             and item['source_pi']==op['source_pi']]
                     if (len(matches)!=1 or matches[0]['direction']!='provide'
                             or matches[0].get('trigger') in (None,ident)):
-                        invalid_override=True
-            if output_special and (provider is None or invalid_override):
+                        valid=False
+            frames=grouped if valid else None
+            if frames is not None:
+                covered_owners.update(frames)
+            scoped_outputs=(outputs if frames is None else {
+                field:info for field,info in outputs.items() if info['owner'] in frames})
+            if output_special and frames is None:
                 output_ok=False
                 output_unproved.update(output_special)
             for rule in applicable:
                 for outcome in rule['allowed']:
                     emitted={x['target'] for x in outcome['write']}
-                    if provider is not None:
+                    if frames is not None:
                         unowned=emitted & (outputs.keys()-scoped_outputs.keys())
                         if unowned:
                             output_ok=False
                             output_unproved.update(unowned)
                     for field,info in scoped_outputs.items():
                         ps=([ov['presence'] for ov in overrides
-                             if ov['field']==field and ov['operation']==provider['id']]
-                            if provider is not None else [])
+                             if ov['field']==field and ov['operation']==frames[info['owner']]['id']]
+                            if frames is not None else [])
                         presence=ps[0] if ps else info['presence']
                         if (presence=='undefined' or (presence=='required' and field not in emitted)
                                 or (presence=='absent' and field in emitted)):

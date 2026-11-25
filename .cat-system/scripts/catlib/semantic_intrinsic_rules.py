@@ -60,6 +60,7 @@ def _fresh_output_scope(scope, fields, triggers, rules, operations, overrides, e
     if not field or field['role']!='output' or field.get('source_pi')!=pi:return False
     if not _resolved(field.get('domain')):return False
     candidates=[op for op in operations if op['direction']=='provide'
+                and op.get('source_pi')==pi
                 and op.get('trigger') in (None,trigger)]
     if len(candidates)!=1:return False
     op=candidates[0]
