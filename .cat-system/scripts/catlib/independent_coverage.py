@@ -894,7 +894,13 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                     if (len(matches)!=1 or matches[0]['direction']!='provide'
                             or matches[0].get('trigger') in (None,ident)):
                         valid=False
-            frames=grouped if valid else None
+            # A Trigger without a provider is an empty frame only when all
+            # output owners have explicitly Trigger-bound provider inventory.
+            owners={info['owner'] for info in outputs.values()}
+            scoped={op['source_pi'] for op in operations if op['direction']=='provide'
+                    and op.get('trigger') is not None}
+            inactive=needs_provider and not providers and owners<=scoped
+            frames=grouped if valid or inactive else None
             if frames is not None:
                 covered_owners.update(frames)
             scoped_outputs=(outputs if frames is None else {
