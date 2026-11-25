@@ -446,6 +446,18 @@ def _readable_spec_v2(path, kind, fm):
                 'presence':_canon(_cell(row,'Presence','存在'),
                                   {'required':{'必須'},'optional':{'任意'},'absent':{'不在'},
                                    'undefined':{'未定義'}},'Operation presence state')})
+        frame_rows=_section_any(body,'Output frames','提供出力フレーム')
+        output_frames=[]
+        if frame_rows is not None:
+            for row in _table_any(body,('Output frames','提供出力フレーム')):
+                number=_cell(row,'Outcome','結果')
+                require(number.isdigit() and int(number)>0,'Output frame Outcome must be positive integer')
+                operation=_cell(row,'Operation','操作')
+                output_frames.append({'trigger':semantic_ident(_cell(row,'Trigger','起点'),'Output frame Trigger'),
+                    'rule':semantic_ident(_cell(row,'Behavior','振る舞い'),'Output frame Behavior'),
+                    'outcome':int(number),'operation':None if operation=='—' else semantic_ident(operation,'Output frame Operation'),
+                    'mode':_canon(_cell(row,'Mode','活性'),{'one':{'必ず一つ'},'zero-or-one':{'零または一つ'},'none':{'非活性'}},'Output frame mode')})
+            require(output_frames,'explicit Output frames section must not be empty')
         constraints=[]
         for row in _table_any(body,('Constraints','制約'),required=False):
             constraints.append(parse_expr_text(_cell(row,'Expression','Condition','expression','condition','式','条件')))
@@ -456,7 +468,7 @@ def _readable_spec_v2(path, kind, fm):
                     'PI boundary mixed direction requires explicit per-peer operation semantics')
         return {'schema':S,'kind':kind,'process':process,'boundary':{'peer':peer,'direction':direction,**({'peers':extra_peers} if len(extra_peers)>1 else {})},
                 'fields':fields,'operations':operations,'operation_presence':operation_presence,
-                'constraints':constraints}
+                **({'output_frames':output_frames} if frame_rows is not None else {}),'constraints':constraints}
     if kind=='tce':
         require(_section_any(body,'Rules','Effects') is None,
                 'markdown-v2 TCE must use Behaviors/振る舞い; legacy Rules/Effects are markdown-v1 only')
@@ -568,7 +580,7 @@ def read_artifact(path, kind, allow_draft):
         except json.JSONDecodeError as e: raise Blocked(f'{path}: {e}') from e
     check_keys(spec,['schema','kind','process'],
                ['triggers','fields','rules','definitions','closed_world','coverage','constraints',
-                'interfaces','state_fields','observations','actions','boundary','operations','operation_presence'],str(path))
+                'interfaces','state_fields','observations','actions','boundary','operations','operation_presence','output_frames'],str(path))
     require(spec['schema']==S and spec['kind']==kind and spec['process']==fm.get('process'),
             f'{path}: frontmatter/semantic body mismatch')
     ident(fm.get('id'),'artifact id'); ident(spec['process'],'process id')
@@ -1632,12 +1644,32 @@ def _provided_output_frames(fields,operations,overrides,trigger):
     return frames
 
 
-def _unproved_output_presence(fields,operations,overrides,rules,triggers):
+def _unproved_output_presence(fields,operations,overrides,rules,triggers,explicit_frames=()):
     """Audit required output emission independently of nonrequired fields.
 
     No provide operation is needed for the legacy direct TCE output frame,
     but a nonrequired field still needs its explicit operation Presence.
     """
+    if explicit_frames:
+        from catlib.output_frame_contract import active_frames, declared_owners
+        owners=declared_owners(explicit_frames)
+        # Reuse legacy audit on the remaining owners, with no foreign writes.
+        remaining={k:f for k,f in fields.items() if f.get('source_pi') not in owners}
+        legacy_rules=[{**rule,'allowed':[{**out,'write':[w for w in out['write'] if w['target'] in remaining]}
+                                      for out in rule['allowed']]} for rule in rules]
+        errors=_unproved_output_presence(remaining,[op for op in operations if op['source_pi'] not in owners],
+            [ov for ov in overrides if ov['field'] in remaining],legacy_rules,triggers)
+        owned=[f for f in fields.values() if f['role']=='output' and f.get('source_pi') in owners]
+        for rule in rules:
+            for n,outcome in enumerate(rule['allowed'],1):
+                active=active_frames(explicit_frames,operations,rule['trigger'],rule['id'],n)
+                emitted={w['target'] for w in outcome['write']}
+                for field in owned:
+                    op=active.get(field['source_pi'])
+                    presence=_presence_for_field(field,op,overrides) if op is not None else 'absent'
+                    if presence=='undefined' or (presence=='required' and field['id'] not in emitted) or (presence=='absent' and field['id'] in emitted):
+                        errors.add(field['id'])
+        return errors
     special=_nonrequired_output_ids(fields,overrides)
     outputs=[f for f in fields.values() if f['role']=='output']
     errors=set()
@@ -1806,7 +1838,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         if contract=='markdown-v2':
             require(pif['id'] in p.get('interfaces',[]),'Process Interfaces must reference loaded PI '+pif['id'])
             check_keys(pi,['schema','kind','process','boundary','fields','operations'],
-                       ['constraints','operation_presence'],where='PI')
+                       ['constraints','operation_presence','output_frames'],where='PI')
             check_keys(pi['boundary'],['peer','direction'],['peers'],where='PI boundary')
             require(all(x==peer_binding.ORIGIN or peer_binding.concrete_process_id(x) for x in pi['boundary'].get('peers',[pi['boundary']['peer']])),
                     'PI peer process must use stable Process IDs')
@@ -2088,15 +2120,19 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         and semantic_transition_relation.matches(r.get('requirement'),r.get('condition'))
         and r.get('verification_contract')=='cat:intrinsic-model/v1'
         and semantic_transition_relation.prove(r['condition'],fields,pi_docs,rules,effect_checks,guard_invariants.values(),observation_relations)}
+    from catlib.output_frame_contract import declarations, validate_declarations
+    explicit_frames=declarations(pi_docs)
+    try:validate_declarations(explicit_frames,fields,pi_operations,operation_presence,rules,p['triggers'])
+    except ValueError as exc:raise Blocked(str(exc)) from exc
     intrinsic_proofs=semantic_intrinsic_rules.evaluate(
         rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
-        operation_presence,effect_checks,guard_invariants,transition_proofs,observation_proof_ids)
+        operation_presence,effect_checks,guard_invariants,transition_proofs,observation_proof_ids,explicit_frames)
     per_trigger={}; triggers=[t['id'] for t in p['triggers']]
     # A nonrequired output is provable only when a unique provided PI
     # operation owns its output and every TCE alternative respects the
     # presence-specific emission frame. Missing/undefined are never coerced.
     presence_unproven=_unproved_output_presence(
-        fields,pi_operations,operation_presence,rules,triggers)
+        fields,pi_operations,operation_presence,rules,triggers,explicit_frames)
     for trigger in triggers:
         rr=[r for r in rules if r['trigger']==trigger]
         operation,ambiguous=_presence_accepted_operation(pi_operations,trigger)
@@ -2437,6 +2473,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
         result['pi_boundaries']=[{'artifact':fm['id'],**spec['boundary']} for _,fm,spec in pi_docs]
         result['pi_operations']=pi_operations
         result['operation_presence']=operation_presence
+        if explicit_frames:result['output_frames']=explicit_frames
         result['process_interfaces']=p.get('interfaces',[])
     if contract in ('markdown-v1','markdown-v2'):result['normalized_ir']='cat-machine/v2'
     return result
@@ -2485,7 +2522,23 @@ def _vector_input_value(domain,presence,payload,name):
 
 
 
-def _vector_output_operations(model,test,fields):
+def _explicit_vector_frames(model,fields,rule):
+    from catlib.output_frame_contract import active_frames, declared_owners
+    rows=model['output_frames']; owners=declared_owners(rows)
+    operations=model.get('pi_operations',[])
+    legacy_fields={k:f for k,f in fields.items() if f.get('source_pi') not in owners}
+    legacy_ops=[op for op in operations if op['source_pi'] not in owners]
+    legacy_overrides=[ov for ov in model.get('operation_presence',[]) if ov['field'] in legacy_fields]
+    legacy=_provided_output_frames(legacy_fields,legacy_ops,legacy_overrides,rule['trigger'])
+    require(legacy is not None or not any(f['role']=='output' for f in legacy_fields.values()),
+            'explicit frames with unresolved legacy output transport')
+    alternatives=[{**(legacy or {}),**active_frames(rows,operations,rule['trigger'],rule['id'],n)}
+                  for n in range(1,len(rule['allowed'])+1)]
+    require(bool(alternatives),'empty allowed result')
+    return alternatives
+
+
+def _vector_output_operations(model,test,fields,rule=None):
     overrides=model.get('operation_presence',[])
     declared=[x for x in overrides if fields[x['field']]['role']=='output']
     operations=model.get('pi_operations',[])
@@ -2620,7 +2673,6 @@ def expand_cases(model, vectors):
         ident(test['id'],'test ID');require(test['trigger'] in {t['id'] for t in model['triggers']},'unknown vector trigger')
         require(isinstance(test['input'],dict) and isinstance(test['state'],dict),'vector input/state must be objects')
         operation=_vector_operation(model,test)
-        output_frames=_vector_output_operations(model,test,fields)
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
         observation_ids,observation_constraints=_vector_observation_context(model,test['trigger'],fields)
@@ -2660,16 +2712,24 @@ def expand_cases(model, vectors):
         require(all(eval_expr(c,env,defs) is True for c in observation_constraints),
                 f'{test["id"]}: violates proved observation relation')
         rule=match_rules(model,test['trigger'],env)
+        explicit=bool(model.get('output_frames'))
+        if explicit:
+            alternative_frames=_explicit_vector_frames(model,fields,rule)
+            inventory=sorted({op['id'] for frame in alternative_frames for op in frame.values()})
+            require('output_operation' not in test and test.get('output_operations')==inventory,
+                    'vector.output_operations must equal explicit source-bound provider inventory (including empty)')
+        else:output_frames=_vector_output_operations(model,test,fields,rule)
         defs={d['id']:d for d in model['definitions']}
         allowed=[]
-        for out in rule['allowed']:
+        for index,out in enumerate(rule['allowed']):
+            if explicit:output_frames=alternative_frames[index]
             after=deepcopy(test['state']); emitted={}
             for write in out['write']:
                 target=write['target'];val=eval_expr(write['expr'],env,defs)
                 require(in_domain(fields[target]['domain'],val),f'{test["id"]}: output {target} out of declared domain')
                 if fields[target]['role']=='state':after[target]=val
                 else:emitted[target]=val
-            if output_frames or _provided_output_frames(fields,model.get('pi_operations',[]),
+            if model.get('output_frames') or output_frames or _provided_output_frames(fields,model.get('pi_operations',[]),
                     model.get('operation_presence',[]),test['trigger']) == {}:
                 require(all(fields[target].get('source_pi') in output_frames
                             for target in emitted if fields[target]['role']=='output'),
@@ -2686,11 +2746,14 @@ def expand_cases(model, vectors):
                             'required output missing for operation '+output_operation['id']+': '+field['id'])
                     require(pres!='absent' or field['id'] not in emitted,
                             'absent output emitted by operation '+output_operation['id']+': '+field['id'])
-            allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs']})
+            allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs'],
+                            **({'output_operations':sorted(op['id'] for op in output_frames.values())} if explicit else {})})
         case_data={'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                    'input':test['input'],'initial_state':test['state'],'allowed':allowed}
         if observation_ids:case_data['observations']=payload
-        if len(output_frames)==1:
+        if explicit:
+            case_data['output_operations']=inventory
+        elif len(output_frames)==1:
             case_data['output_operation']=next(iter(output_frames.values()))['id']
         elif output_frames:
             case_data['output_operations']=sorted(op['id'] for op in output_frames.values())
@@ -2734,7 +2797,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         output_overrides=[x for x in model.get('operation_presence',[])
                           if fields[x['field']]['role']=='output']
         provide_frames=None
-        if output_overrides or output_special:
+        if not model.get('output_frames') and (output_overrides or output_special):
             provide_frames=_provided_output_frames(
                 fields,model.get('pi_operations',[]),
                 model.get('operation_presence',[]),trigger)
@@ -2860,7 +2923,9 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             if observation_ids:sample['observations']={key:env[key] for key in observation_ids}
             if operation is not None and any(value!='required' for value in presence.values()):
                 sample['operation']=operation['id']
-            if provide_frames:
+            if model.get('output_frames'):
+                sample['output_operations']=sorted({op['id'] for frame in _explicit_vector_frames(model,fields,rule) for op in frame.values()})
+            elif provide_frames:
                 if len(provide_frames)==1:
                     sample['output_operation']=next(iter(provide_frames.values()))['id']
                 else:
@@ -3209,6 +3274,9 @@ def render_model_markdown(model):
     for entry in model.get('operation_presence',[]):
         lines.append('| '+' | '.join(_md(entry[key]) for key in
             ('operation','field','presence','source_pi'))+' |')
+    if model.get('output_frames'):
+        lines += ['',('## 提供出力フレーム' if ja else '## Output frames'),'','```json',
+                  json.dumps(model['output_frames'],ensure_ascii=False,sort_keys=True,indent=2),'```']
     lines += ['',('## 観測利用可能時点' if ja else '## Observation availability'),'',
               ('| 観測ID | 出典 | 利用可能な起点(JSON) |' if ja else
                '| Observation ID | Source | Available on (JSON) |'),

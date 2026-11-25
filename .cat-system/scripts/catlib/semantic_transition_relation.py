@@ -70,6 +70,8 @@ def prepare(scope,fields,pi_docs,rules,checks,rejected=(),invariants=(),independ
             if key not in fields or fields[key]['role'] not in ('state','output'):return None
             if fields[key]['role']=='output':outputs.append(key)
         if outputs:
+            # Existing profiles require a static output operation for the whole cut.
+            if pi.get('output_frames'):return None
             provides=[(fm['id'],other,op) for _,fm,other in pi_docs for op in other['operations'] if op['direction']=='provide' and op.get('trigger')==trigger]
             if len(provides)!=1:return None
             po,ppi,pop=provides[0]

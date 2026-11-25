@@ -14,6 +14,7 @@ on:
       - 'tests/test_multi_owner_output_presence.py'
       - 'tests/test_scoped_output_presence.py'
       - 'tests/test_projection_unused_typed_sibling.py'
+      - 'tests/test_explicit_output_frames.py'
   workflow_dispatch:
 
 permissions:
@@ -84,4 +85,35 @@ jobs:
                   assert len(failures) == count and run.returncode == (1 if count else 0), (fixture, mode, run.returncode, failures)
                   assert all(reason in (f.get('message', '') + (f.text or '')) for f in failures), (fixture, mode, failures)
                   print('actual JUnit:', fixture, mode, 'validated')
+          PY
+      - name: Generate explicit provider frame JUnit tests
+        env:
+          CAT_EXPLICIT_FRAMES_JUNIT_SMOKE_DIR: ${{ runner.temp }}/cat-junit-smoke/explicit-frames
+        run: python -m unittest discover -s tests -p test_explicit_output_frames.py -v
+      - name: Verify actual explicit provider frames using JUnit
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root=Path(os.environ['RUNNER_TEMP'])/'cat-junit-smoke'
+          plans = {
+              'exclusive': (2, {'direct':0,'both':2,'wrong':2}),
+              'split': (3, {'direct':0,'resend':1,'inactive':1}),
+              'alternatives': (1, {'direct':0,'alternate':0,'both-active':1,'mixed':1}),
+          }
+          for fixture, (total,modes) in plans.items():
+              directory=root/'explicit-frames'/fixture
+              classes=directory/'classes'
+              classes.mkdir()
+              subprocess.run(['javac','-encoding','UTF-8','-cp',str(root/'junit.jar'),'-d',str(classes),*map(str,sorted(directory.glob('probe/*.java')))],check=True)
+              for mode,count in modes.items():
+                  report=directory/mode
+                  run=subprocess.run(['java','-jar',str(root/'junit.jar'),'execute','--class-path',str(classes),'--scan-class-path','--reports-dir',str(report),'--fail-if-no-tests'],env={**os.environ,'CAT_FRAME_MODE':mode})
+                  cases=ET.parse(report/'TEST-junit-jupiter.xml').getroot().findall('.//testcase')
+                  assert len(cases)==total and not any(c.find('skipped') is not None or c.find('error') is not None for c in cases), (fixture,mode,cases)
+                  failures=[c.find('failure') for c in cases if c.find('failure') is not None]
+                  assert len(failures)==count and run.returncode==(1 if count else 0), (fixture,mode,failures)
+                  assert all('CAT unknown provider operation' in (f.get('message','')+(f.text or '')) or 'Observed state/output not in CAT allowed outcome set' in (f.get('message','')+(f.text or '')) for f in failures)
+                  print('explicit frame JUnit:', fixture,mode,'validated')
           PY

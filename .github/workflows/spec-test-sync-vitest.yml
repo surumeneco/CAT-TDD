@@ -16,6 +16,7 @@ on:
       - 'tests/test_observed_transport.py'
       - 'tests/test_observed_structural_relations.py'
       - 'tests/test_structural_copy_relation.py'
+      - 'tests/test_explicit_output_frames.py'
   workflow_dispatch:
 
 permissions:
@@ -151,4 +152,30 @@ jobs:
               assert (run.returncode == 0) == good and len(failures) == (0 if good else 1), (mode,run.returncode,failures)
               if not good: assert 'expected false to be true' in (failures[0].get('message','') + (failures[0].text or ''))
               print('real Vitest structural copy:', mode, 'validated')
+          PY
+      - name: Generate explicit provider frame tests
+        env:
+          CAT_EXPLICIT_FRAMES_VITEST_SMOKE_DIR: ${{ github.workspace }}/.cat-vitest-smoke/tests/explicit-frames
+        run: python -m unittest discover -s tests -p test_explicit_output_frames.py -v
+      - name: Verify actual explicit provider frames using Vitest
+        working-directory: .cat-vitest-smoke
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          import xml.etree.ElementTree as ET
+          plans = {
+              'exclusive': (2, {'direct':0,'both':2,'wrong':2}),
+              'split': (3, {'direct':0,'resend':1,'inactive':1}),
+              'alternatives': (1, {'direct':0,'alternate':0,'both-active':1,'mixed':1}),
+          }
+          for fixture, (total, modes) in plans.items():
+              for mode, count in modes.items():
+                  report = fixture + '-' + mode + '-explicit.xml'
+                  run = subprocess.run(['npx','vitest','run','tests/explicit-frames/'+fixture,'--reporter=junit','--outputFile='+report], env={**os.environ,'CAT_FRAME_MODE':mode})
+                  cases=ET.parse(report).getroot().findall('.//testcase')
+                  assert len(cases)==total and not any(c.find('skipped') is not None or c.find('error') is not None for c in cases), (fixture,mode,cases)
+                  failures=[c.find('failure') for c in cases if c.find('failure') is not None]
+                  assert len(failures)==count and (run.returncode!=0)==bool(count), (fixture,mode,failures)
+                  assert all('CAT unknown provider operation' in (f.get('message','')+(f.text or '')) or 'expected false to be true' in (f.get('message','')+(f.text or '')) for f in failures)
+                  print('explicit frame Vitest:', fixture, mode, 'validated')
           PY

@@ -88,6 +88,20 @@ def render_vitest(model, cases, binding):
             "}",
             "",
         ]
+    explicit=bool(model.get('output_frames'))
+    if explicit:
+        lines[-1:-1]=[
+            "function observedOperationIDs(value: unknown, inventory: Record<string,string[]>): string[] {",
+            "  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('CAT provider frame must be a record');",
+            "  const ids = Object.keys(value).sort();",
+            "  if (!ids.every(id => Object.prototype.hasOwnProperty.call(inventory,id))) throw new Error('CAT unknown provider operation');",
+            "  return ids;",
+            "}",
+            "function selectedFields(ids: string[], inventory: Record<string,string[]>): Record<string,string[]> {",
+            "  return Object.fromEntries(ids.map(id => [id,inventory[id]]));",
+            "}",
+            "",
+        ]
     if uses_observations:
         lines[-1:-1]=[
             "function observedResult(value: unknown, expected: Record<string,unknown>): unknown {",
@@ -115,7 +129,7 @@ def render_vitest(model, cases, binding):
     set_fields=[f["id"] for f in model["fields"] if f["role"]=="state" and is_set_domain(f["domain"])]
     output_set_fields=[f["id"] for f in model["fields"] if f["role"]=="output" and is_set_domain(f["domain"])]
     for c in cases:
-        alt=[{"state":a["state"],"output":a["output"]} for a in c["allowed"]]
+        alt=[{"state":a["state"],"output":a["output"],**({"operations":a["output_operations"]} if explicit else {})} for a in c["allowed"]]
         undefined_fields=sorted(
             id_ for id_,v in c['input'].items() if v=={'$cat_presence':'undefined'})
         if undefined_fields:
@@ -133,7 +147,8 @@ def render_vitest(model, cases, binding):
             input_lines=["    const input = " + _ts(c["input"]) + " as Record<string,unknown>"]
         provide_operation=c.get('output_operation')
         provide_operations=c.get('output_operations') or ([provide_operation] if provide_operation is not None else [])
-        if provide_operations and multi_transport:
+        framed_case=bool(provide_operations) or 'output_operations' in c
+        if framed_case and multi_transport:
             owners={op['id']:op['source_pi'] for op in model.get('pi_operations',[]) if op['direction']=='provide'}
             fields={operation:sorted(f['id'] for f in model['fields']
                                      if f['role']=='output' and f.get('source_pi')==owners[operation])
@@ -143,7 +158,10 @@ def render_vitest(model, cases, binding):
                 '    expect(typeof (driver as {triggerProvidedOperations?: unknown}).triggerProvidedOperations).toBe("function")',
                 "    const observed = await (driver as {triggerProvidedOperations:(operations: string[], trigger: string, input: Record<string,unknown>) => Promise<unknown>}).triggerProvidedOperations(" +
                 _ts(provide_operations) + "," + _ts(c["trigger"]) + ",input)",
-                "    const output = flattenProvidedOperations(observed, " + _ts(fields) + ")",
+                *(['    const inventory = ' + _ts(fields) + ' as Record<string,string[]>',
+                   '    const actualOperations = observedOperationIDs(observed, inventory)',
+                   '    const output = flattenProvidedOperations(observed, selectedFields(actualOperations, inventory))'] if explicit else
+                  ["    const output = flattenProvidedOperations(observed, " + _ts(fields) + ")"]),
             ]
         elif 'output_operations' in c:
             raise ValueError('multiple provider operations require js-driver-provides/v1')
@@ -158,7 +176,7 @@ def render_vitest(model, cases, binding):
             output_lines=["    const output = await driver.trigger(" + _ts(c["trigger"]) + ", input)"]
         observation_lines=[]
         if 'observations' in c:
-            if provide_operations and not multi_transport:
+            if framed_case and not multi_transport:
                 raise ValueError('observed operation frames require js-driver-provides/v1')
             scope={f['id']:json.loads(f['source'].removeprefix('same-execution-observation '))
                    for f in model['fields'] if f['id'] in c['observations']}
@@ -169,13 +187,16 @@ def render_vitest(model, cases, binding):
                 '    const expectedObservations = ' + _ts(c['observations']) + ' as Record<string,unknown>',
                 '    await (driver as {prepareObservations:(scope: Record<string,unknown>, values: Record<string,unknown>) => Promise<void>}).prepareObservations(' + _ts(scope) + ', {...expectedObservations})',
             ]
-            if provide_operations:
+            if framed_case:
                 observation_lines.insert(0,'    expect((driver as {outputOperationTransport?: string}).outputOperationTransport).toBe("js-driver-provides/v1")')
             output_lines=[
                 '    const observed = await (driver as {triggerObserved:(operations: string[], trigger: string, input: Record<string,unknown>) => Promise<unknown>}).triggerObserved(' + _ts(provide_operations) + ',' + _ts(c['trigger']) + ',input)',
                 '    const actualOutput = observedResult(observed, expectedObservations)',
-                ('    const output = flattenProvidedOperations(actualOutput, ' + _ts(fields) + ')' if provide_operations else
-                 '    const output = actualOutput as Record<string,unknown>'),
+                *(['    const inventory = ' + _ts(fields) + ' as Record<string,string[]>',
+                   '    const actualOperations = observedOperationIDs(actualOutput, inventory)',
+                   '    const output = flattenProvidedOperations(actualOutput, selectedFields(actualOperations, inventory))'] if explicit else
+                  [('    const output = flattenProvidedOperations(actualOutput, ' + _ts(fields) + ')' if framed_case else
+                   '    const output = actualOutput as Record<string,unknown>')]),
             ]
         lines.extend([
             "  it(" + _ts(c["id"]) + ", async () => {",
@@ -189,8 +210,8 @@ def render_vitest(model, cases, binding):
             "    for (const id of " + _ts(declared) + ") { expect(equalCATValue(id,before[id],pre[id]," + _ts(set_fields) + ")).toBe(true); }",
             *output_lines,
             "    const after = await driver.observeState()",
-            "    const allowed = " + _ts(alt) + " as Array<{state:Record<string,unknown>,output:Record<string,unknown>}> ",
-            "    expect(accept(after, output, allowed, " + _ts(declared) + ", " + _ts(set_fields) + ", " + _ts(output_set_fields) + ")).toBe(true)",
+            "    const allowed = " + _ts(alt) + (" as Array<{state:Record<string,unknown>,output:Record<string,unknown>,operations:string[]}> " if explicit else " as Array<{state:Record<string,unknown>,output:Record<string,unknown>}> "),
+            "    expect(accept(after, output, " + ("allowed.filter(a => isDeepStrictEqual(a.operations, actualOperations))" if explicit else "allowed") + ", " + _ts(declared) + ", " + _ts(set_fields) + ", " + _ts(output_set_fields) + ")).toBe(true)",
             "  })",
         ])
     lines.append("})")

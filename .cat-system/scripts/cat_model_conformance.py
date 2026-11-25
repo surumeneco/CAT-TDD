@@ -426,6 +426,7 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
         'interfaces': tuple(sorted(p.get('interfaces', []))),
         'boundary': pi_docs[0][2].get('boundary') if len(pi_docs)==1 else None,
         'pi_boundaries': [{'artifact':fm['id'],**a['boundary']} for _,fm,a in pi_docs],
+        'output_frames':[dict(row,source_pi=fm['id']) for _,fm,a in pi_docs for row in a.get('output_frames',[])],
         'operation_presence':sorted((e['operation'],e['field'],e['presence'],fm['id'])
                                     for _,fm,a in pi_docs for e in a.get('operation_presence',[])),
         'operations': {
@@ -472,6 +473,7 @@ def _source_fresh_output(scope, triggers, pi_docs, tces, effect_checks, rejected
     words=scope.split(' ')
     if len(words)!=5 or words[0]!='fresh-output' or not all(words):return False
     _,owner,operation,trigger,field_id=words
+    if any(fm['id']==owner and pi.get('output_frames') for _,fm,pi in pi_docs):return False
     if trigger not in triggers:return False
     provided=[(fm['id'],op) for _,fm,pi in pi_docs for op in pi.get('operations',[])
               if fm['id']==owner and op['direction']=='provide'
@@ -710,6 +712,12 @@ def markdown_model(path):
         seen_operation_presence.add(key)
         operation_presence.append((key[0],key[1],cell(row,'Presence'),cell(row,'Source PI','出典PI')))
     operation_presence.sort()
+    frame_section=section(text,'Output frames','提供出力フレーム')
+    output_frames=[]
+    if frame_section is not None:
+        match=re.fullmatch(r'```json\s*(.*?)\s*```',frame_section,re.S)
+        require(match is not None,'invalid Markdown Output frames')
+        output_frames=json.loads(match.group(1))
     observation_section=section(text,'Observation availability','観測利用可能時点')
     require(observation_section is not None,'missing Markdown observation availability')
     observation_availability={}
@@ -868,6 +876,7 @@ def markdown_model(path):
             'rule_obligations':rule_obligations, 'intrinsic_rule_proofs':intrinsic_proofs,
             'named_type_definitions':named_types_data,
             'operation_presence':operation_presence,
+            'output_frames':output_frames,
             'observation_availability':observation_availability,
             'markdown_domains':markdown_domains,
             'interfaces': interfaces, 'boundary': boundary, 'pi_boundaries':pi_boundaries,
@@ -967,6 +976,7 @@ def json_model(path):
         'interfaces': tuple(sorted(model.get('process_interfaces', []))),
         'boundary': model.get('pi_boundary'),
         'pi_boundaries':model.get('pi_boundaries',[]),
+        'output_frames':model.get('output_frames',[]),
         'operation_presence':sorted((e['operation'],e['field'],e['presence'],e['source_pi'])
                                     for e in model.get('operation_presence',[])),
         'operations': operations,
@@ -1009,7 +1019,7 @@ def validate(process, pi, tce, model, domain_rule=None,common_rules=(),domain_sp
     if expected['unjustified_effect_proofs']:
         mismatches.append('effect_totality_independent')
     checks = ('sources', 'interfaces', 'boundary', 'operations', 'triggers', 'fields',
-              'constraints', 'definitions', 'rules', 'effects', 'frames')
+              'constraints', 'definitions', 'rules', 'effects', 'frames', 'output_frames')
     if Path(model).suffix.lower()!='.json':
         # Markdown need not carry JSON proof receipts, but it must preserve
         # the normative PI/Operation Trigger and unresolved result-time scope.
