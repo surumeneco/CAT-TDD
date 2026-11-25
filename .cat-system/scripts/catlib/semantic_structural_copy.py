@@ -2,7 +2,8 @@
 
 The initial profile accepts an unconditional direct before/after projection
 on one statically bound PI. It deliberately does not accept arbitrary sequence
-operations, predicates, set ordering, or external execution evidence.
+operations, predicates, nested sets, or external execution evidence.
+Top-level sets use existing extensional equality, not sequence ordering.
 """
 from __future__ import annotations
 import json
@@ -38,11 +39,18 @@ def _supported(domain):
     return kind in ('boolean', 'integer', 'string', 'null')
 
 
+def _supported_value(domain):
+    if domain.get('type') == 'reference':
+        return domain.get('resolved') is True and _supported_value(domain['of'])
+    if domain.get('type') == 'set':
+        return _supported(domain['element'])
+    return _supported(domain)
+
 def _structural(domain):
     kind = domain.get('type')
     if kind == 'reference':
         return domain.get('resolved') is True and _structural(domain['of'])
-    return kind in ('sequence', 'record')
+    return kind in ('sequence', 'record', 'set')
 
 
 def resolve(scope, fields, pi_docs, invariants=()):
@@ -101,7 +109,7 @@ def resolve(scope, fields, pi_docs, invariants=()):
             if field['role']=='output':
                 if field.get('source_pi')!=owner or not required(provided['id'],k):return None
             elif field['role']!='state':return None
-            if not _supported(field['domain']):return None
+            if not _supported_value(field['domain']):return None
         if not any(_structural(fields[k]['domain']) for k in subjects):return None
         relation=parse_expr_text(spec['relation'])
         atoms=relation['args'] if relation.get('op')=='and' else [relation]
@@ -180,6 +188,10 @@ def _example(domain, variant=0, empty=False):
                               for f in domain['fields'] if f['presence']=='required'}
     if kind=='sequence':
         return [] if empty else [_example(domain['element'],0),_example(domain['element'],1)]
+    if kind=='set':
+        if empty:return []
+        a,b=(_example(domain['element'],i) for i in (0,1))
+        return [a] if typed.same(a,b) else [a,b]
     if kind=='nullable':return None if variant==0 else _example(domain['of'],variant,empty)
     if kind=='null':return None
     if kind=='boolean':return bool(variant)
@@ -222,7 +234,7 @@ def witness_values(model,trigger,fields,guard_names,observed,presence):
         for k,f in fields.items():
             if (f['role'] not in ('input','state') or k in guard_names or
                     presence.get(k,'required')!='required' or not _structural(f['domain']) or
-                    not _supported(f['domain']) or k in observed and k not in copied):continue
+                    not _supported_value(f['domain']) or k in observed and k not in copied):continue
             sample=_example(f['domain'],0,empty=k not in copied)
             if typed.contains(f['domain'],sample):values[k]=[sample]
         return values

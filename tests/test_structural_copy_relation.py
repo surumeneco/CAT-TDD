@@ -121,6 +121,26 @@ class StructuralCopyTests(unittest.TestCase):
                     self.assertEqual(validate(p,pi,tce,path,domain_specs=[spec])['status'],'passed')
                 self.assertEqual(bool(m['intrinsic_rule_proofs']),expected=='passed')
 
+    def test_top_level_set_copy(self):
+        for kw, expected in [({}, 'passed'), ({'rhs':'input.other'}, 'inconclusive'),
+                             ({'second':'input.other'}, 'inconclusive'),
+                             ({'peer':'wrong'}, 'inconclusive'),
+                             ({'domain':'sequence<set<string>>'}, 'inconclusive')]:
+            with self.subTest(kw=kw), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                p,pi,tce,spec=fixture(root, **({'domain':'set<string>'}|kw))
+                run,result=flow(root,'conformance','--kind','process-closure')
+                self.assertEqual(result['status'],expected,(run.stdout,run.stderr))
+                if expected!='passed':continue
+                m=load(p,pi,tce,domain_specs=[spec]); vectors=selection_vectors(m)
+                self.assertEqual(len(vectors['cases'][0]['input']['input.items']),2)
+                for kind in ('model','vectors','queue','tests'):
+                    run,result=flow(root,'compile','--kind',kind)
+                    self.assertEqual(result['status'],'passed',(run.stdout,run.stderr))
+                for name,body in [('Independent.json',json.dumps(m)),('Independent.md',render_model_markdown(m))]:
+                    path=root/name;path.write_text(body,encoding='utf-8')
+                    self.assertEqual(validate(p,pi,tce,path,domain_specs=[spec])['status'],'passed')
+
     def test_generation_and_structural_values(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);p,pi,tce,spec=fixture(root)
