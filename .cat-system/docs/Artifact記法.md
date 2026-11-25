@@ -404,6 +404,8 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 | `@cat:finite-state-guard-invariant/v1` | 明示された有限State初期関係の非空性と全宣言Outcomeでの帰納的保存に基づく有効Guard領域 |
 | `@cat:trigger-observation-relation/v1` | 明示Triggerで利用可能な有限観測とStateの入力関係の非空性・全Stateへの射影 |
 | `@cat:finite-transition-relation/v1` | 指定Operation・Trigger・peerにおける全許容Outcomeの有限射影と、明示したbefore/after関係の完全一致 |
+| `@cat:observed-transition-relation/v1` | 同一実行の宣言済み取得観測を含む有限before/afterの許容結果関係の完全一致 |
+| `@cat:finite-structural-transition-relation/v1` | 厳密に有限列挙できる型付き構造のbefore/after射影と全許容結果関係の完全一致 |
 
 - 最初の3述語の `Condition` は **`assembled-process`**、`Verification` は **`cat:intrinsic-model/v1`**、`Requirement` は上表の対応する値と完全一致する必要がある。本文の自然言語要求や他のVerifier契約をこの文字列に置き換えて無断で意味変更してはならない。
 - 出力Presence述語の `Condition` は厳密に `fresh-output <PI ID> <provide Operation ID> <Trigger ID> <output Field ID>` とする。これは当該応答の出力を各Outcome開始時に未生成とする明示的な規範宣言であり、永続状態・以前の応答・外部配信を初期化する意味ではない。提供Operationを一意に解決でき、所有PI・Trigger・Fieldが一致し、Domainが解決済みで、全宣言Outcomeについて代入が高々1回かつ型／値域証明済みである場合だけ証明する。Operation別Presence（なければ基本Presence）が required なら全Outcomeで代入、absent なら全Outcomeで非代入、optional なら両方を許す。undefined、曖昧な提供Operation、宣言Outcomeが空のものは未証明とする。非代入は当該fresh outputの不在に限り、外部送信・到達可能性・Guardの網羅性は別に検査する。
@@ -417,6 +419,16 @@ transition-relation {"trigger":"receive","pi":"example.pi","operation":"accept-r
 ~~~
 
 - 同一ProcessのConfirmed Domain Specification、boolean/enum/有限integerの完全なbefore×after領域、または制約なしstringのbefore/after最大5参照の厳密な等値類（直接等値・不等値、文字列定数、コピー代入に限定、全体で最大65536組）、有効PI制約・証明済み有限初期不変条件、型・値域証明済みEffectを前提に、指定 `when` の非空な各状態で一意なTCE Ruleの全Outcomeを同時代入・非代入Frameで計算し、`relation` が許容する全射影結果の集合と両方向に一致することを検査する。許容される値を1つだけ列挙すること、または過大なFrameで独立した作用まで禁止することは集合欠落として未証明となる。複数Triggerの相関は、明示State上の相関IDと順序を各Triggerの関係で保持する。実際の相関ID、実Provider、全実行の進行性・公平性、限定等値類以外の無界ID関係や未来観測は証明しない。独立Source検査が同じ関係を全域で再構成し、出典SHAとScopeが一致したときだけ正式Gateが受理する。対象を明示せず自由文や部分fixtureを渡す契約ではない。
+- `@cat:observed-transition-relation/v1` は `observed-transition-relation <JSON object>` とし、上記有限遷移関係のキーに `observations`（参照するObservation IDの重複なし非空配列）を追加する。Observationはboolean/enumで、Processの `Available on` が当該Triggerのみ、`Source` が `same-execution-observation <JSON object>` であることを要求する。Source objectのキーは `trigger`, `pi`, `operation`, `peer`, `cut`（`trigger-entry`）, `source`（空でない意味上の観測元）。前4項は規範関係のScopeに一致させる。例：
+
+~~~text
+same-execution-observation {"trigger":"receive","pi":"example.pi","operation":"accept-request","peer":"example.client","cut":"trigger-entry","source":"declared-result"}
+observed-transition-relation {"trigger":"receive","pi":"example.pi","operation":"accept-request","peer":"example.client","provide":"reply","when":"true","fields":["output.result"],"observations":["observation.received"],"relation":"after.output.result == observation.received"}
+~~~
+
+  当該Triggerに適用される証明済み観測領域・初期不変条件・有効PI制約と `when` の非空な共通領域で、全許容Outcomeと規範関係の双方向一致を厳密に検査する。未取得・未来・別実行・別受付・別peerを同じ値として補完しない。これは取得済み値の**仕様上の評価断面**を宣言する契約で、実Providerからの取得、同期的な呼出し、永続相関ID等を実装に要求または証明するものではない。
+- `@cat:finite-structural-transition-relation/v1` は `finite-structural-transition-relation <JSON object>` とし、既存有限遷移関係のScope・Frame・required Presenceを維持した上で、既存型registryが完全列挙できるrecord/nullable/union/resolved reference/nullを認める。recordの不在とnullを区別し、項目順は意味上の差としない。既存のrequired scalar member記法を関係式中の `after.<field ID>.<member>` にも使用できる（Scope内のrequired after値のみ）。全record等値と、全required memberの等値を表す同値な関係は同じ許容結果集合で判定する。optional memberを省略した不完全な関係、未定義member、無限Domain、任意長sequence、未束縛型は証明しない。構造値のEffectは既存の型・値域証明を経る。
+- 上記2つの新profileは厳密な有限before×after領域（最大65536組）を対象にし、Compilerと独立Source検査がそれぞれ同じ規範関係を再構成する。有限性や証明予算は検査器の対応範囲であって、プロダクト仕様の値域を狭める要件ではない。実装の関数・class・SQL/ORM・同期方式・データ配置は、明示された仕様上の差や実装制約がない限り検証条件にしない。証明できないものは未証明とし、意味を保存する別の健全な証明方式を排除しない。既存有限遷移関係v1の記法・意味は維持する。
 - 正当にConfirmedとなった規範Artifactの出典ID・SHA-256と決定根拠が揃い、モデル条件が実証された場合だけ、Compilerが `intrinsic_rule_proofs` を生成する。独立 `model-conformance` は元Artifactから同じ性質を再検査し、結果・出典を比較する。
 - 未承認Artifact、未知の述語、条件の変更、自由記述、外部通信・DOM・データベース・Discord送信等の実装・複数実行に関するRuleは**未証明**である。登録済みfixtureやrunnerの単なる `passed` を自然言語要求の証明に代用しない。
 - この限定語彙を超える意味は、別の規範上の意味定義・Verifierの責任範囲・正当な承認と結合した機械証明手段が成立するまで `inconclusive/blocked` のまま扱う。

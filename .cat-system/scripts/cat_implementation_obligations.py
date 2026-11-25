@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from cat_compile_v2 import Blocked, load, read_artifact
+from catlib import semantic_transition_relation
 
 
 def item(identifier, category, source_ref, method):
@@ -211,9 +212,7 @@ def aggregate(document, queue=None, technology_results=(), model_conformance=Non
                          or (p.get('requirement')=='@cat:finite-state-guard-invariant/v1'
                              and isinstance(p.get('scope'),str)
                              and p['scope'].startswith('initial-state-relation '))
-                         or (p.get('requirement')=='@cat:finite-transition-relation/v1'
-                             and isinstance(p.get('scope'),str)
-                             and p['scope'].startswith('transition-relation '))
+                         or semantic_transition_relation.matches(p.get('requirement'),p.get('scope'))
                          or (p.get('requirement')=='@cat:trigger-observation-relation/v1'
                              and isinstance(p.get('scope'),str)
                              and p['scope'].startswith('observation-relation ')))
