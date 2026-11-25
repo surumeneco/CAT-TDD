@@ -38,6 +38,57 @@ class SourceReplayCLITest(unittest.TestCase):
                                             '--process',paths['process'],'--pi',paths['pi'],
                                             '--tce',tces[0],'-o',str(root/'wrong.json')]),2)
 
+    def test_work_current_item_uses_explicit_driver_binding_schema(self):
+        from test_cat_compile_readable import write_v2
+        from test_typed_spec_test_sync import approve_fixture
+        import cat_flow as flow
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for path in write_v2(root, False):
+                approve_fixture(path)
+            workpath=root/'Work.json'
+            conf={'schema':'cat-compile/v2','process':'Process.md','pi':'PI.md',
+                  'tce':'TCE.md','model':'Model.json','vectors':'Vectors.json',
+                  'queue':'Queue.json','binding':'Binding.json',
+                  'tests_output':'Generated.java','allow_draft':False}
+            work={'compilation':conf,'technologies':['Java','JUnit']}
+            for kind in ('model','vectors','queue'):
+                result=flow.compile_work(workpath,work,kind,False)
+                self.assertEqual(result['status'],'passed',result)
+            queue=json.loads((root/'Queue.json').read_text(encoding='utf-8'))
+            current=next(item for item in queue['items'] if item['status']=='current')
+            junit={'schema':'cat-junit-driver-binding/v1','process':'demo.process',
+                   'test_package':'probe','test_class':'ProbeTest','driver_class':'probe.Driver'}
+            vitest={'schema':'cat-test-driver/v2','process':'demo.process','driver':'./driver'}
+            binding=root/'Binding.json'
+            for framework,technology,data,output,marker in (
+                    ('junit','JUnit',junit,'Generated.java','@DisplayName'),
+                    ('vitest','Vitest',vitest,'Generated.test.ts','vitest')):
+                with self.subTest(framework=framework):
+                    binding.write_text(json.dumps(data),encoding='utf-8')
+                    work['technologies']=[technology]
+                    conf['tests_output']=output
+                    result=flow.compile_work(workpath,work,'tests',False)
+                    self.assertEqual(result['status'],'passed',result)
+                    generated=(root/output).read_text(encoding='utf-8')
+                    self.assertIn(marker,generated)
+                    self.assertIn(current['id'],generated)
+                    for item in queue['items']:
+                        if item['status']!='current':
+                            self.assertNotIn('"'+item['id']+'"',generated)
+                    self.assertEqual(flow.compile_work(workpath,work,'tests',True)['status'],'passed')
+                    (root/output).write_text(generated+'// changed',encoding='utf-8')
+                    self.assertEqual(flow.compile_work(workpath,work,'tests',True)['status'],'blocked')
+            work['technologies']=['JUnit']
+            with self.assertRaisesRegex(flow.Blocked,'contradicts'):
+                flow.compile_work(workpath,work,'tests',False)
+            for bad in ({'schema':'unknown'}, {}, {'schema':[]}, []):
+                binding.write_text(json.dumps(bad),encoding='utf-8')
+                with self.assertRaises(flow.Blocked):
+                    flow.compile_work(workpath,work,'tests',False)
+            binding.write_text(json.dumps({**junit,'process':'wrong.process'}),encoding='utf-8')
+            self.assertEqual(flow.compile_work(workpath,work,'tests',False)['status'],'blocked')
+
     def test_intrinsic_common_rule_replayed_without_silent_omission(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
