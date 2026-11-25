@@ -18,7 +18,7 @@ from catlib import semantic_types as typed
 
 def artifact(kind, ident, refs, body):
     return (f"---\ncat_version: '0.3'\nkind: {kind}\nid: {ident}\nstatus: confirmed\n"
-            "process: probe.masks\nsource_refs: [synthetic-test-only]\n"
+            "process: probe.masks\nsource_refs: [\"synthetic-test-only\"]\n"
             f"decision_ref: synthetic-test-only\nrefs: {json.dumps(refs)}\n"
             "semantic_contract: markdown-v2\nlanguage: en\n---\n\n"+body+'\n')
 
