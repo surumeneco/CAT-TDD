@@ -276,7 +276,19 @@ def compile_work(wpath, w, kind, check):
             if kind == 'tests':
                 for key in ('binding', 'queue', 'tests_output'):
                     require(conf.get(key), f'compilation.{key} missing')
-                argv += [loc('binding'), '--queue', loc('queue')]
+                binding_path = loc('binding')
+                binding = read_json(binding_path)
+                require(isinstance(binding, dict), 'driver binding must be an object')
+                schema = binding.get('schema')
+                frameworks = {'cat-test-driver/v2': 'vitest',
+                              'cat-junit-driver-binding/v1': 'junit'}
+                require(isinstance(schema, str) and schema in frameworks,
+                        'unsupported test driver binding schema')
+                framework = frameworks[schema]
+                declared = set(w.get('technologies', [])) & {'Vitest', 'JUnit'}
+                require(not declared or {'vitest': 'Vitest', 'junit': 'JUnit'}[framework] in declared,
+                        'test driver binding contradicts Work test technology')
+                argv += [binding_path, '--queue', loc('queue'), '--framework', framework]
         process = loc('process')
         pis = compilation_pi_paths(wpath, w, conf, check)
         tces = compilation_tce_paths(wpath, w, conf, check)
