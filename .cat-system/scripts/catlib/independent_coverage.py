@@ -224,6 +224,63 @@ def independent_reference_palette(names,clauses,extra_literals=(),require_pair=T
     except (ValueError,KeyError,TypeError):return None
 
 
+def _finite_truth_tables(names,dimensions,clauses,definitions):
+    """Recompute bounded predicate truth tables from independent Source ASTs.
+
+    Table entries can be undefined. An undefined entry is relevant only when
+    reached by the normal ordered constraint and Guard evaluation, not merely
+    because it exists in a projected subspace excluded by prior constraints.
+    """
+    from operator import itemgetter
+    n=math.prod(map(len,dimensions))
+    if n>2_000_000 or n*len(clauses)>64_000_000:return None
+    if any(any(x is _PRESENT_CLASS for x in dim) for dim in dimensions):return None
+    plans=[];total=0
+    for expr in clauses:
+        deps=used_refs(expr,definitions)
+        if not deps<=set(names):return None
+        pos=tuple(i for i,name in enumerate(names) if name in deps)
+        axes=[range(len(dimensions[i])) for i in pos]
+        size=math.prod(map(len,axes));total+=size
+        if size>LIMIT or total>1_000_000:return None
+        plans.append((expr,pos,axes))
+    def table(expr,pos,axes):
+        values={}
+        for key in itertools.product(*axes):
+            env={names[i]:dimensions[i][j] for i,j in zip(pos,key)}
+            try:values[key]=bool(eval_expr(expr,env,definitions))
+            except (Blocked,TypeError,ValueError,KeyError):values[key]=None
+        pick=itemgetter(*pos) if len(pos)>1 else (lambda row:(row[pos[0]],)) if pos else (lambda row:())
+        def evaluate(row):
+            value=values[pick(row)]
+            if value is None:raise Blocked('undefined Source predicate')
+            return value
+        return evaluate
+    return [table(*plan) for plan in plans]
+
+
+def _independent_null_cells(domain,field,clauses):
+    if domain!={'type':'nullable','of':{'type':'string'}}:return None
+    found=False
+    def audit(node):
+        nonlocal found
+        if node.get('op')=='call':return False
+        args=node.get('args',[])
+        if node.get('op') in ('eq','ne') and len(args)==2:
+            for a,b in ((args[0],args[1]),(args[1],args[0])):
+                if a=={'ref':field} and b=={'literal':None}:
+                    found=True;return True
+        if node.get('ref')==field:return False
+        # A reference below any other non-Boolean operation is outside
+        # this exact fragment, even when an inner null comparison exists.
+        if node.get('op') not in ('and','or','not'):
+            if field in used_refs(node,{}):return False
+        return all(audit(arg) for arg in args)
+    def opaque(node):return node.get('op')=='call' or any(opaque(a) for a in node.get('args',[]))
+    if any(opaque(c) for c in clauses):return None
+    return [None,''] if all(audit(c) for c in clauses) and found else None
+
+
 def _independent_string_cells(domain, field, clauses, allow_presence=False):
     """Independent literal-equality truth cells, without compiler helpers."""
     if domain != {'type': 'string'}:
@@ -683,6 +740,11 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                     partition_fields.append(field)
                     partition_kinds.add('string')
             if values is None and (field not in inputs or current_presence(field)=='required'):
+                values=_independent_null_cells(domains[field],field,clauses)
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('nullable_string_null')
+            if values is None and (field not in inputs or current_presence(field)=='required'):
                 values=_independent_real_cells(domains[field],field,clauses)
                 if values is not None:
                     partition_fields.append(field)
@@ -710,7 +772,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
             if values is None:
                 possible=False;break
             dimensions.append(values)
-        if not possible or math.prod(map(len,dimensions))>LIMIT:
+        size=math.prod(map(len,dimensions))
+        table=(_finite_truth_tables(sorted(names),dimensions,clauses,definitions)
+               if possible and size>LIMIT and not partition_fields else None)
+        if not possible or (size>LIMIT and table is None):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
         gaps=overlaps=0;visited=set();unknown=False
@@ -726,14 +791,24 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                           {'$cat_presence':'undefined'} if value is types.UNDEFINED else
                           {'$cat_presence':'present'} if value is _PRESENT_CLASS else transport(value))
                     for name,value in env.items()}
-        for items in itertools.product(*dimensions):
-            env=dict(zip(sorted(names),items))
+        ordered=sorted(names)
+        rows=(itertools.product(*(range(len(d)) for d in dimensions)) if table is not None
+              else itertools.product(*dimensions))
+        for items in rows:
+            env=None if table is not None else dict(zip(ordered,items))
             try:
-                if not all(eval_expr(c,env,definitions) for c in constraints):continue
-                admissible+=1
-                hit=[r['id'] for r in applicable if eval_expr(r['when'],env,definitions)]
+                if table is not None:
+                    if not all(fn(items) for fn in table[:len(constraints)]):continue
+                    admissible+=1
+                    hit=[r['id'] for r,fn in zip(applicable,table[len(constraints):]) if fn(items)]
+                else:
+                    if not all(eval_expr(c,env,definitions) for c in constraints):continue
+                    admissible+=1
+                    hit=[r['id'] for r in applicable if eval_expr(r['when'],env,definitions)]
             except (Blocked,TypeError,ValueError,KeyError):
                 unknown=True;break
+            if (not hit or len(hit)>1) and env is None:
+                env={k:d[i] for k,d,i in zip(ordered,dimensions,items)}
             if len(hit)==0:
                 gaps+=1
                 if len(uncovered_examples)<64:uncovered_examples.append(snapshot(env))
@@ -764,6 +839,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
             method=('integer-literal-partition/v1' if partition_kinds=={'integer'}
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
+                    else 'nullable-string-null-partition/v1' if partition_kinds=={'nullable_string_null'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
