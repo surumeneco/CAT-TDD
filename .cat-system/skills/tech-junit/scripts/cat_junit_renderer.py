@@ -95,7 +95,7 @@ def render_junit(model, cases, binding):
         if c['id'] in seen:
             raise ValueError("duplicate CAT case ID")
         seen.add(c['id'])
-        if 'output_operation' in c:
+        if 'output_operation' in c or 'output_operations' in c:
             raise ValueError("JUnit renderer cannot transmit output operation identity")
         allowed = c.get('allowed')
         if not isinstance(allowed, list) or not allowed:

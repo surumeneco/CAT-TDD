@@ -1607,12 +1607,6 @@ def _provided_output_frames(fields,operations,overrides,trigger):
     return frames
 
 
-def _provided_output_operation(fields,operations,overrides,trigger):
-    """The existing deterministic vector transport selects one provide."""
-    frames=_provided_output_frames(fields,operations,overrides,trigger)
-    return next(iter(frames.values())) if frames and len(frames)==1 else None
-
-
 def _unproved_output_presence(fields,operations,overrides,rules,triggers):
     """Audit required output emission independently of nonrequired fields.
 
@@ -2443,23 +2437,37 @@ def _vector_input_value(domain,presence,payload,name):
 
 
 
-def _vector_output_operation(model,test,fields):
-    declared=[x for x in model.get('operation_presence',[])
-              if fields[x['field']]['role']=='output']
+def _vector_output_operations(model,test,fields):
+    overrides=model.get('operation_presence',[])
+    declared=[x for x in overrides if fields[x['field']]['role']=='output']
+    operations=model.get('pi_operations',[])
+    frames=_provided_output_frames(fields,operations,overrides,test['trigger'])
     chosen=test.get('output_operation')
-    if declared or _nonrequired_output_ids(fields,model.get('operation_presence',[])):
+    if 'output_operations' in test:
+        many=test['output_operations']
+        require('output_operation' not in test,
+                'vector.output_operation and output_operations are mutually exclusive')
+        require(isinstance(many,list) and len(many)>1
+                and all(isinstance(x,str) for x in many) and len(set(many))==len(many),
+                'vector.output_operations requires distinct operation IDs')
+        require(frames is not None and set(many)=={x['id'] for x in frames.values()},
+                'vector.output_operations must match every source-bound provided operation for trigger')
+        return frames
+    require(frames is None or len(frames)<=1,
+            'multiple source-bound providers require vector.output_operations')
+    if declared or _nonrequired_output_ids(fields,overrides):
         require(chosen is not None,
                 'nonrequired/operation-scoped output Presence requires vector.output_operation')
-    if chosen is None:return None
-    ops=[x for x in model.get('pi_operations',[])
-         if x['id']==chosen and x['direction']=='provide'
+    if chosen is None:return {}
+    ops=[x for x in operations if x['direction']=='provide'
          and (x.get('trigger') is None or x['trigger']==test['trigger'])]
-    require(len(ops)==1,'vector.output_operation is not a provided operation for trigger')
+    require(len(ops)==1 and ops[0]['id']==chosen,
+            'vector.output_operation is not a unique provided operation for trigger')
     op=ops[0]
     require(all(x['source_pi']==op['source_pi'] for x in declared
                 if x['operation']==op['id']),
             'output Presence override belongs to another PI')
-    return op
+    return {op['source_pi']:op}
 
 
 def expand_cases(model, vectors):
@@ -2470,11 +2478,11 @@ def expand_cases(model, vectors):
     states={f for f in fields if fields[f]['role']=='state'}
     cases=[]
     for test in vectors['cases']:
-        check_keys(test,['id','trigger','input','state'],optional=('operation','output_operation'),where='test vector')
+        check_keys(test,['id','trigger','input','state'],optional=('operation','output_operation','output_operations'),where='test vector')
         ident(test['id'],'test ID');require(test['trigger'] in {t['id'] for t in model['triggers']},'unknown vector trigger')
         require(isinstance(test['input'],dict) and isinstance(test['state'],dict),'vector input/state must be objects')
         operation=_vector_operation(model,test)
-        output_operation=_vector_output_operation(model,test,fields)
+        output_frames=_vector_output_operations(model,test,fields)
         require(set(test['input'])<=inputs and set(test['state'])==states,
                 'vector input includes undeclared fields or omits state')
         env={}
@@ -2514,13 +2522,15 @@ def expand_cases(model, vectors):
                 require(in_domain(fields[target]['domain'],val),f'{test["id"]}: output {target} out of declared domain')
                 if fields[target]['role']=='state':after[target]=val
                 else:emitted[target]=val
-            if output_operation is not None:
-                require(all(fields[target].get('source_pi')==output_operation['source_pi']
+            if output_frames:
+                require(all(fields[target].get('source_pi') in output_frames
                             for target in emitted if fields[target]['role']=='output'),
                         'output Effect belongs to another provided PI')
                 for field in fields.values():
-                    if field['role']!='output' or field.get('source_pi')!=output_operation['source_pi']:
+                    owner=field.get('source_pi')
+                    if field['role']!='output' or owner not in output_frames:
                         continue
+                    output_operation=output_frames[owner]
                     pres=_vector_field_presence(model,output_operation,field)
                     require(pres!='undefined',
                             'undefined output effect requires explicit technology transport')
@@ -2531,8 +2541,10 @@ def expand_cases(model, vectors):
             allowed.append({'state':after,'output':emitted,'unchanged':out['unchanged'],'absent_outputs':out['absent_outputs']})
         case_data={'id':test['id'],'source_tce':rule['id'],'trigger':test['trigger'],
                    'input':test['input'],'initial_state':test['state'],'allowed':allowed}
-        if output_operation is not None:
-            case_data['output_operation']=output_operation['id']
+        if len(output_frames)==1:
+            case_data['output_operation']=next(iter(output_frames.values()))['id']
+        elif output_frames:
+            case_data['output_operations']=sorted(op['id'] for op in output_frames.values())
         cases.append(case_data)
     unique([t['id'] for t in cases],'vector IDs')
     return cases
@@ -2574,12 +2586,12 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         }
         output_overrides=[x for x in model.get('operation_presence',[])
                           if fields[x['field']]['role']=='output']
-        provide_operation=None
+        provide_frames=None
         if output_overrides or output_special:
-            provide_operation=_provided_output_operation(
+            provide_frames=_provided_output_frames(
                 fields,model.get('pi_operations',[]),
                 model.get('operation_presence',[]),trigger)
-            require(provide_operation is not None,
+            require(provide_frames is not None,
                     'ambiguous provided output operation for deterministic vectors')
         variable_ids=([name for name in all_variable_ids
                        if fields[name]['role']=='state' or operation is None
@@ -2667,8 +2679,11 @@ def selection_vectors(model, strategy='rule-witness/v1'):
             }
             if operation is not None and any(value!='required' for value in presence.values()):
                 sample['operation']=operation['id']
-            if provide_operation is not None:
-                sample['output_operation']=provide_operation['id']
+            if provide_frames:
+                if len(provide_frames)==1:
+                    sample['output_operation']=next(iter(provide_frames.values()))['id']
+                else:
+                    sample['output_operations']=sorted(op['id'] for op in provide_frames.values())
             witnesses[rule['id']]=sample
     missing=[r['id'] for r in model['rules'] if r['id'] not in witnesses]
     require(not missing,'test-selection produced no witness for TestModel rule(s): '+str(missing))
@@ -2698,10 +2713,14 @@ def emit_vitest(model,vectors,binding_path):
     require(isinstance(binding['driver'],str) and binding['driver'].startswith('./') and not '..' in Path(binding['driver']).parts,
             'driver must be an explicit local relative module')
     cases=expand_cases(model,vectors)
-    uses_output_operation=any(x.get('output_operation') for x in cases)
-    if binding.get('output_operation_transport') not in (None,'js-driver-provide/v1'):
+    uses_output_operation=any('output_operation' in x or 'output_operations' in x for x in cases)
+    multiple=any('output_operations' in x for x in cases)
+    transport=binding.get('output_operation_transport')
+    if transport not in (None,'js-driver-provide/v1','js-driver-provides/v1'):
         raise Blocked('unsupported output-operation transport binding')
-    if uses_output_operation and binding.get('output_operation_transport')!='js-driver-provide/v1':
+    if multiple and transport!='js-driver-provides/v1':
+        raise Blocked('Vitest renderer requires multi-output-operation identity transport')
+    if uses_output_operation and transport not in ('js-driver-provide/v1','js-driver-provides/v1'):
         raise Blocked('Vitest renderer lacks output-operation identity transport; cannot assert provider operation')
     uses_undefined=any(any(v=={'$cat_presence':'undefined'} for v in c['input'].values()) for c in cases)
     if binding.get('undefined_transport') not in (None,'js-undefined/v1'):
@@ -2766,7 +2785,7 @@ def emit_junit(model, vectors, binding_path):
     require(not model.get('operation_presence'),
             'JUnit scalar renderer does not carry operation-scoped Presence')
     cases=expand_cases(model,vectors)
-    require(not any('output_operation' in c for c in cases),
+    require(not any('output_operation' in c or 'output_operations' in c for c in cases),
             'JUnit scalar renderer cannot carry output-operation identity')
     path=ROOT / 'skills' / 'tech-junit' / 'scripts' / 'cat_junit_renderer.py'
     require(path.is_file(), 'JUnit generation requires installed tech-junit Skill renderer')

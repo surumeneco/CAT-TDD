@@ -10,6 +10,7 @@ on:
       - '.cat-system/scripts/cat_model_conformance.py'
       - '.cat-system/skills/tech-vitest/scripts/**'
       - 'tests/test_spec_test_sync_integration.py'
+      - 'tests/test_multi_owner_output_presence.py'
   workflow_dispatch:
 
 permissions:
@@ -69,3 +70,31 @@ jobs:
           assert sum(c.find('failure') is not None or c.find('error') is not None for c in cases) >= 1
           print('real Vitest confirmed: incorrect implementation rejected')
           PY
+      - name: Produce multi-owner output vectors and generated tests from source
+        env:
+          CAT_MULTI_OWNER_VITEST_SMOKE_DIR: ${{ github.workspace }}/.cat-vitest-smoke/tests/multi-owner
+        run: python -m unittest discover -s tests -p test_multi_owner_output_presence.py -v
+      - name: Verify correlated multi-owner outputs using real Vitest
+        working-directory: .cat-vitest-smoke
+        run: |
+          for mode in direct alternate missing extra wrong-owner wrong-pair missing-field absent; do
+            set +e
+            CAT_MULTI_OWNER_MODE="$mode" npx vitest run tests/multi-owner --reporter=junit --outputFile="multi-owner-$mode.xml"
+            code=$?
+            set -e
+            python - "$mode" "$code" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          mode, code = sys.argv[1], int(sys.argv[2])
+          cases = ET.parse('multi-owner-' + mode + '.xml').getroot().findall('.//testcase')
+          assert len(cases) == 2, len(cases)
+          assert all(c.find('skipped') is None for c in cases)
+          failures = [c for c in cases if c.find('failure') is not None or c.find('error') is not None]
+          if mode in ('direct', 'alternate'):
+              assert code == 0 and not failures, (mode, code, failures)
+          else:
+              expected = 'case.second.reply' if mode == 'absent' else 'case.first.reply'
+              assert code != 0 and len(failures) == 1 and expected in failures[0].get('name', ''), (mode, code, failures)
+          print('real Vitest multi-owner mode:', mode, 'validated')
+          PY
+          done
