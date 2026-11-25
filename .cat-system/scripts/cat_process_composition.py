@@ -326,10 +326,17 @@ def _check_finite_connection(link,models):
     pairs=[(x['source_field'],x['target_field']) for x in link['field_links']]
     so=next(op for op in source['pi_operations'] if op['id']==link['source_operation'] and op['source_pi']==link['source_pi'])
     to=next(op for op in target['pi_operations'] if op['id']==link['target_operation'] and op['source_pi']==link['target_pi'])
-    trigger=so.get('trigger')
+    declared=[row for row in source.get('output_frames',[]) if row['source_pi']==so['source_pi']]
+    active={(row['rule'],row['outcome']) for row in declared if row['operation']==so['id']}
+    if declared:
+        cuts={row['trigger'] for row in declared if row['operation']==so['id']}
+        if len(cuts)!=1:return pending('producer lacks a unique explicit outbound cut')
+        trigger=next(iter(cuts))
+    else:trigger=so.get('trigger')
     if not trigger or not to.get('trigger'):return pending('connection lacks explicit Trigger')
-    providers=[op for op in source['pi_operations'] if op['direction']=='provide' and op.get('trigger')==trigger]
-    if len(providers)!=1:return pending('producer Trigger lacks a unique provided Operation')
+    if not declared:
+        providers=[op for op in source['pi_operations'] if op['direction']=='provide' and op.get('trigger')==trigger]
+        if len(providers)!=1:return pending('producer Trigger lacks a unique provided Operation')
     if any(_effective_presence(source,so['id'],sf[a])!='required' or _effective_presence(target,to['id'],tf[b])!='required' for a,b in pairs):
         return pending('finite relation v1 requires required linked values')
     output_fields={a for a,b in pairs};input_fields={b for a,b in pairs}
@@ -359,7 +366,8 @@ def _check_finite_connection(link,models):
             if not all(eval_expr(c,env,{}) is True for c in source_constraints):continue
             selected=[r for r in rows if eval_expr(r['when'],env,{}) is True]
             if len(selected)!=1:return pending('producer Guard is not uniquely covered')
-            for outcome in selected[0]['allowed']:
+            for n,outcome in enumerate(selected[0]['allowed'],1):
+                if declared and (selected[0]['id'],n) not in active:continue
                 outputs={w['target']:eval_expr(w['expr'],env,{}) for w in outcome['write'] if w['target'] in output_fields}
                 if set(outputs)!=output_fields:return pending('producer did not emit the entire linked tuple')
                 received={b:outputs[a] for a,b in pairs}

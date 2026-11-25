@@ -84,6 +84,8 @@ def resolve(scope, fields, pi_docs, invariants=()):
         outputs=[k for k in subjects if fields[k]['role']=='output']
         provided=None
         if outputs:
+            # Existing profiles require a static output operation for the whole cut.
+            if pi.get('output_frames'):return None
             providers=[(fm['id'],op) for _,fm,p in pi_docs for op in p['operations']
                        if op['direction']=='provide' and op.get('trigger') in (None,trigger)]
             if len(providers)!=1:

@@ -131,6 +131,17 @@ def render_junit(model, cases, binding):
             "        return result;",
             "    }",
         ])
+    explicit=bool(model.get('output_frames'))
+    if explicit:
+        lines.extend([
+            "    private static Map<String,List<String>> selectedFields(Object observed, Map<String,List<String>> inventory) {",
+            "        Map<String,Object> frames = fieldRecord(observed);",
+            "        assertTrue(inventory.keySet().containsAll(frames.keySet()), \"CAT unknown provider operation\");",
+            "        Map<String,List<String>> fields = new java.util.HashMap<>();",
+            "        frames.keySet().forEach(id -> fields.put(id,inventory.get(id)));",
+            "        return fields;",
+            "    }",
+        ])
     if uses_observations:
         lines.extend([
             "    private static Object observedResult(Object value, Map<String,Object> expected) {",
@@ -148,9 +159,11 @@ def render_junit(model, cases, binding):
         allowed = c.get('allowed')
         if not isinstance(allowed, list) or not allowed:
             raise ValueError("CAT case lacks allowed outcomes")
-        alternatives = ", ".join("new Allowed(" + _map(a['state']) + ", " + _map(a['output']) + ")" for a in allowed)
+        alt_values=["new Allowed(" + _map(a['state']) + ", " + _map(a['output']) + ")" for a in allowed]
+        alternatives=", ".join(alt_values)
         operations=c.get('output_operations') or ([c['output_operation']] if 'output_operation' in c else [])
-        if operations:
+        framed_case=bool(operations) or 'output_operations' in c
+        if framed_case:
             owners={op['id']:op['source_pi'] for op in model.get('pi_operations',[]) if op['direction']=='provide'}
             fields={op:sorted(f['id'] for f in model['fields'] if f['role']=='output' and f.get('source_pi')==owners[op]) for op in operations}
             frame_fields=_nested_map(fields,_list)
@@ -164,10 +177,16 @@ def render_junit(model, cases, binding):
             ]
             output_lines=[
                 "        Object actualOutput = observedResult(driver.triggerObserved(" + _list(operations) + ", " + _quote(c['trigger']) + ", input),expectedObservations);",
-                ("        Map<String,Object> output = flattenProvidedOperations(actualOutput, " + frame_fields + ");" if operations else
-                 "        Map<String,Object> output = fieldRecord(actualOutput);"),
+                *(["        Map<String,List<String>> actualFields = selectedFields(actualOutput, " + frame_fields + ");",
+                   "        Map<String,Object> output = flattenProvidedOperations(actualOutput, actualFields);"] if explicit else
+                  [("        Map<String,Object> output = flattenProvidedOperations(actualOutput, " + frame_fields + ");" if framed_case else
+                    "        Map<String,Object> output = fieldRecord(actualOutput);")]),
             ]
-        elif operations:
+        elif explicit:
+            output_lines=["        Object actualOutput = driver.triggerProvidedOperations(" + _list(operations) + ", " + _quote(c['trigger']) + ", input);",
+                          "        Map<String,List<String>> actualFields = selectedFields(actualOutput, " + frame_fields + ");",
+                          "        Map<String,Object> output = flattenProvidedOperations(actualOutput, actualFields);"]
+        elif framed_case:
             output_lines=["        Map<String,Object> output = flattenProvidedOperations(driver.triggerProvidedOperations(" + _list(operations) + ", " + _quote(c['trigger']) + ", input), " + frame_fields + ");"]
         else:
             output_lines=["        Map<String,Object> output = driver.trigger(" + _quote(c['trigger']) + ", input);"]
@@ -185,7 +204,9 @@ def render_junit(model, cases, binding):
             "        assertEquals(pre, driver.observeState(), \"CAT precondition drift\");",
             *output_lines,
             "        Map<String,Object> after = driver.observeState();",
-            "        List<Allowed> allowed = List.of(" + alternatives + ");",
+            *(["        List<Allowed> allowed = new java.util.ArrayList<>();"] + [
+                "        if (actualFields.keySet().equals(new java.util.HashSet<>(" + _list(a['output_operations']) + "))) allowed.add(" + value + ");"
+                for a,value in zip(allowed,alt_values)] if explicit else ["        List<Allowed> allowed = List.of(" + alternatives + ");"]),
             "        assertTrue(accepts(after, output, allowed), \"Observed state/output not in CAT allowed outcome set: " + c['id'] + "\");",
             "    }",
         ])

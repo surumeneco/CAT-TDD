@@ -213,7 +213,22 @@ PI全体の既定Presenceと操作別の例外を区別する場合、必要な�
 
 現行`rule-witness/v1`は非必須Presenceの全組合せを自動選択しない。対応不能な範囲は`BLOCKED / inconclusive`として残し、`draft / partial`を自動的にConfirmedへ昇格させない。単一の出力操作が明示されたVectorsは従来のDriver Binding `output_operation_transport: "js-driver-provide/v1"`を使用できる。生成VitestはDriverの`outputOperationTransport`と`triggerProvidedOperation(operationId, triggerId, input)`の実在を検証する。複数PIの出力を含む場合は`js-driver-provides/v1`を明示し、`triggerProvidedOperations(operationIds, triggerId, input)`で**1回の論理Trigger実行**からOperation ID→そのPIの観測出力項目record（全出力不在の場合も空record）の写像を受け取る。同Bindingでは単一提供操作も同じ写像で扱う。生成テストは全Operation IDの完全一致・各出力の所有PIを検査した後、一つの許容Outcomeとして全state/outputを照合する。操作毎の別実行・別Outcomeの結果の合成を認めない。このDriverはテストアダプターであり、製品の公開API・呼出方式・同期／非同期・出力順を指定するものではない。宣言がない・未知の方法・曖昧な提供操作はblockedを維持する。`undefined`入力も明示的な`js-undefined/v1` Bindingがなければ拒否する。**これらのBindingは検査可能なDriver契約であり、現実の外部送信や複数Processの相互作用の証明ではない。**補助Probeの成功は規範的なTCE vectors、Queue、実行テストの代替ではない。
 
-複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。`## Operation presence`等で所有PIごとの提供Operationと`required`・`optional`・`absent`の全結果frameが局所証明された範囲に限り、決定論的Vectorsの出力操作を導出する。同一PI内の複数提供操作、複数のうち未束縛の提供操作、`undefined`出力は未対応。現行JUnitのscalar transportは出力Operation identityを扱わないため明示出力操作を持つVectorのJUnit生成はblocked。
+複数の提供操作のうちどのOperationに紐付くかが決まらない場合、機械的に操作を選ばない。`## Operation presence`等で所有PIごとの提供Operationと`required`・`optional`・`absent`の全結果frameが局所証明された範囲に限り、決定論的Vectorsの出力操作を導出する。同一PI内の複数提供操作は下記の明示フレームがない限り未証明。未束縛の提供操作、`undefined`出力は未対応。JUnitのscalar transportは明示 `java-driver-provides/v1` により対応可能な値域で出力Operation identityを扱う。
+
+### Outcomeごとの提供出力フレームと評価断面
+
+同じPIで正常・例外等の提供Operationが排他的である場合、または提供Operationの送信と受信の評価Triggerが異なる場合に、`## 提供出力フレーム`（`## Output frames`）を明示できる。例（`request`は受付、`ok`・`fail`は同じPIの提供操作）:
+
+| 起点 | 振る舞い | 結果 | 操作 | 活性 |
+| --- | --- | --- | --- | --- | --- |
+| lookup | found | 1 | ok | one |
+| lookup | not-found | 1 | fail | one |
+
+英語列は `Trigger / Behavior / Outcome / Operation / Mode`。Outcome番号はTCEの1始まりの番号。活性は `one`（必ず一つ）、`zero-or-one`（零または一つ）、`none`（非活性）。非活性は操作列を `—` とする。同じPI・Triggerでは同一Modeで全Behavior/Outcomeを一度ずつ宣言する。他PIの操作、受付操作、未宣言Trigger、重複・欠落、Modeに反する活性を拒否する。各提供操作は1個の出力評価Triggerに活性として現れ、宣言済み提供操作の入力評価Triggerも表の対象に含める。他のTriggerでは当該PIの提供出力は非活性。既存のOperation Triggerは受信項目を評価できる起点を保持し、送信項目の評価Triggerだけをこの表から導く。分割cutの送信引数を終端で再送しない。
+
+操作別Presenceは活性な提供Operationの送信項目に適用し、非活性なPIの送信項目は不在を要求する。全結果に対して required 欠落、absent 出力、他PI/非活性の出力を検査する。この限定契約は同一PIで同時に複数の提供Operationを要求する世界や、同じOperationを複数の出力cutで活性化する世界を表す一般契約ではない。そのような表現は未対応として扱う。処理方式・時間順序・実配送・同じ要求の相関を証明するものではなく、PI/Trigger/Outcomeの仕様上の帰属を保存する。
+
+`output_frames`を持つTestModelからは、Vectorの`output_operations`に選択Behaviorの全許容Outcomeで活性になり得る操作の和集合（空も可）を保持する。展開された各許容Outcomeには当該Outcomeの操作集合を保持する。生成テストは1回の実行で観測したOperation ID集合・所有PI・state/outputを同じ許容Outcomeへ照合する。未知・欠落・余剰・別Outcomeからの合成を拒否する。Vitestは`js-driver-provides/v1`、JUnitは`java-driver-provides/v1`の明示Bindingが必要。Driverに渡す操作ID集合は観測候補であって、実装への操作発動指示ではない。
 
 ### 必須input recordの型付きmember参照
 

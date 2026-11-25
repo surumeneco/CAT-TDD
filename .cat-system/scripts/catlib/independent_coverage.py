@@ -657,6 +657,18 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
         operations.extend({**op,'source_pi':fm['id']} for op in pi.get('operations',[]))
         overrides.extend({**ov,'source_pi':fm['id']} for ov in pi.get('operation_presence',[]))
 
+    # Independently reconstruct explicit output-cut semantics from PI/TCE
+    # Source. The Compiler's derived frame and receipt are not consulted.
+    from catlib.output_frame_contract import declarations, validate_declarations
+    explicit=declarations(pi_docs)
+    source_fields={k:{'role':'output','source_pi':v['owner']} for k,v in outputs.items()}
+    source_fields.update({k:{'role':'input','source_pi':v['owner']} for k,v in inputs.items()})
+    try:validate_declarations(explicit,source_fields,operations,overrides,rules,process['triggers'])
+    except ValueError as exc:raise Blocked(str(exc)) from exc
+    explicit_owners={row['source_pi'] for row in explicit}
+    explicit_outputs={k:v for k,v in outputs.items() if v['owner'] in explicit_owners}
+    outputs={k:v for k,v in outputs.items() if v['owner'] not in explicit_owners}
+    legacy_operations=[op for op in operations if op['source_pi'] not in explicit_owners]
     output_special={k for k,v in outputs.items() if v['presence']!='required'}
     output_special.update(ov['field'] for ov in overrides
                           if ov['field'] in outputs and ov['presence']!='required')
@@ -898,7 +910,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                            proof_scope='local-guard-truth-partition-not-effect-or-implementation')
         result[ident]=receipt
         if outputs:
-            providers=[op for op in operations if op['direction']=='provide'
+            providers=[op for op in legacy_operations if op['direction']=='provide'
                        and (op.get('trigger') is None or op['trigger']==ident)]
             # Derive each owning PI's result frame from Source. Legacy direct
             # output semantics are retained if no scoped Presence is declared.
@@ -920,7 +932,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
             # A Trigger without a provider is an empty frame only when all
             # output owners have explicitly Trigger-bound provider inventory.
             owners={info['owner'] for info in outputs.values()}
-            scoped={op['source_pi'] for op in operations if op['direction']=='provide'
+            scoped={op['source_pi'] for op in legacy_operations if op['direction']=='provide'
                     and op.get('trigger') is not None}
             inactive=needs_provider and not providers and owners<=scoped
             frames=grouped if valid or inactive else None
@@ -948,6 +960,20 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                                 or (presence=='absent' and field in emitted)):
                             output_ok=False
                             output_unproved.add(field)
+    for rule in rules:
+        for n,outcome in enumerate(rule['allowed'],1):
+            selected={row['source_pi']:row['operation'] for row in explicit
+                      if (row['trigger'],row['rule'],row['outcome'])==(rule['trigger'],rule['id'],n)}
+            writes={w['target'] for w in outcome['write']}
+            for field,info in explicit_outputs.items():
+                operation=selected.get(info['owner'])
+                presence='absent'
+                if operation is not None:
+                    matched=[ov['presence'] for ov in overrides if ov['field']==field and ov['operation']==operation and ov['source_pi']==info['owner']]
+                    presence=matched[0] if len(matched)==1 else info['presence'] if not matched else 'undefined'
+                if presence=='undefined' or (presence=='required' and field not in writes) or (presence=='absent' and field in writes):
+                    output_ok=False
+                    output_unproved.add(field)
     orphaned={field for field in output_special
               if outputs[field]['owner'] not in covered_owners}
     if orphaned:
