@@ -150,7 +150,7 @@ class TriggerScopedOutputPresenceTests(unittest.TestCase):
             path.write_text(json.dumps(model), encoding='utf-8')
             self.assertEqual(validate(p, pis, tce, path)['status'], 'passed')
 
-    def test_two_providers_for_same_trigger_remain_unproved(self):
+    def test_moved_provider_rejects_write_on_now_inactive_trigger(self):
         with tempfile.TemporaryDirectory() as td:
             p, pis, tce = fixture(Path(td))
             second = pis[1]
@@ -159,7 +159,12 @@ class TriggerScopedOutputPresenceTests(unittest.TestCase):
                 '| second_result | provide | first |'), encoding='utf-8')
             model = load(p, pis, tce, allow_draft=True, allow_partial=True)
             self.assertEqual(model['status'], 'draft')
-            self.assertIn('output.first', model['presence_unproven'])
+            # Distinct explicit owner frames on first are supported. The
+            # second Trigger now has no active provider; its own output write
+            # remains invalid, without falsely invalidating the first owner.
+            self.assertEqual(model['presence_unproven'], ['output.second'])
+            with self.assertRaises(Blocked):
+                load(p, pis, tce, allow_partial=False)
 
     def test_cross_pi_output_effect_is_not_claimed_under_wrong_provider(self):
         with tempfile.TemporaryDirectory() as td:

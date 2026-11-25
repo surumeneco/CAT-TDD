@@ -136,6 +136,48 @@ class ScopedOutputPresenceTests(unittest.TestCase):
             out.write_text(json.dumps(model), encoding='utf8')
             self.assertNotEqual(validate(p, pi, tce, out, domain_specs=[rule])['status'], 'passed')
 
+    def test_explicitly_inactive_provider_frame(self):
+        for variant in ('positive', 'absent_write', 'missing', 'ambiguous', 'legacy'):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                p, pi, tce, rule = fixture(root, variant)
+                body=pi.read_text(encoding='utf8')
+                body=body.replace('| reply_second | provide | second |\n','')
+                body=body.replace('| reply_second | output.answer | absent |\n','')
+                if variant=='legacy':
+                    body=body.replace('| reply_first | provide | first |\n','')
+                    body=body.replace('| reply_first | output.answer | required |\n','')
+                pi.write_text(body,encoding='utf8')
+                rule.write_text('\n'.join(
+                    line for line in rule.read_text(encoding='utf8').splitlines()
+                    if not line.startswith('| second.presence |'))+'\n',encoding='utf8')
+                if variant=='legacy':
+                    rule.write_text('\n'.join(
+                        line for line in rule.read_text(encoding='utf8').splitlines()
+                        if not line.startswith('| first.presence |'))+'\n',encoding='utf8')
+                run=gate(root)
+                if variant!='positive':
+                    if run.returncode==0:
+                        self.assertNotEqual(json.loads(run.stdout)['status'],'passed')
+                    else:
+                        self.assertEqual(run.returncode,2)
+                    continue
+                self.assertEqual(run.returncode,0,run.stderr)
+                self.assertEqual(json.loads(run.stdout)['status'],'passed')
+                model=load(p,pi,tce,domain_specs=[rule],allow_partial=True)
+                self.assertEqual(model['presence_unproven'],[])
+                for name, content in [('Model.json',json.dumps(model)),('Model.md',render_model_markdown(model))]:
+                    out=root/name
+                    out.write_text(content,encoding='utf8')
+                    self.assertEqual(validate(p,pi,tce,out,domain_specs=[rule])['status'],'passed')
+                for case in expand_cases(model,selection_vectors(model)):
+                    if case['trigger']=='second':
+                        self.assertNotIn('output_operation',case)
+                        self.assertNotIn('output_operations',case)
+                        self.assertTrue(all(not outcome['output'] for outcome in case['allowed']))
+                    else:
+                        self.assertEqual(case['output_operation'],'reply_first')
+
     def test_negative_frames(self):
         for variant in ('ambiguous','missing','absent_write','wrong_owner','accept_override'):
             with self.subTest(variant=variant), tempfile.TemporaryDirectory() as td:
