@@ -790,9 +790,20 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
             scoped_outputs=(outputs if provider is None else {
                 field:info for field,info in outputs.items()
                 if info['owner']==provider['source_pi']})
-            if output_special and (provider is None
-                or any(ov['operation']!=provider['id'] for ov in overrides
-                       if ov['field'] in scoped_outputs)):
+            # Derive the current response frame independently from Source.
+            # Only another explicitly Trigger-bound provide of the same PI
+            # can own a distinct override for a shared output field.
+            invalid_override=False
+            if provider is not None:
+                for ov in overrides:
+                    if ov['field'] not in scoped_outputs or ov['operation']==provider['id']:
+                        continue
+                    matches=[op for op in operations if op['id']==ov['operation']
+                             and op['source_pi']==provider['source_pi']]
+                    if (len(matches)!=1 or matches[0]['direction']!='provide'
+                            or matches[0].get('trigger') in (None,ident)):
+                        invalid_override=True
+            if output_special and (provider is None or invalid_override):
                 output_ok=False
                 output_unproved.update(output_special)
             for rule in applicable:
