@@ -55,7 +55,7 @@ class NullableReferencePartitionTests(unittest.TestCase):
                     model=load(*source)
                     self.assertEqual(model['coverage_checks']['submit']['proof_method'],'nullable-reference-equality-partition/v1')
                     for name,body in [('Model.json',json.dumps(model)),('Model.md',render_model_markdown(model))]:
-                        path=root/name;path.write_text(body)
+                        path=root/name;path.write_text(body,encoding='utf-8')
                         self.assertEqual(validate(*source,path)['status'],'passed')
                     if not obs:
                         self.assertEqual(len(selection_vectors(model)['cases']),2)
