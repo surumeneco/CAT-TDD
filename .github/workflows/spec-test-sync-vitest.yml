@@ -7,6 +7,8 @@ on:
       - '.cat-system/scripts/cat_spec_test_sync.py'
       - '.cat-system/scripts/cat_suite_manifest.py'
       - '.cat-system/scripts/cat_compile_v2.py'
+      - '.cat-system/scripts/cat_flow.py'
+      - 'tests/test_compile_cli_replay.py'
       - '.cat-system/scripts/cat_model_conformance.py'
       - '.cat-system/skills/tech-vitest/scripts/**'
       - 'tests/test_spec_test_sync_integration.py'
