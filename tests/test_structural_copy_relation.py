@@ -14,6 +14,8 @@ SCRIPTS = ROOT / '.cat-system/scripts'
 sys.path.insert(0, str(SCRIPTS))
 from cat_compile_v2 import load, render_model_markdown, expand_cases, selection_vectors
 from cat_model_conformance import validate
+from catlib import semantic_json_instant as exact
+from decimal import Decimal
 
 
 def source(kind, suffix, refs, body):
@@ -120,6 +122,82 @@ class StructuralCopyTests(unittest.TestCase):
                     path=root/name;path.write_text(body,encoding='utf-8')
                     self.assertEqual(validate(p,pi,tce,path,domain_specs=[spec])['status'],'passed')
                 self.assertEqual(bool(m['intrinsic_rule_proofs']),expected=='passed')
+
+    def test_top_level_set_copy(self):
+        for kw, expected in [({}, 'passed'), ({'rhs':'input.other'}, 'inconclusive'),
+                             ({'second':'input.other'}, 'inconclusive'),
+                             ({'peer':'wrong'}, 'inconclusive'),
+                             ({'domain':'sequence<set<string>>'}, 'inconclusive')]:
+            with self.subTest(kw=kw), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                p,pi,tce,spec=fixture(root, **({'domain':'set<string>'}|kw))
+                run,result=flow(root,'conformance','--kind','process-closure')
+                self.assertEqual(result['status'],expected,(run.stdout,run.stderr))
+                if expected!='passed':continue
+                m=load(p,pi,tce,domain_specs=[spec]); vectors=selection_vectors(m)
+                self.assertEqual(len(vectors['cases'][0]['input']['input.items']),2)
+                for kind in ('model','vectors','queue','tests'):
+                    run,result=flow(root,'compile','--kind',kind)
+                    self.assertEqual(result['status'],'passed',(run.stdout,run.stderr))
+                for name,body in [('Independent.json',json.dumps(m)),('Independent.md',render_model_markdown(m))]:
+                    path=root/name;path.write_text(body,encoding='utf-8')
+                    self.assertEqual(validate(p,pi,tce,path,domain_specs=[spec])['status'],'passed')
+
+    def test_exact_semantic_value_transport(self):
+        # Scope proof and technology transport are separate. A valid Source
+        # never silently selects a lossy renderer or a product storage format.
+        for domain in ('json','json-object','instant'):
+            for kw, expected in [({},'passed'),({'rhs':'input.other'},'inconclusive')]:
+                with self.subTest(domain=domain,kw=kw),tempfile.TemporaryDirectory() as td:
+                    root=Path(td);p,pi,tce,spec=fixture(root,domain=domain,**kw)
+                    run,result=flow(root,'conformance','--kind','process-closure')
+                    self.assertEqual(result['status'],expected,(run.stdout,run.stderr))
+                    if expected!='passed':continue
+                    m=load(p,pi,tce,domain_specs=[spec])
+                    for name,body in [('Independent.json',json.dumps(m)),('Independent.md',render_model_markdown(m))]:
+                        path=root/name;path.write_text(body,encoding='utf-8')
+                        self.assertEqual(validate(p,pi,tce,path,domain_specs=[spec])['status'],'passed')
+                    for kind in ('model','vectors','queue'):
+                        run,result=flow(root,'compile','--kind',kind)
+                        self.assertEqual(result['status'],'passed',(run.stdout,run.stderr))
+                    run,result=flow(root,'compile','--kind','tests')
+                    self.assertEqual(result['status'],'blocked')
+                    binding=root/'Binding.json'
+                    content=json.loads(binding.read_text());content['semantic_value_transport']='cat-exact-values/v1'
+                    binding.write_text(json.dumps(content),encoding='utf-8')
+                    for check in ([],['--check']):
+                        run,result=flow(root,'compile','--kind','tests',*check)
+                        self.assertEqual(result['status'],'passed',(run.stdout,run.stderr))
+                    vectors=json.loads((root/'Vectors.json').read_text())
+                    case=expand_cases(m,vectors)[0]
+                    self.assertEqual(case['input']['input.items'],case['allowed'][0]['output']['output.items'])
+                    generated=(root/'Generated.test.ts').read_text()
+                    self.assertIn('cat-exact-values/v1',generated)
+                    self.assertIn('exactInstant' if domain=='instant' else 'exactJSON',generated)
+                    self.assertIn('86400000000123' if domain=='instant' else '9007199254740993.125',generated)
+                    content['semantic_value_transport']='unknown'
+                    binding.write_text(json.dumps(content),encoding='utf-8')
+                    self.assertEqual(flow(root,'compile','--kind','tests')[1]['status'],'blocked')
+
+    def test_exact_wire_values_preserve_native_meaning(self):
+        original={'$cat_json': [True,None,Decimal('9007199254740993.125')], 'items':[1,1]}
+        decoded=exact.decode_json_transport(exact.encode_json_transport(original))
+        self.assertTrue(exact.json_equal(original,decoded))
+        self.assertFalse(exact.json_equal(original,{'items':[1,1]}))
+        self.assertTrue(exact.json_equal(Decimal('1.0'),Decimal('1e0')))
+        self.assertFalse(exact.json_equal(True,1))
+        for value in ({'$cat_json':['number','NaN']},{'$cat_json':['number','01']},
+                      {'$cat_json':['object',[['a',['null']],['a',['null']]]]},
+                      {'$cat_json':['boolean',1]}, {'$cat_json':['null',0]}):
+            with self.subTest(value=value),self.assertRaises(exact.BindingError):
+                exact.decode_json_transport(value)
+        a=exact.decode_offset_datetime('1970-01-02T00:00:00.000000123Z')
+        b=exact.decode_offset_datetime('1970-01-02T09:00:00.000000123+09:00')
+        c=exact.decode_offset_datetime('1970-01-02T00:00:00.000000124Z')
+        self.assertEqual(a,b);self.assertNotEqual(a,c)
+        self.assertEqual(exact.decode_instant_transport(exact.encode_instant_transport(a)),a)
+        with self.assertRaises(exact.BindingError):
+            exact.decode_instant_transport({'$cat_instant':{'n':'1','d':'0'}})
 
     def test_generation_and_structural_values(self):
         with tempfile.TemporaryDirectory() as td:

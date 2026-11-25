@@ -360,6 +360,14 @@ Effectの `target = expression` は命令ではない。左辺が最終的に成
 | 連結 | `concat(a, b)` | `連結(a, b)` |
 | 集合追加 | `set_add(s, x)` | `集合追加(s, x)` |
 | 集合削除 | `set_remove(s, x)` | `集合削除(s, x)` |
+| レコード値 | `{"id": input.id, "name": ""}` | `{"id": 入力.ID, "name": ""}` |
+| 列末尾追加 | `sequence_append(s, x)` | `列追加(s, x)` |
+| 列位置交換 | `sequence_swap(s, i, j)` | `列交換(s, i, j)` |
+| 列要素の項目更新 | `sequence_replace_member(s, i, "key", x)` | `列項目更新(s, i, "key", x)` |
+
+レコード値のkeyは重複のない文字列literalとし、宣言済み閉じたrecordの必須・任意・不在・undefinedを区別する。値にliteral、直接参照等の仕様式を置ける。
+
+列末尾追加は既存順序と全要素を保持し、要素xを末尾に1個追加する。列位置交換は0始まりの整数位置i,jが共に範囲内ならその2要素のみを交換し、どちらかが範囲外なら列全体を変更しない。同じ位置の交換も不変。列要素の項目更新は範囲内の位置iにあるrecordの宣言済み必須member一つのみを更新し、範囲外では不変。いずれも元の値を変更せず、新しい列値を表す。IDの一意性、採番、選択位置と業務IDの対応、追加上限等はこの演算の保証ではない。
 
 相異なる2個の直接数値参照の和・差を整数定数と大小比較する限定断片では、受け取った有限の数値の正確な値を比較し、中間結果を浮動小数点に丸めない。一般の算術式や数値Effect値の評価とは区別し、型区別付き等値を大小比較の等値に読み替えない。閉包証明の適用範囲は機械的変換の `two-reference-linear-order-partition/v1` を参照する。
 
@@ -393,6 +401,10 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 
 `Verification`はその規則をどのTestModel・静的検査・領域別検証へ接続するかを示す。
 
+### nullable参照の等値Guard分割
+
+`nullable-reference-equality-partition/v1` は同一の非null基底Domain（制約なしstringまたは同じ整数区間）のrequired参照とそのnullable参照の直接 `==` / `!=` に限定する。Boolean結合の下で、参照比較による連結成分ごとに最大5参照、少なくとも1つnullable参照を含む場合、全比較定数・null（nullableのみ）・参照数以下の相異なる非null代表を用いて全等値パターンを保存する。有限基底区間は実在値を超えて代表を作らない。nullableの単独参照と非null定数の比較も同じ分割で扱う（既存のnullのみの文字列分割は維持）。別連結成分は独立に分割し、通常の証明予算を適用する。これは任意のIDや改訂値の具体列挙ではない。optional/absent/undefinedとの混同、異種基底型間比較、順序・加工・非対応関数の混在はこのprofileでは証明しない。独立Source検査が同じ許容真理値類を再導出する。局所Guardの証明に限定し、観測元の真正性、Effectの全域適合、任意の外部作用、到達可能性を証明しない。
+
 ### CommonRule / DomainSpecで証明できる機械規則の限定語彙
 
 任意の自然言語Ruleを機械証明へ変換しない。規範Artifactを正当にConfirmedにした上で、次の**完全一致の表現**だけを `cat:intrinsic-model/v1` の意味として扱う。これはあくまで**組み立て済みCATモデルに関する性質**であり、外部システムが実際に送信・反映・表示を行った証明ではない。
@@ -421,7 +433,8 @@ DomainRuleは式関数であり、DOM、視覚、統計、複数実行間の関�
 | `@cat:finite-transition-relation/v1` | 指定Operation・Trigger・peerにおける全許容Outcomeの有限射影と、明示したbefore/after関係の完全一致 |
 | `@cat:observed-transition-relation/v1` | 同一実行の宣言済み取得観測を含む有限before/afterの許容結果関係の完全一致 |
 | `@cat:finite-structural-transition-relation/v1` | 厳密に有限列挙できる型付き構造のbefore/after射影と全許容結果関係の完全一致 |
-| `@cat:structural-copy-relation/v1` | 同一型のrequired構造値の任意長sequence/recordについて、全許容Outcomeの直接等値射影を象徴的に証明 |
+| `@cat:structural-copy-relation/v1` | 同一型のrequired構造値の任意長sequence/record・最上位setおよび最上位JSON/instantについて、全許容Outcomeの直接等値射影を象徴的に証明 |
+| `@cat:collection-relation/v1` | 同一型のrequired record集合/列の条件選択、整数keyによる安定整列を全長で象徴的に証明 |
 
 - 最初の3述語の `Condition` は **`assembled-process`**、`Verification` は **`cat:intrinsic-model/v1`**、`Requirement` は上表の対応する値と完全一致する必要がある。本文の自然言語要求や他のVerifier契約をこの文字列に置き換えて無断で意味変更してはならない。
 - 出力Presence述語の `Condition` は厳密に `fresh-output <PI ID> <provide Operation ID> <Trigger ID> <output Field ID>` とする。これは当該応答の出力を各Outcome開始時に未生成とする明示的な規範宣言であり、永続状態・以前の応答・外部配信を初期化する意味ではない。所有PI内の提供Operationを一意に解決でき、所有PI・Trigger・Fieldが一致し、Domainが解決済みで、全宣言Outcomeについて代入が高々1回かつ型／値域証明済みである場合だけ証明する。Operation別Presence（なければ基本Presence）が required なら全Outcomeで代入、absent なら全Outcomeで非代入、optional なら両方を許す。undefined、曖昧な提供Operation、宣言Outcomeが空のものは未証明とする。非代入は当該fresh outputの不在に限り、外部送信・到達可能性・Guardの網羅性は別に検査する。
@@ -444,7 +457,8 @@ observed-transition-relation {"trigger":"receive","pi":"example.pi","operation":
 
   当該Triggerに適用される証明済み観測領域・初期不変条件・有効PI制約と `when` の非空な共通領域で、全許容Outcomeと規範関係の双方向一致を厳密に検査する。未取得・未来・別実行・別受付・別peerを同じ値として補完しない。これは取得済み値の**仕様上の評価断面**を宣言する契約で、実Providerからの取得、同期的な呼出し、永続相関ID等を実装に要求または証明するものではない。
 - `@cat:finite-structural-transition-relation/v1` は `finite-structural-transition-relation <JSON object>` とし、既存有限遷移関係のScope・Frame・required Presenceを維持した上で、既存型registryが完全列挙できるrecord/nullable/union/resolved reference/nullを認める。recordの不在とnullを区別し、項目順は意味上の差としない。既存のrequired scalar member記法を関係式中の `after.<field ID>.<member>` にも使用できる（Scope内のrequired after値のみ）。全record等値と、全required memberの等値を表す同値な関係は同じ許容結果集合で判定する。optional memberを省略した不完全な関係、未定義member、無限Domain、任意長sequence、未束縛型は証明しない。構造値のEffectは既存の型・値域証明を経る。
-- `@cat:structural-copy-relation/v1` は `structural-copy-relation <JSON object>` とし、有限遷移関係と同じScopeキーを使用する。初期profileでは、固定peer・一意accept/provide・同一Trigger、解決済み同一Domainのrequired before/after、`when: "true"`、制約なしの1個の無条件Ruleと非空の全Outcomeを対象とする。`relation` は各対象afterとbeforeの直接等値（等式の左右は任意）の論理積で、各after対象が一意に定義されることを要求する。少なくとも1対象はsequenceまたはrecordであり、入れ子型のrecord Presence・nullable・boolean・integer・string・enum・null・解決済み参照を保持する。全Outcomeで型／値域証明済みの同一before参照か、Stateの明示された不変Frameを照合する。任意長sequenceの空列・順序・重複は値として保存し、有限長の列挙や入力同型のみで証明しない。set・JSON/instant・未知型・条件付き／演算付き関係はこのprofileでは未証明とする。これは観測可能な値の関係であり、実装でのコピー関数、メモリ表現、同期方式を要求しない。Compilerと独立Source検査は各Outcomeから関係を再構成し、出典SHAを保持する。
+- `@cat:structural-copy-relation/v1` は `structural-copy-relation <JSON object>` とし、有限遷移関係と同じScopeキーを使用する。初期profileでは、固定peer・一意accept/provide・同一Trigger、解決済み同一Domainのrequired before/after、`when: "true"`、制約なしの1個の無条件Ruleと非空の全Outcomeを対象とする。`relation` は各対象afterとbeforeの直接等値（等式の左右は任意）の論理積で、各after対象が一意に定義されることを要求する。少なくとも1対象はsequence、record、最上位set、最上位JSON/instantであり、入れ子型のrecord Presence・nullable・boolean・integer・string・enum・null・解決済み参照を保持する。全Outcomeで型／値域証明済みの同一before参照か、Stateの明示された不変Frameを照合する。任意長sequenceの空列・順序・重複は値として保存し、有限長の列挙や入力同型のみで証明しない。最上位set（解決済み参照を含む）は既存要素型の集合等値（順序非依存、要素の欠落・余剰・重複を許さない）を保存する。最上位JSON（json/json-object）はkind別の構造等値（objectのkey順不問、array順・重複、数値同値、nullとmember不在の区別）、最上位instantは厳密な瞬間値の等値を保存する。入れ子set・構造型内のJSON/instant・未知型・条件付き／演算付き関係はこのprofileでは未証明とする。JSON変換・時刻順序・codecや製品実装の正しさをこの直接等値だけで証明しない。これは観測可能な値の関係であり、実装でのコピー関数、メモリ表現、同期方式を要求しない。Compilerと独立Source検査は各Outcomeから関係を再構成し、出典SHAを保持する。
+- `@cat:collection-relation/v1` は `collection-relation <JSON object>` とし、直接等値と同じScope（単一対象、required同一Domain、無条件Rule、固定peer/操作）を使用する。`after.output.items == filter_by(input.items, "enabled", true)` は宣言済みrequired scalar memberと型適合定数の等値に合う全要素のみを保持し、列の相対順序と多重度、集合の要素同一性を保持する。`after.output.items == stable_sort_by(input.items, "id", "asc")` はrequired integer keyに対する非減少順の安定順列（同keyの相対順序保持）を表し、`"desc"` は非増加順を表す。全Outcomeの式が同じ関係を表す場合に限り証明し、欠落/余剰、別入力、誤Scopeを受理しない。任意述語・複合key・null順序・観測依存・別Domainへの写像は対象外。製品側の実装関数やアルゴリズムは規定しない。
 - 上記の有限observed/structural profileは厳密な有限before×after領域（最大65536組）を対象にし、Compilerと独立Source検査がそれぞれ同じ規範関係を再構成する。有限性や証明予算は検査器の対応範囲であって、プロダクト仕様の値域を狭める要件ではない。実装の関数・class・SQL/ORM・同期方式・データ配置は、明示された仕様上の差や実装制約がない限り検証条件にしない。証明できないものは未証明とし、意味を保存する別の健全な証明方式を排除しない。既存有限遷移関係v1の記法・意味は維持する。
 - 正当にConfirmedとなった規範Artifactの出典ID・SHA-256と決定根拠が揃い、モデル条件が実証された場合だけ、Compilerが `intrinsic_rule_proofs` を生成する。独立 `model-conformance` は元Artifactから同じ性質を再検査し、結果・出典を比較する。
 - 未承認Artifact、未知の述語、条件の変更、自由記述、外部通信・DOM・データベース・Discord送信等の実装・複数実行に関するRuleは**未証明**である。登録済みfixtureやrunnerの単なる `passed` を自然言語要求の証明に代用しない。

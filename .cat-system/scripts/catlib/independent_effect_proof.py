@@ -80,6 +80,56 @@ def _symbolic(expr, target, fields):
             if all(type(x) is int for x in endpoints):
                 derived[key]=sum(endpoints)
         return subtyping.subset(derived,target) is True
+    def constructed_value_fits(node,domain):
+        if set(node)=={'literal'}:return types.contains(domain,node['literal'])
+        if set(node)=={'ref'}:
+            source=fields.get(node['ref'],{})
+            return source.get('role') in ('input','state','observation') and subtyping.subset(source['domain'],domain) is True
+        if node.get('op')!='record-value':return False
+        while domain.get('type')=='reference' and domain.get('resolved'):domain=domain['of']
+        if domain.get('type')!='record' or not domain.get('resolved'):return False
+        arguments=node.get('args',[])
+        if len(arguments)%2:return False
+        result={}
+        for k,v in zip(arguments[::2],arguments[1::2]):
+            if set(k)!={'literal'} or type(k['literal']) is not str or k['literal'] in result:return False
+            result[k['literal']]=v
+        for member in domain['fields']:
+            name=member['id'];presence=member['presence']
+            if name not in result:
+                if presence in ('required','undefined'):return False
+                continue
+            if presence not in ('required','optional') or not constructed_value_fits(result.pop(name),member['domain']):return False
+        return not result
+    if op=='record-value':return constructed_value_fits(expr,target)
+    if op in ('sequence-append','sequence-swap','sequence-replace-member'):
+        if not isinstance(args,list) or len(args)!={'sequence-append':2,'sequence-swap':3,'sequence-replace-member':4}[op]:return False
+        if set(args[0])!={'ref'} or args[0]['ref'] not in fields:return False
+        source=fields[args[0]['ref']]
+        if source['role'] not in ('input','state','observation'):return False
+        collection=source['domain']
+        if collection.get('type')!='sequence' or target.get('type')!='sequence' or subtyping.subset(collection,target) is not True:return False
+        if op=='sequence-append':
+            return constructed_value_fits(args[1],target['element'])
+        # A swap never introduces a new value. Totality of the index
+        # arithmetic is derived from its own integer-only expression tree.
+        if op=='sequence-replace-member':
+            element=collection['element']
+            while element.get('type')=='reference' and element.get('resolved'):element=element['of']
+            if element.get('type')!='record' or not element.get('resolved') or set(args[2])!={'literal'}:return False
+            matches=[f for f in element['fields'] if f['id']==args[2]['literal'] and f['presence']=='required']
+            if len(matches)!=1 or not constructed_value_fits(args[3],matches[0]['domain']):return False
+        pending=list(args[1:2] if op=='sequence-replace-member' else args[1:])
+        while pending:
+            node=pending.pop()
+            if set(node)=={'literal'} and type(node['literal']) is int:continue
+            if set(node)=={'ref'} and node['ref'] in fields:
+                field=fields[node['ref']]
+                if field['role'] in ('input','state','observation') and field['domain'].get('type')=='integer':continue
+            if node.get('op') in ('add','sub') and len(node.get('args',[]))>=2:
+                pending.extend(node['args']);continue
+            return False
+        return True
     if op in ('set-add','set-remove') and isinstance(args,list) and len(args)==2:
         if not all(isinstance(x,dict) and set(x)=={'ref'} and x['ref'] in fields for x in args):
             return False
@@ -142,6 +192,12 @@ def _certifies(rule,write,fields,definitions,presence_map,limit=4096):
             member=matches[0]['domain']
             while member.get('type')=='reference' and member.get('resolved'):member=member['of']
             return subtyping.subset(member,domain) is True
+        if expr.get('op') in ('filter-by','stable-sort-by'):
+            # Independent Source closure: pure selection/permutation never
+            # introduces an element outside the input collection Domain.
+            from catlib.semantic_collection_relation import operator_domain
+            source=operator_domain(expr,fields)
+            return source is not None and subtyping.subset(source,domain) is True
         if _symbolic(expr,domain,fields):return True
         dimensions=[]
         for ref in refs:

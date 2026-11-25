@@ -138,3 +138,26 @@ def real_partition_values(domain,field,predicates,allow_unused=False):
             result.append(mid)
     if high is None:result.append(math.ceil(points[-1])+1)
     return result if result and len(result)<=MAX_PARTITION_VALUES else None
+
+
+def sequence_length_values(domain, field, predicates):
+    """Exact length truth classes, witnessed by concrete in-domain sequences.
+
+    Only direct length(field) vs integer literal, under Boolean composition.
+    Never replace an observed sequence value with its length in Effects.
+    """
+    from catlib import semantic_types as typed
+    from catlib.semantic_structural_copy import _example
+    if domain.get('type')!='sequence':return None
+    def rewrite(node):
+        if node.get('op')=='call':raise ValueError('opaque call')
+        if node.get('op')=='length' and node.get('args')==[{'ref':field}]:return {'ref':field}
+        if node.get('ref')==field:raise ValueError('value read outside length')
+        return ({**node,'args':[rewrite(x) for x in node['args']]} if 'args' in node else node)
+    try:
+        lengths=integer_partition_values({'type':'integer','min':0},field,[rewrite(x) for x in predicates])
+        if lengths is None or max(lengths)>4096 or sum(lengths)>16384:return None
+        element=_example(domain['element'])
+        if not typed.contains(domain['element'],element):return None
+        return [[element]*length for length in lengths]
+    except (ValueError,TypeError,KeyError,IndexError,RecursionError):return None

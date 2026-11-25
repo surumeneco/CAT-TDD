@@ -2,7 +2,8 @@
 
 The initial profile accepts an unconditional direct before/after projection
 on one statically bound PI. It deliberately does not accept arbitrary sequence
-operations, predicates, set ordering, or external execution evidence.
+operations, predicates, nested sets, or external execution evidence.
+Top-level sets use existing extensional equality, not sequence ordering.
 """
 from __future__ import annotations
 import json
@@ -38,11 +39,18 @@ def _supported(domain):
     return kind in ('boolean', 'integer', 'string', 'null')
 
 
+def _supported_value(domain):
+    if domain.get('type') == 'reference':
+        return domain.get('resolved') is True and _supported_value(domain['of'])
+    if domain.get('type') == 'set':
+        return _supported(domain['element'])
+    return domain.get('type') in ('json', 'instant') or _supported(domain)
+
 def _structural(domain):
     kind = domain.get('type')
     if kind == 'reference':
         return domain.get('resolved') is True and _structural(domain['of'])
-    return kind in ('sequence', 'record')
+    return kind in ('sequence', 'record', 'set', 'json', 'instant')
 
 
 def resolve(scope, fields, pi_docs, invariants=()):
@@ -101,7 +109,7 @@ def resolve(scope, fields, pi_docs, invariants=()):
             if field['role']=='output':
                 if field.get('source_pi')!=owner or not required(provided['id'],k):return None
             elif field['role']!='state':return None
-            if not _supported(field['domain']):return None
+            if not _supported_value(field['domain']):return None
         if not any(_structural(fields[k]['domain']) for k in subjects):return None
         relation=parse_expr_text(spec['relation'])
         atoms=relation['args'] if relation.get('op')=='and' else [relation]
@@ -180,7 +188,17 @@ def _example(domain, variant=0, empty=False):
                               for f in domain['fields'] if f['presence']=='required'}
     if kind=='sequence':
         return [] if empty else [_example(domain['element'],0),_example(domain['element'],1)]
+    if kind=='set':
+        if empty:return []
+        a,b=(_example(domain['element'],i) for i in (0,1))
+        return [a] if typed.same(a,b) else [a,b]
     if kind=='nullable':return None if variant==0 else _example(domain['of'],variant,empty)
+    if kind=='json':
+        from decimal import Decimal
+        return {} if empty else {'amount': Decimal('9007199254740993.125'), 'example':[1,True,None,1]}
+    if kind=='instant':
+        from catlib.semantic_json_instant import decode_offset_datetime
+        return decode_offset_datetime('1970-01-01T00:00:00Z' if empty else '1970-01-02T00:00:00.000000123Z')
     if kind=='null':return None
     if kind=='boolean':return bool(variant)
     if kind=='integer':
@@ -200,30 +218,39 @@ def witness_values(model,trigger,fields,guard_names,observed,presence):
     (not the selected concrete test) establishes the Source relation.
     """
     from cat_compile_v2 import parse_expr_text, used_refs, Blocked
-    copied=set()
+    from catlib import semantic_collection_relation as collection_relation
+    copied=set(); operations={}
     try:
         for p in model.get('intrinsic_rule_proofs',[]):
-            if p.get('requirement')!=TOKEN or p.get('status')!='passed':continue
+            token=p.get('requirement')
+            if token not in (TOKEN,collection_relation.TOKEN) or p.get('status')!='passed':continue
             if p.get('proof_method')!='cat:intrinsic-model/v1' or p.get('verification_contract')!='cat:intrinsic-model/v1':continue
             scope=p['scope']
-            if not scope.startswith(PREFIX):continue
-            spec=json.loads(scope[len(PREFIX):],object_pairs_hook=_unique)
+            prefix=PREFIX if token==TOKEN else collection_relation.PREFIX
+            if not scope.startswith(prefix):continue
+            spec=json.loads(scope[len(prefix):],object_pairs_hook=_unique)
             if spec['trigger']!=trigger:continue
             if not any(x.get('id')==p['source_artifact'] and x.get('kind')=='domain-spec' and
                        x.get('sha256')==p['source_sha256'] and x.get('process')==model['process']
                        for x in model.get('normative_rule_inputs',[])):continue
             if not any(x.get('id')==p['rule_id'] and x.get('source_artifact')==p['source_artifact'] and
                        x.get('source_sha256')==p['source_sha256'] and x.get('condition')==scope and
-                       x.get('requirement')==TOKEN and x.get('verification_status')=='intrinsic-proved'
+                       x.get('requirement')==token and x.get('verification_status')=='intrinsic-proved'
                        for x in model.get('rule_obligations',[])):continue
-            copied.update(k for k in used_refs(parse_expr_text(spec['relation']),{}) if k in fields)
+            expr=parse_expr_text(spec['relation'])
+            copied.update(k for k in used_refs(expr,{}) if k in fields)
+            if token==collection_relation.TOKEN:
+                op=next((x for x in expr['args'] if x.get('op') in collection_relation.OPERATORS),None)
+                if op is not None and collection_relation.operator_domain(op,fields) is not None:
+                    operations[op['args'][0]['ref']]=op
         if not copied:return {}
         values={}
         for k,f in fields.items():
             if (f['role'] not in ('input','state') or k in guard_names or
                     presence.get(k,'required')!='required' or not _structural(f['domain']) or
-                    not _supported(f['domain']) or k in observed and k not in copied):continue
-            sample=_example(f['domain'],0,empty=k not in copied)
+                    not _supported_value(f['domain']) or k in observed and k not in copied):continue
+            sample=(collection_relation.example(f['domain'],operations[k]) if k in operations else
+                    _example(f['domain'],0,empty=k not in copied))
             if typed.contains(f['domain'],sample):values[k]=[sample]
         return values
     except (Blocked,ValueError,TypeError,KeyError,AttributeError,ArithmeticError):return {}

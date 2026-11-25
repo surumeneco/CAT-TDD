@@ -92,6 +92,30 @@ def _independent_integer_cells(domain, field, clauses, allow_presence=False):
     return reps if reps and len(reps)<=LIMIT else None
 
 
+def _independent_sequence_lengths(domain, field, clauses):
+    if domain.get('type')!='sequence':return None
+    constants=set()
+    def legal(node):
+        if node.get('op')=='call':return False
+        if field not in used_refs(node,{}):return True
+        op=node.get('op');args=node.get('args',[])
+        if op in ('and','or','not'):return all(legal(x) for x in args)
+        if op not in ('eq','ne','lt','le','gt','ge') or len(args)!=2:return False
+        for a,b in (args,args[::-1]):
+            if a=={'op':'length','args':[{'ref':field}]} and set(b)=={'literal'} and type(b['literal']) is int:
+                constants.add(b['literal']);return True
+        return False
+    if not all(legal(x) for x in clauses) or not constants:return None
+    lengths={0}
+    for n in constants:lengths.update(x for x in (n-1,n,n+1) if x>=0)
+    if max(lengths)>4096 or sum(lengths)>16384:return None
+    from catlib.semantic_structural_copy import _example
+    try:
+        value=_example(domain['element'])
+        if not types.contains(domain['element'],value):return None
+        return [[value]*n for n in sorted(lengths)]
+    except (ValueError,TypeError,KeyError,IndexError,RecursionError):return None
+
 def _independent_real_cells(domain, field, clauses):
     """Reconstruct ordered real cells from Source, not compiler receipts."""
     from fractions import Fraction
@@ -222,6 +246,65 @@ def independent_reference_palette(names,clauses,extra_literals=(),require_pair=T
             if candidate not in fixed:fresh.append(candidate)
         return sorted(fixed)+fresh
     except (ValueError,KeyError,TypeError):return None
+
+
+def _independent_nullable_reference_cells(names,domains,inputs,current_presence,clauses):
+    """Independently reconstruct connected components and fixed equality classes."""
+    eligible={}
+    for n in names:
+        domain=domains.get(n,{})
+        d=domain.get('of',{}) if domain.get('type')=='nullable' else domain
+        if (n not in inputs or current_presence(n)=='required') and (d=={'type':'string'} or d.get('type')=='integer' and set(d)<={'type','min','max'}):
+            eligible[n]=d
+    groups=[{n} for n in sorted(eligible)];bad=set();literals={n:set() for n in eligible}
+    def atoms(node):
+        if node.get('op')=='call':raise ValueError('opaque call')
+        if node.get('op') in ('and','or','not'):
+            for child in node.get('args',[]):yield from atoms(child)
+        else:yield node
+    def call_present(n):return n.get('op')=='call' or any(call_present(a) for a in n.get('args',[]))
+    if any(call_present(c) for c in clauses):return {}
+    for clause in clauses:
+        for atom in atoms(clause):
+            refs=used_refs(atom,{})&eligible.keys()
+            if not refs:continue
+            args=atom.get('args',[])
+            if atom.get('op') not in ('eq','ne') or len(args)!=2:
+                bad.update(refs);continue
+            if all(set(a)=={'ref'} and a['ref'] in eligible for a in args) and eligible[args[0]['ref']]==eligible[args[1]['ref']]:
+                merged=set().union(*(g for g in groups if g&refs))
+                groups=[g for g in groups if not g&refs]+[merged];continue
+            found=False
+            for term,constant in (args,args[::-1]):
+                if set(term)=={'ref'} and term['ref'] in eligible and set(constant)=={'literal'}:
+                    n=term['ref'];val=constant['literal'];d=eligible[n]
+                    if val is None:found=True;break
+                    if type(val) is (str if d['type']=='string' else int):
+                        literals[n].add(val);found=True;break
+            if not found:bad.update(refs)
+    cells={}
+    for group in groups:
+        if not 1<=len(group)<=5 or bad&group or not any(domains[n]['type']=='nullable' for n in group):continue
+        if len(group)==1 and not literals[next(iter(group))]:continue
+        d=eligible[min(group)];fixed=set().union(*(literals[n] for n in group));fresh=[]
+        if d['type']=='string':
+            i=0
+            while len(fresh)<len(group):
+                v='\x00'*i;i+=1
+                if v not in fixed:fresh.append(v)
+        else:
+            fixed={v for v in fixed if types.contains(d,v)}
+            lower,upper=d.get('min'),d.get('max')
+            start=lower if lower is not None else upper if upper is not None else 0
+            step=-1 if lower is None and upper is not None else 1
+            for i in itertools.count():
+                v=start+i*step
+                if not types.contains(d,v) or len(fresh)==len(group):break
+                if v not in fixed:fresh.append(v)
+        values=sorted(fixed)+fresh
+        if not values or len(values)>LIMIT:continue
+        for n in group:cells[n]=([None]+values if domains[n]['type']=='nullable' else list(values))
+    return cells
 
 
 def _finite_truth_tables(names,dimensions,clauses,definitions):
@@ -725,6 +808,7 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
         string_group={k for k in names if domains.get(k)=={'type':'string'}
                       and (k not in inputs or current_presence(k)=='required')}
         string_palette=independent_reference_palette(string_group,clauses) if len(string_group)>=2 else None
+        nullable_cells=_independent_nullable_reference_cells(names,domains,inputs,current_presence,clauses)
         for field in sorted(names):
             if projected:
                 dimensions.append(projected[field]);partition_fields.append(field);partition_kinds.add('record_member');continue
@@ -740,6 +824,10 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
             else:values=types.finite_values(domains[field])
             if string_palette is not None and field in string_group:
                 values=string_palette;partition_fields.append(field);partition_kinds.add('string_ref')
+            if field in nullable_cells:
+                values=nullable_cells[field]
+                if field not in partition_fields:partition_fields.append(field)
+                partition_kinds.add('nullable_ref_equality')
             if field in linear_range:
                 values=linear_range[field]
                 partition_fields.append(field)
@@ -778,6 +866,11 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                 if values is not None:
                     partition_fields.append(field)
                     partition_kinds.add('real')
+            if values is None and (field not in inputs or current_presence(field)=='required'):
+                values=_independent_sequence_lengths(domains[field],field,clauses)
+                if values is not None:
+                    partition_fields.append(field)
+                    partition_kinds.add('sequence_length')
             if values is None and field in inputs and current_presence(field)=='optional':
                 representatives=_independent_integer_cells(domains[field],field,clauses,allow_presence=True)
                 kind='optional_integer'
@@ -892,6 +985,8 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                     else 'string-literal-equality-partition/v1' if partition_kinds=={'string'}
                     else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
                     else 'nullable-string-null-partition/v1' if partition_kinds=={'nullable_string_null'}
+                    else 'nullable-reference-equality-partition/v1' if partition_kinds=={'nullable_ref_equality'}
+                    else 'sequence-length-literal-partition/v1' if partition_kinds=={'sequence_length'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
