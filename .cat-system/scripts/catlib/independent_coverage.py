@@ -792,7 +792,15 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
         size=math.prod(map(len,dimensions))
         table=(_finite_truth_tables(sorted(names),dimensions,clauses,definitions)
                if possible and size>LIMIT else None)
-        if not possible or (size>LIMIT and table is None):
+        masks=None
+        if possible and size>LIMIT and table is None and not any(
+                any(v is _PRESENT_CLASS for v in dim) for dim in dimensions):
+            # Use the same pure expression primitive on independently rebuilt
+            # Source partitions, not the Compiler's masks, outcomes or receipts.
+            from catlib.finite_truth_masks import truth_masks
+            masks=truth_masks(sorted(names),dimensions,constraints,[r['when'] for r in applicable],
+                              definitions,eval_expr,used_refs,Blocked)
+        if not possible or (size>LIMIT and table is None and masks is None):
             result[ident]={'result':'unproven','unreachable_rules':sorted(r['id'] for r in applicable)}
             continue
         gaps=overlaps=0;visited=set();unknown=False
@@ -809,7 +817,22 @@ def audit(process,pi_docs,tces,roles,domains,domain_rule=None,state_invariants=N
                           {'$cat_presence':'present'} if value is _PRESENT_CLASS else transport(value))
                     for name,value in env.items()}
         ordered=sorted(names)
-        rows=(itertools.product(*(range(len(d)) for d in dimensions)) if table is not None
+        if masks is not None:
+            from catlib.finite_truth_masks import row_indices, first_indices
+            accepted,regions=masks
+            admissible=accepted.bit_count();covered=overlap=0
+            for rule,region in zip(applicable,regions):
+                if region:visited.add(rule['id'])
+                overlap|=covered&region;covered|=region
+            uncovered=accepted&~covered
+            gaps=uncovered.bit_count();overlaps=overlap.bit_count()
+            def env_at(i):return {k:d[j] for k,d,j in zip(ordered,dimensions,row_indices(i,dimensions))}
+            uncovered_examples=[snapshot(env_at(i)) for i in first_indices(uncovered,64)]
+            overlap_examples=[{'state':snapshot(env_at(i)),
+                               'rules':[r['id'] for r,region in zip(applicable,regions) if (region>>i)&1]}
+                              for i in first_indices(overlap,16)]
+        rows=(() if masks is not None else
+              itertools.product(*(range(len(d)) for d in dimensions)) if table is not None
               else itertools.product(*dimensions))
         for items in rows:
             env=None if table is not None else dict(zip(ordered,items))
