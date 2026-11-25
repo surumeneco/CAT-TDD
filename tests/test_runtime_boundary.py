@@ -182,9 +182,9 @@ kind: work
 id: producer.work
 status: draft
 process: producer
-source_refs: [synthetic-test-only]
+source_refs: ["synthetic-test-only"]
 decision_ref: synthetic-test-only
-refs: [producer.tce]
+refs: ["producer.tce"]
 entry: confirmed-spec
 mode: implementation
 flow: spec-implementation
