@@ -122,3 +122,71 @@ def nullable_string_null_partition(domain, field, predicates):
         return False
     if not any(_reads(p,field) for p in predicates) or not all(check(p) for p in predicates):return None
     return [None,'']
+
+
+def nullable_reference_cells(domains, predicates, presence):
+    """Exact equality truth cells for connected required scalar references.
+
+    A component containing nullable<T> has a fixed null class and at most N
+    fresh nonnull classes (N = number of references), in addition to all
+    literal constants. T must be an identical unrestricted string or integer
+    interval for every member. No ordering, arithmetic, calls, optional
+    Presence, or type coercion is admitted. Independent components are
+    partitioned separately; the usual combination budget still applies.
+    """
+    def base(domain):
+        d=domain.get('of',{}) if domain.get('type')=='nullable' else domain
+        if d=={'type':'string'}:return d
+        if d.get('type')=='integer' and set(d)<={'type','min','max'}:return d
+        return None
+    candidates={n:base(d) for n,d in domains.items() if presence.get(n,'required')=='required' and base(d) is not None}
+    graph={n:set() for n in candidates}; constants={n:set() for n in candidates}; invalid=set()
+    def visit(node):
+        op=node.get('op'); args=node.get('args',[])
+        if op=='call':return False
+        if op in ('and','or','not'):return all(visit(a) for a in args)
+        refs={n for n in candidates if _reads(node,n)}
+        if not refs:return True
+        if op not in ('eq','ne') or len(args)!=2:
+            invalid.update(refs);return True
+        a,b=args
+        if set(a)==set(b)=={'ref'} and a['ref'] in candidates and b['ref'] in candidates and candidates[a['ref']]==candidates[b['ref']]:
+            x,y=a['ref'],b['ref'];graph[x].add(y);graph[y].add(x);return True
+        for ref,lit in ((a,b),(b,a)):
+            if set(ref)=={'ref'} and ref['ref'] in candidates and set(lit)=={'literal'}:
+                n=ref['ref'];value=lit['literal'];kind=candidates[n]['type']
+                if value is None:return True
+                if type(value) is (str if kind=='string' else int):
+                    constants[n].add(value);return True
+        invalid.update(refs);return True
+    if not all(visit(p) for p in predicates):return {}
+    remaining=set(candidates);result={}
+    while remaining:
+        todo=[min(remaining)];group=set()
+        while todo:
+            n=todo.pop()
+            if n in group:continue
+            group.add(n);todo.extend(graph[n]-group)
+        remaining-=group
+        if len(group)>5 or group&invalid or not any(domains[n].get('type')=='nullable' for n in group):continue
+        # Preserve the existing null-only string profile for singleton fields.
+        if len(group)==1 and not constants[next(iter(group))]:continue
+        d=candidates[min(group)];fixed=set().union(*(constants[n] for n in group))
+        if d['type']=='string':
+            fresh=[];v=''
+            while len(fresh)<len(group):
+                if v not in fixed:fresh.append(v)
+                v+='\x00'
+        else:
+            lo,hi=d.get('min'),d.get('max')
+            fixed={v for v in fixed if (lo is None or v>=lo) and (hi is None or v<=hi)}
+            v=lo if lo is not None else hi if hi is not None else 0
+            step=-1 if lo is None and hi is not None else 1
+            fresh=[]
+            while len(fresh)<len(group) and (lo is None or v>=lo) and (hi is None or v<=hi):
+                if v not in fixed:fresh.append(v)
+                v+=step
+        palette=sorted(fixed)+fresh
+        if not palette or len(palette)>MAX_PARTITION_VALUES:continue
+        for n in group:result[n]=([None]+palette if domains[n].get('type')=='nullable' else palette[:])
+    return result
