@@ -43,7 +43,7 @@ CODE = re.compile(r'(?ms)^```cat-machine\s*\n(.*?)\n```\s*$')
 INT = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')
 SAFE_INT = 9007199254740991
 OPS = {'eq','ne','lt','le','gt','ge','and','or','not','add','sub','mul',
-       'div','floor','abs','length','concat','to-int','set-add','set-remove','call',
+       'div','floor','abs','length','concat','to-int','set-add','set-remove','sequence-append','sequence-swap','sequence-replace-member','record-value','call',
        'is-missing','is-undefined','is-present','member','filter-by','stable-sort-by'}
 
 _PRESENT_GUARD_VALUE=object()
@@ -247,7 +247,7 @@ def parse_domain_text(text):
 def _normalize_expr_language(text):
     """Translate language aliases token-wise without modifying quoted strings."""
     aliases={'真':'True','偽':'False','なし':'None','かつ':'and','または':'or',
-             '長さ':'length','整数化':'to_int','連結':'concat','集合追加':'set_add','集合削除':'set_remove','否定':'not_fn'}
+             '長さ':'length','整数化':'to_int','連結':'concat','集合追加':'set_add','集合削除':'set_remove','列追加':'sequence_append','列交換':'sequence_swap','列項目更新':'sequence_replace_member','否定':'not_fn'}
     try:
         tokens=[]
         for tok in tokenize.generate_tokens(io.StringIO(text).readline):
@@ -264,7 +264,7 @@ def parse_expr_text(text, params=()):
     try:root=ast.parse(text,mode='eval').body
     except SyntaxError as exc:raise Blocked('invalid CAT expression '+repr(text)) from exc
     builtin={'length':'length','len':'length','abs':'abs','floor':'floor','to_int':'to-int',
-             'concat':'concat','set_add':'set-add','set_remove':'set-remove','not_fn':'not',
+             'concat':'concat','set_add':'set-add','set_remove':'set-remove','sequence_append':'sequence-append','sequence_swap':'sequence-swap','sequence_replace_member':'sequence-replace-member','not_fn':'not',
              'is_missing':'is-missing','is_undefined':'is-undefined','is_present':'is-present',
              'filter_by':'filter-by','stable_sort_by':'stable-sort-by'}
     compare={ast.Eq:'eq',ast.NotEq:'ne',ast.Lt:'lt',ast.LtE:'le',ast.Gt:'gt',ast.GtE:'ge'}
@@ -279,6 +279,12 @@ def parse_expr_text(text, params=()):
                 x=cv(e);require(set(x)=={'literal'} and type(x['literal']) in (str,int,bool),'list literals must contain scalar literals')
                 vals.append(x['literal'])
             return {'literal':vals}
+        if isinstance(n,ast.Dict):
+            args=[];keys=set()
+            for k,v in zip(n.keys,n.values):
+                require(isinstance(k,ast.Constant) and type(k.value) is str and k.value not in keys,'record-value keys must be distinct string literals')
+                keys.add(k.value);args.extend(({'literal':k.value},cv(v)))
+            return {'op':'record-value','args':args}
         if isinstance(n,ast.Name):
             low=n.id.lower()
             if low=='true':return {'literal':True}
@@ -718,6 +724,11 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
         result=collection_relation.operator_domain(expr,fields)
         require(result is not None,'unsupported or ill-typed collection relation')
         return result['type']
+    if op=='record-value':
+        require(len(args)%2==0 and all(set(x)=={'literal'} and type(x['literal']) is str for x in args[::2]),'record-value keys must be string literals')
+        require(len({x['literal'] for x in args[::2]})==len(args)//2,'duplicate record-value key')
+        for a in args[1::2]:inspect_expr(a,fields,definitions,params,stack)
+        return 'record'
     if op in ('is-missing','is-undefined','is-present'):
         require(len(args)==1 and isinstance(args[0],dict) and set(args[0])=={'ref'},
                 op+' requires exactly one direct PI field reference')
@@ -736,7 +747,7 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
         types=[inspect_expr(a,fields,definitions,params,stack) for a in args]
         return inspect_expr(defi['body'],fields,definitions,dict(zip(defi['params'],types)),stack+(name,))
     check_keys(expr,['op','args'],where='operator expression')
-    arity={'not':1,'floor':1,'abs':1,'length':1,'to-int':1,'set-add':2,'set-remove':2}
+    arity={'not':1,'floor':1,'abs':1,'length':1,'to-int':1,'set-add':2,'set-remove':2,'sequence-append':2,'sequence-swap':3,'sequence-replace-member':4}
     if op in arity:require(len(args)==arity[op],f'{op} needs {arity[op]} args')
     elif op in ('and','or','concat','add','mul'):require(len(args)>=2,op+' needs >=2 args')
     else:require(len(args)==2,op+' needs exactly 2 args')
@@ -778,6 +789,15 @@ def inspect_expr(expr, fields, definitions, params=(), stack=()):
         require(types[0] in ('set','parameter') and types[1] in ('string','integer','record','parameter'),
                 f'{op}: expected set and element, got {types}')
         return 'set'
+    if op=='sequence-append':
+        require(types[0]=='sequence','sequence-append requires a sequence')
+        return 'sequence'
+    if op=='sequence-swap':
+        require(types==['sequence','integer','integer'],'sequence-swap requires a sequence and two integer indices')
+        return 'sequence'
+    if op=='sequence-replace-member':
+        require(types[:3]==['sequence','integer','string'] and set(args[2])=={'literal'},'sequence-replace-member requires a sequence, integer index and literal member key')
+        return 'sequence'
     if op=='to-int':
         types_are({'string'})
         v=args[0]
@@ -917,6 +937,7 @@ def eval_expr(expr, env, definitions, params=None):
                 and xs[0][xs[1]] is not typed.MISSING and xs[0][xs[1]] is not typed.UNDEFINED,
                 'required record member absent')
         return deepcopy(xs[0][xs[1]])
+    if op=='record-value':return {key:deepcopy(value) for key,value in zip(xs[::2],xs[1::2])}
     if op=='call':
         f=definitions[expr['name']];return eval_expr(f['body'],env,definitions,dict(zip(f['params'],xs)))
     try:
@@ -944,6 +965,21 @@ def eval_expr(expr, env, definitions, params=None):
             require(safe_integer_text(xs[0]),'to-int requires safe canonical signed-integer string')
             return int(xs[0])
         if op=='concat':return ''.join(xs)
+        if op=='sequence-append':
+            require(isinstance(xs[0],list),'sequence-append expects list')
+            return deepcopy(xs[0]+[xs[1]])
+        if op=='sequence-swap':
+            require(isinstance(xs[0],list) and all(type(x) is int for x in xs[1:]),'sequence-swap expects list and integer indices')
+            result=deepcopy(xs[0]);i,j=xs[1:]
+            if 0<=i<len(result) and 0<=j<len(result):result[i],result[j]=result[j],result[i]
+            return result
+        if op=='sequence-replace-member':
+            require(isinstance(xs[0],list) and type(xs[1]) is int and type(xs[2]) is str,'sequence-replace-member expects list, integer and member key')
+            result=deepcopy(xs[0]);i,key,value=xs[1:]
+            if 0<=i<len(result):
+                require(type(result[i]) is dict and key in result[i],'sequence-replace-member requires existing record member')
+                result[i][key]=deepcopy(value)
+            return result
         if op=='set-add':
             require(isinstance(xs[0],list),'set-add expects list')
             return typed.set_add(xs[0],xs[1])
@@ -1069,6 +1105,47 @@ def _symbolic_effect_containment(expr, target_domain, fields):
             if all(type(value) is int for value in endpoints):
                 inferred[endpoint]=sum(endpoints)
         return semantic_subtyping.subset(inferred,target_domain) is True
+    def constructed_value_fits(node,domain):
+        if set(node)=={'literal'}:return typed.contains(domain,node['literal'])
+        if set(node)=={'ref'}:
+            f=fields.get(node['ref'],{})
+            return f.get('role') in ('input','state','observation') and semantic_subtyping.subset(f['domain'],domain) is True
+        if node.get('op')!='record-value':return False
+        shape=_record_shape(domain)
+        if shape is None:return False
+        terms=node['args'];values={k['literal']:v for k,v in zip(terms[::2],terms[1::2])}
+        members={f['id']:f for f in shape['fields']}
+        if set(values)-set(members):return False
+        for name,member in members.items():
+            presence=member['presence']
+            if name in values:
+                if presence not in ('required','optional') or not constructed_value_fits(values[name],member['domain']):return False
+            elif presence in ('required','undefined'):return False
+        return True
+    if op=='record-value':return constructed_value_fits(expr,target_domain)
+    if op in ('sequence-append','sequence-swap','sequence-replace-member'):
+        if len(args)!={'sequence-append':2,'sequence-swap':3,'sequence-replace-member':4}[op] or set(args[0])!={'ref'}:return None
+        source=fields.get(args[0]['ref'],{})
+        if source.get('role') not in ('input','state','observation'):return None
+        collection=source['domain']
+        if collection.get('type')!='sequence' or target_domain.get('type')!='sequence':return None
+        if semantic_subtyping.subset(collection,target_domain) is not True:return None
+        if op=='sequence-append':
+            return constructed_value_fits(args[1],target_domain['element'])
+        def integer_index(node):
+            if set(node)=={'literal'}:return type(node['literal']) is int
+            if set(node)=={'ref'}:
+                field=fields.get(node['ref'],{})
+                return field.get('role') in ('input','state','observation') and field.get('domain',{}).get('type')=='integer'
+            if node.get('op') in ('add','sub') and len(node.get('args',[]))>=2:
+                return all(integer_index(x) for x in node['args'])
+            return False
+        if op=='sequence-replace-member':
+            shape=_record_shape(collection['element'])
+            if shape is None or not integer_index(args[1]) or set(args[2])!={'literal'}:return None
+            member=next((x for x in shape['fields'] if x['id']==args[2]['literal']),None)
+            return bool(member and member['presence']=='required' and constructed_value_fits(args[3],member['domain']))
+        return all(integer_index(x) for x in args[1:])
     if op=='set-add' and len(args)==2 and all(set(a)=={'ref'} for a in args):
         set_ref,item_ref=(a['ref'] for a in args)
         if set_ref not in fields or item_ref not in fields:
@@ -2264,6 +2341,11 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                 if values is not None:
                     partition_fields.append(field_id)
                     partition_kinds.add('real')
+            if values is None and (field_id not in input_presence or input_presence[field_id]=='required'):
+                values=semantic_interval_partition.sequence_length_values(field['domain'],field_id,predicates)
+                if values is not None:
+                    partition_fields.append(field_id)
+                    partition_kinds.add('sequence_length')
             if values is None and input_presence.get(field_id)=='optional':
                 present=semantic_interval_partition.integer_partition_values(
                     field['domain'],field_id,predicates,allow_presence=True)
@@ -2384,6 +2466,7 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     else 'string-reference-equality-partition/v1' if partition_kinds=={'string_ref'}
                     else 'nullable-string-null-partition/v1' if partition_kinds=={'nullable_string_null'}
                     else 'nullable-reference-equality-partition/v1' if partition_kinds=={'nullable_ref_equality'}
+                    else 'sequence-length-literal-partition/v1' if partition_kinds=={'sequence_length'}
                     else 'real-literal-order-partition/v1' if partition_kinds=={'real'}
                     else 'real-reference-order-partition/v1' if partition_kinds=={'real_ref_range'}
                     else 'two-reference-linear-order-partition/v1' if partition_kinds=={'linear_order'}
@@ -2804,6 +2887,54 @@ def expand_cases(model, vectors):
     unique([t['id'] for t in cases],'vector IDs')
     return cases
 
+def _ordered_effect_witness_values(model, trigger, fields, guard_names, observed, presence, definitions):
+    """Concrete values for guard-independent required structured fields only.
+
+    The rule coverage and all Effect totality checks must already be proved.
+    Witness selection is not a new proof of totality or implementation correctness.
+    """
+    from catlib.semantic_structural_copy import _example, _supported
+    if (model.get('coverage_requirement') != 'closed'
+            or model.get('coverage_checks', {}).get(trigger, {}).get('result') != 'proved'):
+        return {}
+    checks = model.get('effect_checks', {})
+    refs = set()
+    for rule in model['rules']:
+        if rule['trigger'] != trigger:
+            continue
+        for n, outcome in enumerate(rule['allowed'], 1):
+            for i, write in enumerate(outcome['write'], 1):
+                target, expr = write['target'], write['expr']
+                check = checks.get(f"{rule['source_artifact']}#{rule['id']}:{n}:{i}:{target}", {})
+                if check.get('result') != 'proved':
+                    return {}
+                if expr.get('op') in ('sequence-append', 'sequence-swap', 'sequence-replace-member', 'record-value'):
+                    if (check.get('proof_method') != 'typed-domain-closure/v1'
+                            or _symbolic_effect_containment(expr, fields[target]['domain'], fields) is not True):
+                        return {}
+                    refs.update(used_refs(expr, definitions))
+    if not refs:
+        return {}
+    values = {}
+    for name, field in fields.items():
+        domain = field['domain']
+        shape = domain
+        while shape.get('type') == 'reference' and shape.get('resolved') is True:
+            shape = shape['of']
+        if (field['role'] not in ('input', 'state') or name in guard_names
+                or presence.get(name, 'required') != 'required'
+                or shape.get('type') not in ('record', 'sequence')
+                or not _supported(domain) or (name in observed and name not in refs)):
+            continue
+        try:
+            sample = _example(domain, empty=name not in refs)
+            if typed.contains(domain, sample):
+                values[name] = [sample]
+        except (ValueError, TypeError, KeyError, IndexError, RecursionError):
+            continue
+    return values
+
+
 def selection_vectors(model, strategy='rule-witness/v1'):
     require(strategy == 'rule-witness/v1','unsupported test-selection rule: '+str(strategy))
     require(model.get('status')=='confirmed','normative vector selection requires confirmed TestModel')
@@ -2876,6 +3007,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
         nullable_pair=semantic_string_partition.nullable_reference_cells({n:fields[n]['domain'] for n in guard_names},predicates,presence)
         from catlib.semantic_structural_copy import witness_values
         copy_values=witness_values(model,trigger,fields,guard_names,observed,presence)
+        ordered_values=_ordered_effect_witness_values(model,trigger,fields,guard_names,observed,presence,defs)
         for field_id in variable_ids:
             if projected:
                 domains.append(projected[field_id]);continue
@@ -2906,6 +3038,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 values=semantic_string_partition.nullable_string_null_partition(field['domain'],field_id,predicates)
             if values is None and (field_id not in presence or presence[field_id]=='required'):
                 values=semantic_interval_partition.real_partition_values(field['domain'],field_id,predicates,allow_unused=True)
+            if values is None and (field_id not in presence or presence[field_id]=='required'):
+                values=semantic_interval_partition.sequence_length_values(field['domain'],field_id,predicates)
             if values is None and presence.get(field_id)=='optional':
                 present=semantic_interval_partition.integer_partition_values(
                     field['domain'],field_id,predicates,allow_unused=True,allow_presence=True)
@@ -2917,6 +3051,8 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                 values=integer_pair[field_id]
             if values is None and field_id in copy_values:
                 values=copy_values[field_id]
+            if values is None and field_id in ordered_values:
+                values=ordered_values[field_id]
             require(values is not None,
                     'rule-witness/v1 cannot enumerate or soundly partition domain/Presence of '+field_id)
             require(values,'test-selection domain is empty: '+field_id)
@@ -3262,14 +3398,15 @@ def format_expr(expr, params=(), language='en'):
         return 'member['+args[0]+', '+args[1]+']'
     symbols={'eq':'==','ne':'!=','lt':'<','le':'<=','gt':'>','ge':'>=','add':'+','sub':'-','mul':'*','div':'/'}
     if op in symbols:return '('+(' '+symbols[op]+' ').join(args)+')'
+    if op=='record-value':return '{'+', '.join(k+': '+v for k,v in zip(args[::2],args[1::2]))+'}'
     if op in ('and','or'):
         word={'and':('かつ' if language=='ja' else 'and'),'or':('または' if language=='ja' else 'or')}[op]
         return '('+(' '+word+' ').join(args)+')'
     if op=='not':return ('否定('+args[0]+')') if language=='ja' else '(not '+args[0]+')'
     if op in ('is-missing','is-undefined','is-present'):
         return op.replace('-','_')+'('+args[0]+')'
-    funcs_en={'floor':'floor','abs':'abs','length':'length','concat':'concat','to-int':'to_int','set-add':'set_add','set-remove':'set_remove'}
-    funcs_ja={'floor':'floor','abs':'abs','length':'長さ','concat':'連結','to-int':'整数化','set-add':'集合追加','set-remove':'集合削除'}
+    funcs_en={'floor':'floor','abs':'abs','length':'length','concat':'concat','to-int':'to_int','set-add':'set_add','set-remove':'set_remove','sequence-append':'sequence_append','sequence-swap':'sequence_swap','sequence-replace-member':'sequence_replace_member'}
+    funcs_ja={'floor':'floor','abs':'abs','length':'長さ','concat':'連結','to-int':'整数化','set-add':'集合追加','set-remove':'集合削除','sequence-append':'列追加','sequence-swap':'列交換','sequence-replace-member':'列項目更新'}
     if op=='call':return expr['name']+'('+', '.join(args)+')'
     if op in collection_relation.OPERATORS:return op.replace('-','_')+'('+', '.join(args)+')'
     funcs=funcs_ja if language=='ja' else funcs_en
