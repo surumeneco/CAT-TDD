@@ -140,7 +140,8 @@ def evaluate(rule_documents,fields,triggers,tce_rules,operations=(),overrides=()
                 proved=_state_equality_scope(scope,fields,triggers,tce_rules,effect_checks or {})
             elif requirement=='@cat:finite-state-guard-invariant/v1':
                 proved=rule['id'] in guard_invariants
-            elif requirement=='@cat:finite-transition-relation/v1':
+            elif requirement in ('@cat:finite-transition-relation/v1','@cat:observed-transition-relation/v1',
+                                 '@cat:finite-structural-transition-relation/v1'):
                 proved=rule['id'] in transition_proofs
             elif requirement=='@cat:trigger-observation-relation/v1':
                 proved=rule['id'] in observation_proofs

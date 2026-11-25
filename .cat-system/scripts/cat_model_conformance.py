@@ -356,13 +356,13 @@ def source_semantics(process_path, pi_path, tce_path, domain_path=None, common_r
                           and all(doc['status']=='confirmed' for doc in rule_docs))
     from catlib import semantic_observation_relation
     observation_fields={**effect_fields,**{obs['id']:{**effect_fields[obs['id']],
-                        'available_on':obs.get('available_on',[])} for obs in p.get('observations',[])}}
+                        'available_on':obs.get('available_on',[]),'source':obs['source']} for obs in p.get('observations',[])}}
     observation_relations=semantic_observation_relation.independent_prove(rule_docs,p['process'],observation_fields,
         {t['id'] for t in p['triggers']},source_all_confirmed)
     observation_proof_ids={rid for rels in observation_relations.values() for rid in rels}
     intrinsic_proofs=_intrinsic_source_proofs(
         rule_docs,fields,domains,{x['id']:x['origin'] for x in p['triggers']},rules,effects,
-        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed,effect_fields,observation_proof_ids)
+        pi_docs,tces,effect_checks,set(unjustified_effect_proofs),p['process'],source_all_confirmed,observation_fields,observation_proof_ids,observation_relations)
     from cat_compile_v2 import parse_expr_text
     invariants={proof['rule_id']:parse_expr_text(proof['scope'][len('initial-state-relation '):])
                 for proof in intrinsic_proofs if proof['requirement']=='@cat:finite-state-guard-invariant/v1'}
@@ -573,7 +573,7 @@ def _source_finite_invariant(scope, roles, domains, tces, checks, rejected):
 
 
 def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, effects,
-                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False,source_fields=None,observation_proof_ids=()):
+                            pi_docs=(),tces=(),effect_checks=None,rejected=(),process=None,confirmed=False,source_fields=None,observation_proof_ids=(),observation_relations=None):
     def resolved(d):
         if not isinstance(d,dict) or d.get('type') in (None,'unknown'):return False
         t=d['type']
@@ -622,14 +622,14 @@ def _intrinsic_source_proofs(rule_docs, fields, domains, triggers, tce_rules, ef
                 })
     if confirmed and source_fields is not None:
         from cat_compile_v2 import parse_expr_text
-        from catlib import independent_transition_relation
+        from catlib import independent_transition_relation, semantic_transition_relation
         invariants=[parse_expr_text(proof['scope'][len('initial-state-relation '):])
                     for proof in proofs if proof['requirement']=='@cat:finite-state-guard-invariant/v1']
         for document in rule_docs:
             if document['process']!=process or document['kind']!='domain-spec' or not document['scope_verified']:continue
             for rule in document['rules']:
-                if rule.get('requirement')!='@cat:finite-transition-relation/v1' or rule.get('verification_contract')!='cat:intrinsic-model/v1':continue
-                if independent_transition_relation.verify(rule['condition'],source_fields,pi_docs,tces,effect_checks or {},rejected,invariants):
+                if not semantic_transition_relation.matches(rule.get('requirement'),rule.get('condition')) or rule.get('verification_contract')!='cat:intrinsic-model/v1':continue
+                if independent_transition_relation.verify(rule['condition'],source_fields,pi_docs,tces,effect_checks or {},rejected,invariants,observation_relations):
                     proofs.append({'rule_id':rule['id'],'source_artifact':document['id'],
                         'source_sha256':document['sha256'],'requirement':rule['requirement'],
                         'verification_contract':'cat:intrinsic-model/v1','proof_method':'cat:intrinsic-model/v1',

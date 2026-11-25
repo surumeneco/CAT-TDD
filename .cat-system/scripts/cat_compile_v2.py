@@ -2052,9 +2052,9 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
     transition_proofs={r['id'] for doc in rule_docs for r in doc['rules']
         if all(fm['status']=='confirmed' for _,fm in files) and doc['process']==p['process']
         and doc['kind']=='domain-spec' and doc['scope_verified']
-        and r.get('requirement')==semantic_transition_relation.TOKEN
+        and semantic_transition_relation.matches(r.get('requirement'),r.get('condition'))
         and r.get('verification_contract')=='cat:intrinsic-model/v1'
-        and semantic_transition_relation.prove(r['condition'],fields,pi_docs,rules,effect_checks,guard_invariants.values())}
+        and semantic_transition_relation.prove(r['condition'],fields,pi_docs,rules,effect_checks,guard_invariants.values(),observation_relations)}
     intrinsic_proofs=semantic_intrinsic_rules.evaluate(
         rule_docs,list(fields.values()),p['triggers'],rules,pi_operations,
         operation_presence,effect_checks,guard_invariants,transition_proofs,observation_proof_ids)
