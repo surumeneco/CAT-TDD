@@ -1,0 +1,85 @@
+name: Generated JUnit transport acceptance
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/generated-junit.yml'
+      - '.cat-system/scripts/cat_compile_v2.py'
+      - '.cat-system/scripts/catlib/**'
+      - '.cat-system/skills/tech-junit/**'
+      - 'tests/test_observed_transport.py'
+      - 'tests/test_observed_structural_relations.py'
+      - 'tests/test_multi_owner_output_presence.py'
+      - 'tests/test_scoped_output_presence.py'
+      - 'tests/test_projection_unused_typed_sibling.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generated-junit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Generate tests from actual Confirmed CAT artifacts and Gate evidence
+        env:
+          CAT_OBS_JUNIT_SMOKE_DIR: ${{ runner.temp }}/cat-junit-smoke/observation
+          CAT_MULTI_JUNIT_SMOKE_DIR: ${{ runner.temp }}/cat-junit-smoke/multi-owner
+          CAT_COMBINED_JUNIT_SMOKE_DIR: ${{ runner.temp }}/cat-junit-smoke/combined
+        run: python -m unittest discover -s tests -p test_observed_transport.py -v
+      - name: Acquire pinned JUnit Platform runner
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://repo.maven.apache.org/maven2/org/junit/platform/junit-platform-console-standalone/1.11.4/junit-platform-console-standalone-1.11.4.jar \
+            --output "$RUNNER_TEMP/cat-junit-smoke/junit.jar"
+      - name: Execute actual generated JUnit positive and negative cases
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import xml.etree.ElementTree as ET
+          root = Path(os.environ['RUNNER_TEMP']) / 'cat-junit-smoke'
+          jar = root / 'junit.jar'
+          plans = {
+              'observation': ('CAT_OBS_MODE', {
+                  'direct': (0, ''), 'wrong-observation': (2, 'CAT observed coordinates differ'),
+                  'missing': (2, 'CAT observed coordinates differ'), 'extra': (2, 'CAT observed coordinates differ'),
+                  'wrong-output': (2, 'Observed state/output not in CAT allowed outcome set')}),
+              'multi-owner': ('CAT_MULTI_OWNER_MODE', {
+                  'direct': (0, ''), 'alternate': (0, ''), 'missing': (1, 'CAT provider operation set mismatch'),
+                  'extra': (1, 'CAT provider operation set mismatch'), 'wrong-owner': (1, 'CAT output belongs'),
+                  'wrong-pair': (1, 'Observed state/output not in CAT allowed outcome set'),
+                  'missing-field': (1, 'Observed state/output not in CAT allowed outcome set'),
+                  'absent': (1, 'Observed state/output not in CAT allowed outcome set: case.second.reply')}),
+              'combined': ('CAT_COMBINED_MODE', {
+                  'direct': (0, ''), 'alternate': (0, ''), 'wrong-observation': (1, 'CAT observed coordinates differ'),
+                  'wrong-owner': (1, 'CAT output belongs'), 'wrong-pair': (1, 'Observed state/output not in CAT allowed outcome set'),
+                  'wrong-state': (1, 'Observed state/output not in CAT allowed outcome set')})
+          }
+          for fixture, (key, modes) in plans.items():
+              directory = root / fixture
+              classes = directory / 'classes'
+              classes.mkdir()
+              subprocess.run(['javac', '-encoding', 'UTF-8', '-cp', str(jar), '-d', str(classes),
+                              *map(str, sorted(directory.glob('*.java')))], check=True)
+              for mode, (count, reason) in modes.items():
+                  report = directory / mode
+                  run = subprocess.run(['java', '-jar', str(jar), 'execute', '--class-path', str(classes),
+                                        '--scan-class-path', '--reports-dir', str(report), '--fail-if-no-tests'],
+                                       env={**os.environ, key: mode})
+                  cases = ET.parse(report / 'TEST-junit-jupiter.xml').getroot().findall('.//testcase')
+                  assert len(cases) == 2 and not any(c.find('skipped') is not None or c.find('error') is not None for c in cases), (fixture, mode, cases)
+                  failures = [c.find('failure') for c in cases if c.find('failure') is not None]
+                  assert len(failures) == count and run.returncode == (1 if count else 0), (fixture, mode, run.returncode, failures)
+                  assert all(reason in (f.get('message', '') + (f.text or '')) for f in failures), (fixture, mode, failures)
+                  print('actual JUnit:', fixture, mode, 'validated')
+          PY

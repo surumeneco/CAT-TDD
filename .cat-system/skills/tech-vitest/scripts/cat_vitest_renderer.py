@@ -13,7 +13,8 @@ def _ts(value):
 
 
 def render_vitest(model, cases, binding):
-    if any('observations' in case for case in cases):
+    uses_observations=any('observations' in case for case in cases)
+    if uses_observations and binding.get('observation_transport')!='js-driver-observed/v1':
         raise ValueError('Vitest renderer cannot transport observed test environment witnesses')
     lines=[
         "// Deterministically generated from a symbolic CAT v2 model and explicit test vectors.",
@@ -87,6 +88,19 @@ def render_vitest(model, cases, binding):
             "}",
             "",
         ]
+    if uses_observations:
+        lines[-1:-1]=[
+            "function observedResult(value: unknown, expected: Record<string,unknown>): unknown {",
+            "  const isRecord = (v: unknown): v is Record<string,unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);",
+            "  const own = (v: Record<string,unknown>, id: string) => Object.prototype.hasOwnProperty.call(v,id);",
+            "  if (!isRecord(value) || Object.keys(value).length !== 2 || !own(value,'observations') || !own(value,'output')) throw new Error('CAT observed result shape mismatch');",
+            "  const observed = value.observations;",
+            "  if (!isRecord(observed) || Object.keys(observed).length !== Object.keys(expected).length || !Object.keys(expected).every(id => own(observed,id) && isDeepStrictEqual(observed[id],expected[id]))) throw new Error('CAT observed coordinates differ');",
+            "  if (!isRecord(value.output)) throw new Error('CAT observed output must be a field or operation record');",
+            "  return value.output;",
+            "}",
+            "",
+        ]
     declared=[f["id"] for f in model["fields"] if f["role"]=="state"]
     def is_set_domain(domain):
         # A source-bound named alias and nullable wrapper preserve the same
@@ -142,6 +156,27 @@ def render_vitest(model, cases, binding):
             ]
         else:
             output_lines=["    const output = await driver.trigger(" + _ts(c["trigger"]) + ", input)"]
+        observation_lines=[]
+        if 'observations' in c:
+            if provide_operations and not multi_transport:
+                raise ValueError('observed operation frames require js-driver-provides/v1')
+            scope={f['id']:json.loads(f['source'].removeprefix('same-execution-observation '))
+                   for f in model['fields'] if f['id'] in c['observations']}
+            observation_lines=[
+                '    expect((driver as {observationTransport?: string}).observationTransport).toBe("js-driver-observed/v1")',
+                '    expect(typeof (driver as {prepareObservations?: unknown}).prepareObservations).toBe("function")',
+                '    expect(typeof (driver as {triggerObserved?: unknown}).triggerObserved).toBe("function")',
+                '    const expectedObservations = ' + _ts(c['observations']) + ' as Record<string,unknown>',
+                '    await (driver as {prepareObservations:(scope: Record<string,unknown>, values: Record<string,unknown>) => Promise<void>}).prepareObservations(' + _ts(scope) + ', {...expectedObservations})',
+            ]
+            if provide_operations:
+                observation_lines.insert(0,'    expect((driver as {outputOperationTransport?: string}).outputOperationTransport).toBe("js-driver-provides/v1")')
+            output_lines=[
+                '    const observed = await (driver as {triggerObserved:(operations: string[], trigger: string, input: Record<string,unknown>) => Promise<unknown>}).triggerObserved(' + _ts(provide_operations) + ',' + _ts(c['trigger']) + ',input)',
+                '    const actualOutput = observedResult(observed, expectedObservations)',
+                ('    const output = flattenProvidedOperations(actualOutput, ' + _ts(fields) + ')' if provide_operations else
+                 '    const output = actualOutput as Record<string,unknown>'),
+            ]
         lines.extend([
             "  it(" + _ts(c["id"]) + ", async () => {",
             "    // TCE: " + c["source_tce"],
@@ -149,6 +184,7 @@ def render_vitest(model, cases, binding):
             "    const pre = " + _ts(c["initial_state"]) + " as Record<string,unknown>",
             *input_lines,
             "    await driver.prepare(pre, input)",
+            *observation_lines,
             "    const before = await driver.observeState()",
             "    for (const id of " + _ts(declared) + ") { expect(equalCATValue(id,before[id],pre[id]," + _ts(set_fields) + ")).toBe(true); }",
             *output_lines,

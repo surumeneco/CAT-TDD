@@ -50,6 +50,16 @@ def _map(values):
     return "java.util.Map.ofEntries(" + ", ".join(pairs) + ")"
 
 
+def _nested_map(values, render_value):
+    if not values:return "Map.of()"
+    return "Map.ofEntries(" + ", ".join("Map.entry(" + _quote(key) + ", " + render_value(value) + ")"
+                                      for key,value in sorted(values.items())) + ")"
+
+
+def _list(values):
+    return "List.of(" + ", ".join(_quote(value) for value in values) + ")"
+
+
 def render_junit(model, cases, binding):
     """Return deterministic UTF-8 Java test source; never infer a runtime adapter."""
     package = binding.get("test_package")
@@ -90,19 +100,77 @@ def render_junit(model, cases, binding):
         declared = ('observations=' + ','.join(sorted(scope['observations']))
                     + ' actions=' + ','.join(sorted(scope['actions'])))
         lines.insert(2, '// CAPABILITIES NOT VERIFIED (PI input/output only): ' + declared)
+    uses_observations=any('observations' in c for c in cases)
+    uses_frames=any('output_operation' in c or 'output_operations' in c for c in cases)
+    if uses_observations and binding.get('observation_transport')!='java-driver-observed/v1':
+        raise ValueError('JUnit renderer cannot transport observed test environment witnesses')
+    if uses_frames and binding.get('output_operation_transport')!='java-driver-provides/v1':
+        raise ValueError('JUnit renderer cannot transmit output operation identity')
+    if uses_observations or uses_frames:
+        lines.extend([
+            "    private static Map<String,Object> fieldRecord(Object value) {",
+            "        assertTrue(value instanceof Map<?,?>, \"CAT observed frame must be a field record\");",
+            "        Map<String,Object> result = new java.util.HashMap<>();",
+            "        ((Map<?,?>)value).forEach((key,item) -> {",
+            "            assertTrue(key instanceof String, \"CAT field ID must be a string\");",
+            "            result.put((String)key,item);",
+            "        });",
+            "        return result;",
+            "    }",
+        ])
+    if uses_frames:
+        lines.extend([
+            "    private static Map<String,Object> flattenProvidedOperations(Object value, Map<String,List<String>> fields) {",
+            "        Map<String,Object> frames = fieldRecord(value);",
+            "        assertEquals(fields.keySet(), frames.keySet(), \"CAT provider operation set mismatch\");",
+            "        Map<String,Object> result = new java.util.HashMap<>();",
+            "        fields.forEach((operation,ids) -> fieldRecord(frames.get(operation)).forEach((id,item) -> {",
+            "            assertTrue(ids.contains(id), \"CAT output belongs to a different or undeclared PI: \" + id);",
+            "            result.put(id,item);",
+            "        }));",
+            "        return result;",
+            "    }",
+        ])
+    if uses_observations:
+        lines.extend([
+            "    private static Object observedResult(Object value, Map<String,Object> expected) {",
+            "        Map<String,Object> result = fieldRecord(value);",
+            "        assertEquals(java.util.Set.of(\"observations\",\"output\"),result.keySet(),\"CAT observed result shape mismatch\");",
+            "        assertEquals(expected,fieldRecord(result.get(\"observations\")),\"CAT observed coordinates differ\");",
+            "        return result.get(\"output\");",
+            "    }",
+        ])
     seen = set()
     for i, c in enumerate(cases, 1):
         if c['id'] in seen:
             raise ValueError("duplicate CAT case ID")
         seen.add(c['id'])
-        if 'observations' in c:
-            raise ValueError('JUnit renderer cannot transport observed test environment witnesses')
-        if 'output_operation' in c or 'output_operations' in c:
-            raise ValueError("JUnit renderer cannot transmit output operation identity")
         allowed = c.get('allowed')
         if not isinstance(allowed, list) or not allowed:
             raise ValueError("CAT case lacks allowed outcomes")
         alternatives = ", ".join("new Allowed(" + _map(a['state']) + ", " + _map(a['output']) + ")" for a in allowed)
+        operations=c.get('output_operations') or ([c['output_operation']] if 'output_operation' in c else [])
+        if operations:
+            owners={op['id']:op['source_pi'] for op in model.get('pi_operations',[]) if op['direction']=='provide'}
+            fields={op:sorted(f['id'] for f in model['fields'] if f['role']=='output' and f.get('source_pi')==owners[op]) for op in operations}
+            frame_fields=_nested_map(fields,_list)
+        observation_lines=[]
+        if 'observations' in c:
+            scope={f['id']:json.loads(f['source'].removeprefix('same-execution-observation '))
+                   for f in model['fields'] if f['id'] in c['observations']}
+            observation_lines=[
+                "        Map<String,Object> expectedObservations = " + _map(c['observations']) + ";",
+                "        driver.prepareObservations(" + _nested_map(scope,_map) + ", expectedObservations);",
+            ]
+            output_lines=[
+                "        Object actualOutput = observedResult(driver.triggerObserved(" + _list(operations) + ", " + _quote(c['trigger']) + ", input),expectedObservations);",
+                ("        Map<String,Object> output = flattenProvidedOperations(actualOutput, " + frame_fields + ");" if operations else
+                 "        Map<String,Object> output = fieldRecord(actualOutput);"),
+            ]
+        elif operations:
+            output_lines=["        Map<String,Object> output = flattenProvidedOperations(driver.triggerProvidedOperations(" + _list(operations) + ", " + _quote(c['trigger']) + ", input), " + frame_fields + ");"]
+        else:
+            output_lines=["        Map<String,Object> output = driver.trigger(" + _quote(c['trigger']) + ", input);"]
         lines.extend([
             "",
             "    @Test",
@@ -113,8 +181,9 @@ def render_junit(model, cases, binding):
             "        Map<String,Object> pre = " + _map(c['initial_state']) + ";",
             "        Map<String,Object> input = " + _map(c['input']) + ";",
             "        driver.prepare(pre, input);",
+            *observation_lines,
             "        assertEquals(pre, driver.observeState(), \"CAT precondition drift\");",
-            "        Map<String,Object> output = driver.trigger(" + _quote(c['trigger']) + ", input);",
+            *output_lines,
             "        Map<String,Object> after = driver.observeState();",
             "        List<Allowed> allowed = List.of(" + alternatives + ");",
             "        assertTrue(accepts(after, output, allowed), \"Observed state/output not in CAT allowed outcome set: " + c['id'] + "\");",
