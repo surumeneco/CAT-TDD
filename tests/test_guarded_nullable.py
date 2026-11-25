@@ -95,5 +95,85 @@ Coverage requirement: closed
                         self.assertEqual(validate(p,pi,tce,out)['status'],'passed')
 
 
+    def test_optional_nullable_presence_and_downstream_generation(self):
+        variants = [
+            ('is_present(input.part) and input.part != null', 'input.part', 'passed'),
+            ('input.part != null', 'input.part', 'inconclusive'),
+            ('is_missing(input.part)', 'input.part', 'blocked'),
+        ]
+        for guard, value, expected in variants:
+            with self.subTest(guard=guard), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                p,pi,tce=[root/n for n in ('Process.md','PI.md','TCE.md')]
+                p.write_text(artifact('process','probe.nullable',['probe.nullable.pi'],'''# Process
+## Contract
+Closed world: true
+## Interfaces
+| PI |
+| --- |
+| probe.nullable.pi |
+## State
+| ID | Domain |
+| --- | --- |
+| state.mode | boolean |
+| state.part | nullable<boolean> |
+| state.other | nullable<boolean> |
+## Observations
+| ID | Source | Domain |
+| --- | --- | --- |
+## Actions
+| ID | Target | Domain |
+| --- | --- | --- |
+## Triggers
+| ID | Source |
+| --- | --- |
+| first | probe.nullable.pi/request |'''), encoding='utf-8')
+                pi.write_text(artifact('pi','probe.nullable.pi',['probe.nullable'],'''# PI
+## Boundary
+| Peer process | Direction |
+| --- | --- |
+| probe.caller | bidirectional |
+## Fields
+| ID | Direction | Domain | Presence |
+| --- | --- | --- | --- |
+| input.left | receive | string | required |
+| input.right | receive | string | required |
+| input.part | receive | nullable<boolean> | optional |
+| output.answer | send | boolean | required |
+## Operations
+| ID | Direction | Trigger |
+| --- | --- | --- |
+| request | accept | first |
+## Constraints
+| Expression |
+| --- |'''), encoding='utf-8')
+                tce.write_text(artifact('tce','probe.nullable.tce',['probe.nullable.pi'],f'''# TCE
+Coverage requirement: closed
+## Behaviors
+| ID | Trigger | Condition | Outcome | Effects |
+| --- | --- | --- | --- | --- |
+| first.yes | first | `{guard}` | 1 | `output.answer = {value}` |
+| first.no | first | `not ({guard})` | 1 | `output.answer = false` |'''), encoding='utf-8')
+                work={'schema':'cat-work/v1','id':'probe.nullable.work','entry':'confirmed-spec','mode':'implementation','flow':'spec-implementation','work_kind':'implementation','parent':'','depends_on':[],'issue_ref':'spec-entry','project_entry_ref':'project-entry','normative':[{'uri':'spec'}],'evidence':[{'uri':'evidence'}],'specification':{'status':'confirmed','decision_ref':'synthetic-test-only','artifact_refs':['probe.nullable.tce']},'scope':{'process_ids':['probe.nullable'],'changed_ids':[],'preserved_ids':[]},'technologies':[],'repositories':[],'checks':[],'gates':[],'compilation':{'schema':'cat-compile/v2','process':'Process.md','pi':'PI.md','tce':'TCE.md','model':'Model.json','vectors':'Vectors.json','queue':'Queue.json','allow_draft':False,'allow_partial':True}}
+                w=root/'Work.json';w.write_text(json.dumps(work), encoding='utf-8')
+                run=subprocess.run([sys.executable,str(SCRIPTS/'cat_flow.py'),'conformance','--work',str(w),'--kind','process-closure'],capture_output=True,text=True,encoding='utf-8',timeout=30)
+                self.assertEqual(json.loads(run.stdout)['status'],expected,(run.stdout,run.stderr))
+                self.assertEqual(run.returncode,2 if expected=='blocked' else 0)
+                if expected=='passed':
+                    m=load(p,pi,tce)
+                    for name,body in [('Model.json',json.dumps(m)),('Model.md',render_model_markdown(m))]:
+                        out=root/name;out.write_text(body,encoding='utf-8')
+                        self.assertEqual(validate(p,pi,tce,out)['status'],'passed')
+
+                    for kind in ('model','vectors','queue'):
+                        command=[sys.executable,str(SCRIPTS/'cat_flow.py'),'compile',
+                                 '--work',str(w),'--kind',kind]
+                        for args in (command,[*command,'--check']):
+                            run=subprocess.run(args,capture_output=True,text=True,
+                                               encoding='utf-8',timeout=30)
+                            self.assertEqual(run.returncode,0,(run.stdout,run.stderr))
+                            self.assertEqual(json.loads(run.stdout)['status'],'passed')
+
+
 if __name__ == '__main__':
     unittest.main()
