@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / '.cat-system/scripts'
 sys.path.insert(0, str(SCRIPTS))
-from cat_compile_v2 import load, render_model_markdown, expand_cases, selection_vectors
+from cat_compile_v2 import load, render_model_markdown, expand_cases, selection_vectors, emit_vitest
 from cat_model_conformance import validate
 from catlib import semantic_json_instant as exact
 from decimal import Decimal
@@ -127,7 +127,7 @@ class StructuralCopyTests(unittest.TestCase):
         for kw, expected in [({}, 'passed'), ({'rhs':'input.other'}, 'inconclusive'),
                              ({'second':'input.other'}, 'inconclusive'),
                              ({'peer':'wrong'}, 'inconclusive'),
-                             ({'domain':'sequence<set<string>>'}, 'inconclusive')]:
+                             ({'domain':'sequence<set<string>>'}, 'passed')]:
             with self.subTest(kw=kw), tempfile.TemporaryDirectory() as td:
                 root=Path(td)
                 p,pi,tce,spec=fixture(root, **({'domain':'set<string>'}|kw))
@@ -178,6 +178,86 @@ class StructuralCopyTests(unittest.TestCase):
                     content['semantic_value_transport']='unknown'
                     binding.write_text(json.dumps(content),encoding='utf-8')
                     self.assertEqual(flow(root,'compile','--kind','tests')[1]['status'],'blocked')
+
+    def test_nested_copy_and_exact_transport(self):
+        for domain in ('record<value:json>','record<value:instant>','record<value:set<string>>'):
+            for wrong in (False,True):
+                with self.subTest(domain=domain,wrong=wrong),tempfile.TemporaryDirectory() as td:
+                    root=Path(td);p,pi,tce,spec=fixture(root,domain=domain,rhs='input.other' if wrong else 'input.items')
+                    self.assertEqual(flow(root,'conformance','--kind','process-closure')[1]['status'],'inconclusive' if wrong else 'passed')
+                    if wrong:continue
+                    m=load(p,pi,tce,domain_specs=[spec]);v=selection_vectors(m);self.assertEqual(expand_cases(m,v)[0]['input']['input.items'],expand_cases(m,v)[0]['allowed'][0]['output']['output.items'])
+                    self.assertEqual(flow(root,'compile','--kind','model')[1]['status'],'passed')
+                    self.assertEqual(flow(root,'conformance','--kind','model-conformance')[1]['status'],'passed')
+                    if 'set<' not in domain:
+                        b=root/'Binding.json';d=json.loads(b.read_text());d['semantic_value_transport']='cat-exact-values/v1';b.write_text(json.dumps(d))
+                    for kind in ('vectors','queue','tests'):
+                        self.assertEqual(flow(root,'compile','--kind',kind)[1]['status'],'passed')
+
+    def test_optional_presence_and_explicit_observation_scope(self):
+        for wrong in (False,True):
+            with self.subTest(wrong=wrong),tempfile.TemporaryDirectory() as td:
+                root=Path(td);p,pi,tce,spec=fixture(root,domain='record<id:integer[1..],enabled:boolean>',guard='input.enabled')
+                pi.write_text(pi.read_text().replace('| output.items | send | record<id:integer[1..],enabled:boolean> | required |','| input.enabled | receive | boolean | required |\n| output.items | send | record<id:integer[1..],enabled:boolean> | optional |'),encoding='utf-8')
+                spec.write_text(spec.read_text().replace('"when":"true"','"when":"input.enabled"'),encoding='utf-8')
+                tce.write_text(tce.read_text()+'\n| absent | receive | `not input.enabled` | 1 | `'+('output.items = input.items' if wrong else '-')+'` |\n',encoding='utf-8')
+                self.assertEqual(flow(root,'conformance','--kind','process-closure')[1]['status'],'inconclusive' if wrong else 'passed')
+        for source_scope in ('receive','future'):
+            with self.subTest(source_scope=source_scope),tempfile.TemporaryDirectory() as td:
+                root=Path(td);domain='record<id:integer[1..],enabled:boolean>';p,pi,tce,spec=fixture(root,domain=domain,rhs='observation.acquired',relation='after.output.items == observation.acquired')
+                b={'trigger':source_scope,'pi':'copyprobe.pi','operation':'request','peer':'copycaller','cut':'trigger-entry','source':'acquisition result'}
+                p.write_text(p.read_text().replace('| ID | Source | Domain |\n| --- | --- | --- |','| ID | Source | Domain | Available on |\n| --- | --- | --- | --- |\n| observation.acquired | same-execution-observation '+json.dumps(b)+' | '+domain+' | receive |'),encoding='utf-8')
+                self.assertEqual(flow(root,'conformance','--kind','process-closure')[1]['status'],'passed' if source_scope=='receive' else 'inconclusive')
+
+    def test_recursive_and_presence_vitest_smoke(self):
+        smoke=os.environ.get('CAT_RECURSIVE_COPY_VITEST_SMOKE_DIR')
+        if not smoke:return
+        for profile,domain in [('json','record<value:json>'),('instant','record<value:instant>'),('set','record<value:set<string>>'),('optional','record<id:integer[1..],enabled:boolean>'),('observed','record<id:integer[1..],enabled:boolean>')]:
+            with self.subTest(profile=profile),tempfile.TemporaryDirectory() as td:
+                root=Path(td);p,pi,tce,spec=fixture(root,domain=domain,guard='input.enabled' if profile=='optional' else 'true',rhs='observation.acquired' if profile=='observed' else 'input.items',relation='after.output.items == observation.acquired' if profile=='observed' else 'after.output.items == input.items')
+                b=root/'Binding.json';binding=json.loads(b.read_text())
+                if profile in ('json','instant'):binding['semantic_value_transport']='cat-exact-values/v1'
+                if profile=='optional':
+                    pi.write_text(pi.read_text().replace('| output.items | send | '+domain+' | required |','| input.enabled | receive | boolean | required |\n| output.items | send | '+domain+' | optional |'),encoding='utf-8')
+                    spec.write_text(spec.read_text().replace('"when":"true"','"when":"input.enabled"'),encoding='utf-8')
+                    tce.write_text(tce.read_text()+'\n| absent | receive | `not input.enabled` | 1 | `-` |\n',encoding='utf-8')
+                    binding['output_operation_transport']='js-driver-provide/v1'
+                if profile=='observed':
+                    origin={'trigger':'receive','pi':'copyprobe.pi','operation':'request','peer':'copycaller','cut':'trigger-entry','source':'acquisition result'}
+                    p.write_text(p.read_text().replace('| ID | Source | Domain |\n| --- | --- | --- |','| ID | Source | Domain | Available on |\n| --- | --- | --- | --- |\n| observation.acquired | same-execution-observation '+json.dumps(origin)+' | '+domain+' | receive |'),encoding='utf-8')
+                    binding['observation_transport']='js-driver-observed/v1'
+                b.write_text(json.dumps(binding),encoding='utf-8')
+                for kind in ('model','vectors','queue','tests'):
+                    self.assertEqual(flow(root,'compile','--kind',kind)[1]['status'],'passed')
+                for kind in ('process-closure','model-conformance'):
+                    self.assertEqual(flow(root,'conformance','--kind',kind)[1]['status'],'passed')
+                m=json.loads((root/'Model.json').read_text());v=json.loads((root/'Vectors.json').read_text())
+                dest=Path(smoke)/profile;dest.mkdir(parents=True,exist_ok=True)
+                # All selected cases for engine regression only, not a product Queue receipt.
+                (dest/'Generated.test.ts').write_text(emit_vitest(m,v,b),encoding='utf-8')
+                (dest/'driver.ts').write_text("""const profile = PROFILE;
+export function createDriver(){
+ let observed: Record<string,any> = {};
+ const mode=process.env.CAT_RECURSIVE_MODE;
+ return {
+  semanticValueTransport:'cat-exact-values/v1', observationTransport:'js-driver-observed/v1', outputOperationTransport:'js-driver-provide/v1',
+  async prepare(){}, async observeState(){return {};},
+  async trigger(_t:string,input:Record<string,any>){
+   const value=structuredClone(input['input.items']);
+   if(mode==='wrong')return {'output.items':input['input.other']};
+   if(profile==='set'&&mode==='alternate')value.value.reverse();
+   if(profile==='json'&&mode==='alternate')value.value.$cat_json[1].reverse();
+   if(profile==='instant'&&mode==='alternate'){const t=value.value.$cat_instant;t.n=(BigInt(t.n)*2n).toString();t.d=(BigInt(t.d)*2n).toString();}
+   return {'output.items':value};
+  },
+  async triggerProvidedOperation(_o:string,_t:string,input:Record<string,any>){
+   return input['input.enabled'] ? (mode==='wrong'?{}:{'output.items':input['input.items']}) : (mode==='wrong'?{'output.items':input['input.items']}:{});
+  },
+  async prepareObservations(_scope:unknown,values:Record<string,any>){observed=structuredClone(values);},
+  async triggerObserved(){return {observations:observed,output:{'output.items':mode==='wrong'?{...observed['observation.acquired'],id:999}:observed['observation.acquired']}};}
+ };
+}
+""".replace('PROFILE',json.dumps(profile)),encoding='utf-8')
 
     def test_exact_wire_values_preserve_native_meaning(self):
         original={'$cat_json': [True,None,Decimal('9007199254740993.125')], 'items':[1,1]}

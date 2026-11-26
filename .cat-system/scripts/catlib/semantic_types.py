@@ -268,7 +268,7 @@ def contains(d,value):
         return isinstance(value,(bytes,bytearray)) or (isinstance(value,list) and all(type(v) is int and 0<=v<=255 for v in value))
     if t in ('set','sequence'):
         if not isinstance(value,list):return False
-        if t=='set' and not has_semantic_domain(d['element']) and len({_signature(v) for v in value})!=len(value):return False
+        if t=='set' and not (has_semantic_domain(d['element']) or has_set_domain(d['element'])) and len({_signature(v) for v in value})!=len(value):return False
         unknown=None
         for element in value:
             try:
@@ -276,7 +276,7 @@ def contains(d,value):
             except DomainError as exc:
                 unknown=exc
         if unknown is not None:raise unknown
-        if t=='set' and has_semantic_domain(d['element']):
+        if t=='set' and (has_semantic_domain(d['element']) or has_set_domain(d['element'])):
             for i,item in enumerate(value):
                 if any(same_in_domain(d['element'],item,other) for other in value[:i]):return False
         return True
@@ -375,13 +375,19 @@ def set_remove(values,element):
 
 
 # Appended to semantic_types.py in the isolated implementation proposal.
+def has_set_domain(domain):
+    return _has_domain(domain,{'set'})
+
 def has_semantic_domain(domain):
+    return _has_domain(domain,{'json','instant'})
+
+def _has_domain(domain,kinds):
     stack=[domain];seen=set()
     while stack:
         item=stack.pop()
         if not isinstance(item,dict) or id(item) in seen:continue
         seen.add(id(item))
-        if item.get('type') in ('json','instant'):return True
+        if item.get('type') in kinds:return True
         for key in ('of','element'):
             if key in item:stack.append(item[key])
         stack.extend(item.get('variants',[]))

@@ -47,6 +47,27 @@ class SourceBoundCompositionRelation(unittest.TestCase):
                 self.assertEqual(receipt['bindings'][0]['relation_status'],'refuted' if wrong else 'proved')
                 print('COMPOSITION-RELATION-GATE',json.dumps({'status':gate['status'],'relation_status':receipt['bindings'][0]['relation_status'],'binding_sha256':receipt['binding_sha256'],'model_sha256':receipt['model_sha256'],'receipt_sha256':hashlib.sha256((root/'.cat-flow/cache/process-composition.json').read_bytes()).hexdigest()},sort_keys=True),flush=True)
 
+    def test_explicit_execution_origin_conditional_relation(self):
+        for wrong in (False,True):
+            with self.subTest(wrong=wrong),tempfile.TemporaryDirectory() as d:
+                root=Path(d);models,path,binding=fixture(root,wrong)
+                pi=root/'consumer/PI.md';pi.write_text(pi.read_text().replace('| demo.producer | receive |','| @execution-origin | receive |'),encoding='utf8')
+                model=models[1];model.write_text(json.dumps(load(root/'consumer/Process.md',pi,root/'consumer/TCE.md')),encoding='utf8')
+                binding['source_assemblies']['demo.consumer']['pis'][0]['sha256']=hashlib.sha256(pi.read_bytes()).hexdigest()
+                binding['model_sha256']['demo.consumer']=hashlib.sha256(model.read_bytes()).hexdigest()
+                link=binding['links'][0]
+                link['execution_origin']={'process':'demo.producer','request_source_operation':'reply_op','request_target_operation':'submit_op'}
+                path.write_text(json.dumps(binding),encoding='utf8')
+                result=compose(models,path)
+                self.assertEqual(result['bindings'][0]['relation_status'],'refuted' if wrong else 'proved')
+                self.assertEqual(result['status'],'blocked' if wrong else 'inconclusive')
+                self.assertFalse(result['bindings'][0]['external_effects_verified'])
+                for key,val in [('process','demo.other'),('request_target_operation','wrong')]:
+                    context=link['execution_origin'];old=context[key];context[key]=val
+                    path.write_text(json.dumps(binding),encoding='utf8')
+                    with self.assertRaisesRegex(CompositionError,'scope mismatch'):compose(models,path)
+                    context[key]=old
+
     def test_no_model_only_relation_claim_and_tamper(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);models,path,binding=fixture(root)

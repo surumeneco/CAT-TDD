@@ -72,7 +72,7 @@ class SetRendererTests(unittest.TestCase):
             self.skipTest('Native TypeScript stripping requires Node.js 22+')
         model,cases,binding=self.sample()
         generated=render_vitest(model,cases,binding)
-        helpers=generated[generated.index('function sameCATSet('):
+        helpers=generated[generated.index('function exactNumber(') if 'function exactNumber(' in generated else generated.index('function sameCATSet('):
                           generated.index('\ndescribe(')]
         probe='''import {isDeepStrictEqual} from 'node:util';
 const lhs=[{id:"A"},{id:"B"}],rhs=[{id:"B"},{id:"A"}];

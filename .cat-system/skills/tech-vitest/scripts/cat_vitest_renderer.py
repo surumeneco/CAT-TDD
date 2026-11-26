@@ -101,17 +101,31 @@ def render_vitest(model, cases, binding):
         "",
         "describe(" + _ts(model["process"] + " CAT symbolic contract") + ", () => {",
     ]
-    if binding.get('semantic_value_transport')=='cat-exact-values/v1':
-        exact_fields={}
-        for field in model['fields']:
-            domain=field['domain']
-            while domain.get('type')=='reference' and domain.get('resolved'):
-                domain=domain['of']
-            if domain['type'] in ('json','instant'):exact_fields[field['id']]=domain['type']
-        lines[5:5]=[_EXACT_HELPERS, 'const exactFields: Record<string,string> = '+_ts(exact_fields), '']
+    def special(d):
+        return d['type'] in ('json','instant','set') or any(special(d[k]) for k in ('of','element') if k in d) or any(special(f['domain']) for f in d.get('fields',[]))
+    domains={f['id']:f['domain'] for f in model['fields'] if special(f['domain'])}
+    if domains:
+        lines[5:5]=[_EXACT_HELPERS, 'const exactFields: Record<string,any> = '+_ts(domains), r"""function recursiveCAT(d: any,a: any,b: any): boolean {
+  if(d.type==='reference')return recursiveCAT(d.of,a,b);
+  if(d.type==='json')return exactJSON(a,b);
+  if(d.type==='instant')return exactInstant(a,b);
+  if(d.type==='nullable')return a===null||b===null?a===b:recursiveCAT(d.of,a,b);
+  if(d.type==='record'){
+    if(!a||!b||typeof a!=='object'||typeof b!=='object'||Array.isArray(a)||Array.isArray(b))return false;
+    const keys=Object.keys(b);
+    return exactObject(a,keys)&&keys.every(k=>{const f=d.fields.find((x:any)=>x.id===k);return !!f&&recursiveCAT(f.domain,a[k],b[k]);});
+  }
+  if(d.type==='sequence'||d.type==='set'){
+    if(!Array.isArray(a)||!Array.isArray(b)||a.length!==b.length)return false;
+    const eq=(x:any,y:any)=>recursiveCAT(d.element,x,y);
+    if(d.type==='sequence')return a.every((v,i)=>eq(v,b[i]));
+    const unique=(xs:any[])=>xs.every((v,i)=>!xs.slice(i+1).some(w=>eq(v,w)));
+    return unique(a)&&unique(b)&&a.every(v=>b.some(w=>eq(v,w)));
+  }
+  return isDeepStrictEqual(a,b);
+}""", '']
         index=lines.index('  if (setFields.includes(id) && Array.isArray(observed) && Array.isArray(expected)) return sameCATSet(observed,expected);')
-        lines[index:index]=["  if (exactFields[id]==='json') return exactJSON(observed,expected);",
-                            "  if (exactFields[id]==='instant') return exactInstant(observed,expected);"]
+        lines[index:index]=["  if (Object.prototype.hasOwnProperty.call(exactFields,id)) return recursiveCAT(exactFields[id],observed,expected);"]
     uses_undefined=any(
         any(v=={'$cat_presence':'undefined'} for v in c['input'].values())
         for c in cases)
@@ -176,7 +190,7 @@ def render_vitest(model, cases, binding):
             "  const own = (v: Record<string,unknown>, id: string) => Object.prototype.hasOwnProperty.call(v,id);",
             "  if (!isRecord(value) || Object.keys(value).length !== 2 || !own(value,'observations') || !own(value,'output')) throw new Error('CAT observed result shape mismatch');",
             "  const observed = value.observations;",
-            "  if (!isRecord(observed) || Object.keys(observed).length !== Object.keys(expected).length || !Object.keys(expected).every(id => own(observed,id) && isDeepStrictEqual(observed[id],expected[id]))) throw new Error('CAT observed coordinates differ');",
+            "  if (!isRecord(observed) || Object.keys(observed).length !== Object.keys(expected).length || !Object.keys(expected).every(id => own(observed,id) && equalCATValue(id,observed[id],expected[id],[]))) throw new Error('CAT observed coordinates differ');",
             "  if (!isRecord(value.output)) throw new Error('CAT observed output must be a field or operation record');",
             "  return value.output;",
             "}",
