@@ -307,6 +307,43 @@ def _conform_sources(models,model_files,assemblies,model_hashes):
     return result
 
 
+def _origin_context(link, bindings, models):
+    """Validate a conditional static instantiation, never runtime identity."""
+    context=link.get('execution_origin')
+    if context is None:return None
+    keys={'process','request_source_operation','request_target_operation'}
+    if not isinstance(context,dict) or set(context)!=keys or any(not isinstance(v,str) or not v for v in context.values()):
+        raise CompositionError('invalid execution-origin context')
+    checked=_link(link,models)
+    kinds=checked['operation_peer_binding']
+    if sorted(kinds.values())!=['dynamic','static']:
+        raise CompositionError('execution-origin context requires exactly one dynamic endpoint')
+    origin=context['process']
+    if kinds['target']=='dynamic':
+        if origin!=link['source_process'] or context['request_source_operation']!=link['source_operation'] or context['request_target_operation']!=link['target_operation']:
+            raise CompositionError('execution-origin request scope mismatch')
+    else:
+        if origin!=link['target_process']:
+            raise CompositionError('execution-origin response peer mismatch')
+        matches=[q for q in bindings if q.get('source_process')==origin and q.get('target_process')==link['source_process']
+                 and q.get('source_pi')==link['target_pi'] and q.get('target_pi')==link['source_pi']
+                 and q.get('source_operation')==context['request_source_operation'] and q.get('target_operation')==context['request_target_operation'] and q.get('execution_origin')==context]
+        if len(matches)!=1:raise CompositionError('execution-origin response lacks unique paired request')
+        request=_link(matches[0],models)
+        if request['operation_peer_binding']!={'source':'static','target':'dynamic'} or request['unmapped_source_fields'] or request['unmapped_target_fields'] or any(c['status']!='matched' for c in request['field_links']):
+            raise CompositionError('execution-origin paired request is not structurally compatible')
+        provider=models[link['source_process']]
+        ops=provider['pi_operations']
+        accepted=[op for op in ops if op['direction']=='accept' and op['source_pi']==link['source_pi'] and op['id']==context['request_target_operation']]
+        provided=[op for op in ops if op['direction']=='provide' and op['source_pi']==link['source_pi'] and op['id']==link['source_operation']]
+        if len(accepted)!=1 or len(provided)!=1 or not accepted[0].get('trigger') or accepted[0]['trigger']!=provided[0].get('trigger'):
+            raise CompositionError('execution-origin response is not at the paired request cut')
+        # Multiple accepted operations at the cut do not establish correlation.
+        if sum(op['direction']=='accept' and op.get('trigger')==accepted[0]['trigger'] for op in ops)!=1:
+            raise CompositionError('execution-origin request cut is ambiguous')
+    return dict(context)
+
+
 def _check_finite_connection(link,models):
     """Preserve the full correlated output tuple, not independent field ranges.
 
@@ -320,7 +357,7 @@ def _check_finite_connection(link,models):
         _guard_invariant_exprs,_presence_accepted_operation)
     from catlib import semantic_types as typed
     def pending(reason):return {'relation_status':'inconclusive','relation_reason':reason}
-    if link['status']!='structurally-matched':return pending('connection is not statically and structurally matched')
+    if link['status']!='structurally-matched' and not (link.get('execution_origin_context') and not link['unmapped_source_fields'] and not link['unmapped_target_fields'] and all(c['status']=='matched' for c in link['field_links'])):return pending('connection is not statically and structurally matched')
     source=models[link['source_process']];target=models[link['target_process']]
     sf={f['id']:f for f in source['fields']};tf={f['id']:f for f in target['fields']}
     pairs=[(x['source_field'],x['target_field']) for x in link['field_links']]
@@ -377,7 +414,7 @@ def _check_finite_connection(link,models):
                             'relation_reason':'producer allowed tuple violates receiving Operation relation'}
                 count+=1
         if not count:return pending('no nonempty producer relation')
-        return {'relation_status':'proved','relation_scope':'source-bound-local-output-to-input-constraint-inclusion',
+        return {'relation_status':'proved','relation_scope':('conditional-execution-origin-local-output-to-input-constraint-inclusion' if link.get('execution_origin_context') else 'source-bound-local-output-to-input-constraint-inclusion'),
                 'relation_outcomes_checked':count}
     except (Blocked,ValueError,KeyError,TypeError,ArithmeticError):return pending('unsupported finite relation expression')
 
@@ -419,7 +456,13 @@ def compose(model_paths,binding_path=None):
         if key in seen:raise CompositionError('duplicate connection link')
         seen.add(key)
         verified=_link(link,models)
-        if source_conformance:verified.update(_check_finite_connection(verified,models))
+        if source_conformance:
+            context=_origin_context(link,binding['links'],models)
+            if context is not None:
+                verified['execution_origin_context']=context
+                verified['conditional_structure_status']=('proved' if not verified['unmapped_source_fields'] and not verified['unmapped_target_fields'] and all(c['status']=='matched' for c in verified['field_links']) else 'inconclusive')
+            verified.update(_check_finite_connection(verified,models))
+        elif link.get('execution_origin') is not None:raise CompositionError('execution-origin context requires independently conformed Sources')
         proven.append(verified)
     # Each validated link discharges both the sender's outgoing declaration
     # and the receiver's incoming declaration; neither proves external effects.
