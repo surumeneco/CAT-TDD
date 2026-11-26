@@ -11,6 +11,7 @@ import math
 
 from catlib import peer_binding, semantic_types as typed, semantic_structural_copy as copy_relation
 from catlib import semantic_collection_relation as collection_relation
+from catlib import semantic_frame_footprint as frame_relation
 
 TOKEN='@cat:finite-transition-relation/v1'
 PREFIX='transition-relation '
@@ -18,7 +19,7 @@ OBS_PREFIX='observed-transition-relation '
 STRUCT_PREFIX='finite-structural-transition-relation '
 OBS_TOKEN='@cat:observed-transition-relation/v1'
 STRUCT_TOKEN='@cat:finite-structural-transition-relation/v1'
-PROFILES={TOKEN:PREFIX, OBS_TOKEN:OBS_PREFIX, STRUCT_TOKEN:STRUCT_PREFIX, copy_relation.TOKEN:copy_relation.PREFIX, collection_relation.TOKEN:collection_relation.PREFIX}
+PROFILES={TOKEN:PREFIX, OBS_TOKEN:OBS_PREFIX, STRUCT_TOKEN:STRUCT_PREFIX, copy_relation.TOKEN:copy_relation.PREFIX, collection_relation.TOKEN:collection_relation.PREFIX, frame_relation.TOKEN:frame_relation.PREFIX}
 LIMIT=65536
 
 
@@ -160,6 +161,8 @@ def prepare(scope,fields,pi_docs,rules,checks,rejected=(),invariants=(),independ
 
 def prove(scope,fields,pi_docs,rules,checks,invariants=(),observation_relations=None):
     from cat_compile_v2 import eval_expr, Blocked
+    if scope.startswith(frame_relation.PREFIX):
+        return frame_relation.prove(scope,fields,pi_docs,rules,checks)
     if scope.startswith(collection_relation.PREFIX):
         return collection_relation.prove(scope,fields,pi_docs,rules,checks,invariants)
     if scope.startswith(copy_relation.PREFIX):
