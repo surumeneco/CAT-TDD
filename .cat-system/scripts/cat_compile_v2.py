@@ -2610,23 +2610,29 @@ def _vector_field_presence(model,operation,field):
 
 
 def _exact_value_kind(domain):
-    while domain.get('type')=='reference' and domain.get('resolved'):
-        domain=domain['of']
-    return domain.get('type') if domain.get('type') in ('json','instant') else None
+    from catlib.semantic_structural_copy import _supported_value
+    return 'recursive' if typed.has_semantic_domain(domain) and _supported_value(domain) else None
+
+
+def _transport_value(domain,value,decode=False):
+    kind=domain['type']
+    if kind=='reference':return _transport_value(domain['of'],value,decode)
+    if kind=='nullable':return None if value is None else _transport_value(domain['of'],value,decode)
+    if kind=='json':return (json_time.decode_json_transport if decode else json_time.encode_json_transport)(value)
+    if kind=='instant':return (json_time.decode_instant_transport if decode else json_time.encode_instant_transport)(value)
+    if kind in ('sequence','set') and isinstance(value,list):return [_transport_value(domain['element'],v,decode) for v in value]
+    if kind=='record' and isinstance(value,dict):
+        domains={f['id']:f['domain'] for f in domain['fields']}
+        return {k:_transport_value(domains[k],v,decode) if k in domains else v for k,v in value.items()}
+    return value
 
 
 def _encode_vector_value(domain,value):
-    kind=_exact_value_kind(domain)
-    if kind=='json':return json_time.encode_json_transport(value)
-    if kind=='instant':return json_time.encode_instant_transport(value)
-    return value
+    return _transport_value(domain,value) if _exact_value_kind(domain) else value
 
 
 def _decode_vector_value(domain,value):
-    kind=_exact_value_kind(domain)
-    if kind=='json':return json_time.decode_json_transport(value)
-    if kind=='instant':return json_time.decode_instant_transport(value)
-    return value
+    return _transport_value(domain,value,True) if _exact_value_kind(domain) else value
 
 
 def _vector_input_value(domain,presence,payload,name,exact_values=False):
@@ -2705,6 +2711,7 @@ def _vector_observation_context(model, trigger, fields):
     """
     from catlib import semantic_transition_relation as relation
     from catlib import semantic_observation_relation as observation
+    from catlib import semantic_structural_copy as copy_relation
     proofs=model.get('intrinsic_rule_proofs',[])
     if not any(f.get('role')=='observation' for f in fields.values()) and not any(
             p.get('requirement') in (relation.OBS_TOKEN,observation.TOKEN) for p in proofs):
@@ -2760,6 +2767,21 @@ def _vector_observation_context(model, trigger, fields):
                         and isinstance(binding['source'],str) and binding['source'].strip(),
                         'observation witness source scope mismatch '+name)
                 inventory.add(name)
+        elif token==copy_relation.TOKEN:
+            require(scope.startswith(copy_relation.PREFIX),'invalid structural copy scope')
+            spec=json.loads(scope[len(copy_relation.PREFIX):],object_pairs_hook=relation._unique_object)
+            if spec.get('trigger')!=trigger:continue
+            names={n for n in used_refs(parse_expr_text(spec['relation']),defs) if fields.get(n,{}).get('role')=='observation'}
+            if names:
+                verified(proof)
+                for name in names:
+                    field=fields[name]
+                    require(field.get('available_on')==[trigger] and copy_relation._supported_value(field['domain']), 'unsupported structural observation')
+                    origin=field.get('source','');prefix='same-execution-observation '
+                    require(origin.startswith(prefix),'missing structural observation binding')
+                    bind=json.loads(origin[len(prefix):],object_pairs_hook=relation._unique_object)
+                    require(set(bind)=={'trigger','pi','operation','peer','cut','source'} and all(bind[k]==spec[k] for k in ('trigger','pi','operation','peer')) and bind['cut']=='trigger-entry' and isinstance(bind['source'],str) and bind['source'].strip(),'structural observation binding mismatch')
+                    inventory.add(name)
         elif token==observation.TOKEN:
             require(scope.startswith(observation.PREFIX),'invalid observation constraint scope')
             cut,sep,expr=scope[len(observation.PREFIX):].partition(' ')
@@ -2806,6 +2828,7 @@ def expand_cases(model, vectors):
                 'vector observations must match the proved trigger inventory')
         env={}
         for name,val in payload.items():
+            if exact_values:val=_decode_vector_value(fields[name]['domain'],val)
             require(in_domain(fields[name]['domain'],val),'observation out of domain '+name)
             env[name]=val
         # An explicit vector.operation resolves an otherwise ambiguous accept
@@ -3101,7 +3124,7 @@ def selection_vectors(model, strategy='rule-witness/v1'):
                          and env[key] is not typed.MISSING},
                 'state':{key:_encode_vector_value(fields[key]['domain'],env[key]) for key in variable_ids if fields[key]['role']=='state'}
             }
-            if observation_ids:sample['observations']={key:env[key] for key in observation_ids}
+            if observation_ids:sample['observations']={key:_encode_vector_value(fields[key]['domain'],env[key]) for key in observation_ids}
             if operation is not None and any(value!='required' for value in presence.values()):
                 sample['operation']=operation['id']
             if model.get('output_frames'):
@@ -3162,8 +3185,8 @@ def emit_vitest(model,vectors,binding_path):
     semantic=[f for f in model.get('fields',[]) if typed.has_semantic_domain(f['domain'])]
     require(binding.get('semantic_value_transport') in (None,'cat-exact-values/v1'), 'unsupported semantic value transport')
     require(not semantic or (binding.get('semantic_value_transport')=='cat-exact-values/v1' and all(
-            f['role'] in ('input','state','output') and _exact_value_kind(f['domain']) for f in semantic)),
-            'Vitest renderer requires explicit JSON/instant binding for supported top-level fields')
+            f['role'] in ('input','state','output','observation') and _exact_value_kind(f['domain']) for f in semantic)),
+            'Vitest renderer requires explicit JSON/instant binding for supported recursive fields')
     require(semantic or binding.get('semantic_value_transport') is None, 'semantic transport requires semantic fields')
     require(not semantic or vectors.get('semantic_value_transport')=='cat-exact-values/v1',
             'exact semantic driver requires explicitly tagged vectors; regenerate or convert vectors explicitly')
