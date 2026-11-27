@@ -1111,6 +1111,9 @@ def _symbolic_effect_containment(expr, target_domain, fields):
             f=fields.get(node['ref'],{})
             return f.get('role') in ('input','state','observation') and semantic_subtyping.subset(f['domain'],domain) is True
         if node.get('op')!='record-value':return False
+        while domain.get('type')=='reference' and domain.get('resolved'):domain=domain['of']
+        if domain.get('type')=='union':
+            return any(constructed_value_fits(node,variant) for variant in domain['variants'])
         shape=_record_shape(domain)
         if shape is None:return False
         terms=node['args'];values={k['literal']:v for k,v in zip(terms[::2],terms[1::2])}
@@ -2124,6 +2127,12 @@ def load(process_path,pi_path,tce_path,domain_path=None,allow_draft=False,common
                     elif expression.get('op')=='member':
                         require(semantic_subtyping.subset(_member_domain(expression,fields),target_domain) is True,
                                 f'Effect {e["target"]}: projected member Domain mismatch')
+                    elif expression.get('op')=='record-value' and expected=='union':
+                        # A constructor has record syntax, but its complete value
+                        # may inhabit a declared Union variant. Require a proof;
+                        # the broad kind alone is neither sufficient nor necessary.
+                        require(_symbolic_effect_containment(expression,target_domain,fields) is True,
+                                f'Effect {e["target"]}: record construction Domain inclusion unproved')
                     elif 'literal' in expression:
                         # A literal that has the right broad kind may still fall
                         # outside a range, format, collection, or enum Domain.
