@@ -87,6 +87,8 @@ def _symbolic(expr, target, fields):
             return source.get('role') in ('input','state','observation') and subtyping.subset(source['domain'],domain) is True
         if node.get('op')!='record-value':return False
         while domain.get('type')=='reference' and domain.get('resolved'):domain=domain['of']
+        if domain.get('type')=='union':
+            return any(constructed_value_fits(node,variant) for variant in domain['variants'])
         if domain.get('type')!='record' or not domain.get('resolved'):return False
         arguments=node.get('args',[])
         if len(arguments)%2:return False
